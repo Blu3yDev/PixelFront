@@ -1,0 +1,10 @@
+export { installMap } from "./map.js";
+export { installEconomy } from "./economy.js";
+export { installStructures } from "./structures.js";
+export { installWar } from "./war.js";
+export { installNavy } from "./navy.js";
+export { installAirborne } from "./airborne.js";
+export { installNuke } from "./nuke/index.js";
+export { installAI } from "./ai.js";
+export { installBorders } from "./borders.js";
+export { installEvents } from "./events.js";

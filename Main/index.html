@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PixelFront | Beta</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+
+  <body>
+    <div id="app">
+      <canvas id="game" aria-label="Game canvas"></canvas>
+      <main id="mainMenu" class="mainMenuOverlay ui-interactive" aria-label="Main menu" data-view="home">
+        <section class="mainMenuCenter" aria-label="Main menu actions">
+          <h1 class="mainMenuTitle">PixelFront Beta</h1>
+          <p class="mainMenuVersion"> NEW UPDATE | v1.5</p>
+
+          <div class="mainMenuDeck" aria-live="polite">
+            <div class="mainMenuTrack">
+              <section class="mainMenuPanel mainMenuPanelHome" aria-label="Main menu home">
+                <div class="mainMenuButtons">
+                  <button id="mmPlayBtn" class="mainMenuBtn" type="button">Play</button>
+                  <button id="mmMultiplayerBtn" class="mainMenuBtn" type="button">Multiplayer</button>
+                  <button id="mmSettingsBtn" class="mainMenuBtn" type="button">Settings</button>
+                </div>
+                <p id="mmStatusText" class="mainMenuStatus">Select your command.</p>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelSettings" aria-label="Main menu settings">
+                <div class="mainMenuCard">
+                  <header class="mainMenuCardHeader">
+                    <h2 class="mainMenuCardTitle">Client Settings</h2>
+                    <button id="mmSettingsBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+
+                  <div class="mainMenuToggleGrid">
+                    <label class="mainMenuToggleRow" for="mmSetShowAIStructures"><span>Show Other AI Structures</span><input id="mmSetShowAIStructures" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetShowAIFlags"><span>Show AI Flags</span><input id="mmSetShowAIFlags" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetShowNationLabels"><span>Show Nation Labels</span><input id="mmSetShowNationLabels" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetShowShips"><span>Show Ships and Routes</span><input id="mmSetShowShips" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetHighlightNation"><span>Highlight Nation</span><input id="mmSetHighlightNation" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetShowHatchOverlay"><span>Show Active Battle Hatch</span><input id="mmSetShowHatchOverlay" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetShowHeatmap"><span>Show Tile Pressure Heatmap</span><input id="mmSetShowHeatmap" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetNukeDestinationOverlay"><span>Nuke Destination Overlay</span><input id="mmSetNukeDestinationOverlay" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetPoliticalMapMode"><span>Political Map Mode</span><input id="mmSetPoliticalMapMode" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetDisableAtmosphere"><span>Disable Weather and Day/Night</span><input id="mmSetDisableAtmosphere" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetReduceMotion"><span>Reduce Camera Motion</span><input id="mmSetReduceMotion" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetLowPowerOverlays"><span>Low-Power Overlay Updates</span><input id="mmSetLowPowerOverlays" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetMenuMusicVolume"><span>Menu Music Volume (<output id="mmSetMenuMusicVolumeValue">12%</output>)</span><input id="mmSetMenuMusicVolume" type="range" min="0" max="100" step="1" value="12" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetWarMusicVolume"><span>War Music Volume (<output id="mmSetWarMusicVolumeValue">9%</output>)</span><input id="mmSetWarMusicVolume" type="range" min="0" max="100" step="1" value="9" /></label>
+                  </div>
+
+                  <div class="mainMenuCardActions">
+                    <button id="mmSettingsDoneBtn" class="mainMenuBtn" type="button">Done</button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelPlay" aria-label="Main menu match config">
+                <div class="mainMenuCard">
+                  <header class="mainMenuCardHeader">
+                    <h2 class="mainMenuCardTitle">Match Configuration</h2>
+                    <button id="mmConfigBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+
+                  <div class="mainMenuFieldGrid">
+                    <label class="mainMenuField" for="mmCfgAiCount">
+                      <span>Bots (blank = preset)</span>
+                      <input id="mmCfgAiCount" type="number" min="1" max="400" step="1" />
+                    </label>
+                    <label class="mainMenuField" for="mmCfgSizePreset">
+                      <span>Map Size Preset</span>
+                      <select id="mmCfgSizePreset">
+                        <option value="Small">Small</option>
+                        <option value="Large">Large</option>
+                        <option value="Super Large">Super Large</option>
+                        <option value="Extremely Large">Extremely Large</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmCfgMapMode">
+                      <span>Map Source</span>
+                      <select id="mmCfgMapMode" disabled>
+                        <option value="earth">Earth Map</option>
+                        <option value="procedural" disabled>Procedural (Disabled)</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmCfgDifficulty">
+                      <span>Difficulty</span>
+                      <select id="mmCfgDifficulty">
+                        <option value="easy">Easy</option>
+                        <option value="normal">Normal</option>
+                        <option value="hard">Hard</option>
+                        <option value="brutal">Brutal</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmCfgPlayerGoldBoost">
+                      <span>Player Gold Boost</span>
+                      <select id="mmCfgPlayerGoldBoost">
+                        <option value="1">1x</option>
+                        <option value="2">2x</option>
+                        <option value="5">5x</option>
+                        <option value="10">10x</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmCfgPlayerTroopsBoost">
+                      <span>Player Troop Boost</span>
+                      <select id="mmCfgPlayerTroopsBoost">
+                        <option value="1">1x</option>
+                        <option value="2">2x</option>
+                        <option value="5">5x</option>
+                        <option value="10">10x</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div class="mainMenuToggleGrid isCompact">
+                    <label class="mainMenuToggleRow" for="mmCfgInfiniteGold"><span>Infinite Gold</span><input id="mmCfgInfiniteGold" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmCfgInfiniteTroops"><span>Infinite Troops</span><input id="mmCfgInfiniteTroops" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmCfgDisableMissileSilo"><span>Disable Missile Silos</span><input id="mmCfgDisableMissileSilo" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmCfgDisableAbmLauncher"><span>Disable ABM Launchers</span><input id="mmCfgDisableAbmLauncher" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmCfgDisableDefencePost"><span>Disable Defence Posts</span><input id="mmCfgDisableDefencePost" type="checkbox" /></label>
+                  </div>
+
+                  <p id="mmConfigSummary" class="mainMenuConfigSummary"></p>
+
+                  <section id="mmPlayLobbyCard" class="mainMenuCard mainMenuLobbyCard" hidden aria-label="Multiplayer lobby">
+                    <header class="mainMenuCardHeader">
+                      <h3 class="mainMenuCardTitle">Lobby</h3>
+                    </header>
+                    <p class="mainMenuLobbyCode">Code: <strong id="mmPlayLobbyCode">------</strong></p>
+                    <div class="mainMenuLobbyPlayersWrap">
+                      <div class="mainMenuLobbyPlayersTitle">Players</div>
+                      <ul id="mmPlayLobbyPlayers" class="mainMenuLobbyPlayers"></ul>
+                    </div>
+                  </section>
+
+                  <div class="mainMenuCardActions">
+                    <button id="mmStartBtn" class="mainMenuBtn isPrimary" type="button">Start</button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelMultiplayer" aria-label="Main menu multiplayer">
+                <div class="mainMenuCard">
+                  <header class="mainMenuCardHeader">
+                    <h2 class="mainMenuCardTitle">Multiplayer</h2>
+                    <button id="mmMultiplayerBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+                  <div class="mainMenuButtons">
+                    <button id="mmCreateLobbyBtn" class="mainMenuBtn" type="button">Create</button>
+                    <button id="mmJoinLobbyBtn" class="mainMenuBtn" type="button">Join</button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelMpJoin" aria-label="Main menu multiplayer join">
+                <div class="mainMenuCard">
+                  <header class="mainMenuCardHeader">
+                    <h2 class="mainMenuCardTitle">Join Lobby</h2>
+                    <button id="mmJoinBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+                  <div class="mainMenuFieldGrid">
+                    <label class="mainMenuField" for="mmJoinCodeInput">
+                      <span>Lobby Code</span>
+                      <input id="mmJoinCodeInput" type="text" maxlength="8" spellcheck="false" placeholder="Enter code" />
+                    </label>
+                  </div>
+                  <div class="mainMenuCardActions">
+                    <button id="mmJoinCodeBtn" class="mainMenuBtn isPrimary" type="button">Join Lobby</button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelMpLobby" aria-label="Main menu multiplayer lobby">
+                <div class="mainMenuCard">
+                  <header class="mainMenuCardHeader">
+                    <h2 id="mmMpLobbyTitle" class="mainMenuCardTitle">Lobby</h2>
+                    <button id="mmMpLobbyBackBtn" class="mainMenuMiniBtn" type="button">Leave</button>
+                  </header>
+                  <p class="mainMenuLobbyCode">Code: <strong id="mmMpLobbyCode">------</strong></p>
+                  <div class="mainMenuLobbyPlayersWrap">
+                    <div class="mainMenuLobbyPlayersTitle">Players</div>
+                    <ul id="mmMpLobbyPlayers" class="mainMenuLobbyPlayers"></ul>
+                  </div>
+                  <p id="mmMpLobbyStatus" class="mainMenuConfigSummary">Waiting for host to start.</p>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <div class="mainMenuFooter" aria-label="Main menu footer controls">
+          <canvas id="mmPlayerFlagPreview" class="mainMenuFlagPreview" width="72" height="48" aria-label="Player flag preview"></canvas>
+          <input
+            id="mmNameInput"
+            class="mainMenuNameInput"
+            type="text"
+            value="Name"
+            aria-label="Player name"
+            maxlength="20"
+            spellcheck="false"
+          />
+
+          <div class="mainMenuQuickButtons" aria-label="Quick menu buttons">
+            <button id="mmFlagBtn" class="mainMenuQuickBtn" type="button" aria-label="Flag Editor">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M6 3v18h2v-6.2l9.2 2.1c.8.2 1.6-.4 1.6-1.2V4.7c0-.8-.8-1.4-1.6-1.2L8 5.6V3z"></path>
+              </svg>
+            </button>
+            <button id="mmBookBtn" class="mainMenuQuickBtn" type="button" aria-label="Guide">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 6.5C4 5.1 5.1 4 6.5 4H12v15.5H7.2c-1.3 0-2.4.9-2.7 2.2l-.1.3H4zm16 0V22h-.4l-.1-.3c-.3-1.3-1.5-2.2-2.8-2.2H12V4h5.5C18.9 4 20 5.1 20 6.5zM6 6v13.2c.4-.2.8-.2 1.2-.2H11V6zm12 0h-5v13h3.8c.4 0 .8.1 1.2.2z"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </main>
+      <div id="mainMenuLoading" class="mainMenuLoading" hidden aria-hidden="true">
+        <div class="mainMenuLoadingFrame">
+          <div id="mainMenuLoadingLabel" class="mainMenuLoadingLabel">Loading...</div>
+          <div class="mainMenuLoadingBar">
+            <div id="mainMenuLoadingFill" class="mainMenuLoadingFill"></div>
+          </div>
+        </div>
+      </div>
+      <div id="mmFlagEditorModal" class="mainMenuFlagEditorModal" hidden aria-hidden="true">
+        <div id="mmFlagEditorBackdrop" class="mainMenuFlagEditorBackdrop"></div>
+        <section class="mainMenuFlagEditorPanel mainMenuFlagEditorPanelV3" aria-label="Flag editor">
+          <header class="mainMenuFlagEditorHeader">
+            <div class="mainMenuFlagEditorHeaderCopy">
+              <h2 class="mainMenuFlagEditorTitle">Flag Studio</h2>
+              <p class="mainMenuFlagEditorSub">Clean layer-based flag designer.</p>
+            </div>
+            <button id="mmFlagCloseBtn" class="mainMenuMiniBtn" type="button">Close</button>
+          </header>
+
+          <div class="mainMenuFlagEditorBody mainMenuFlagEditorBodyV3">
+            <aside class="mainMenuFlagSidebar" aria-label="Tools and layers">
+              <section class="mainMenuFlagGroup isPresetLibrary" aria-label="Preset library">
+                <div class="mainMenuFlagSectionTitle">Preset Library</div>
+                <div class="mainMenuFlagButtons mainMenuFlagButtonsPresets">
+                  <button id="mmFlagPresetDefault" class="mainMenuMiniBtn" type="button">Default</button>
+                  <button id="mmFlagPresetNordic" class="mainMenuMiniBtn" type="button">Nordic</button>
+                  <button id="mmFlagPresetTricolor" class="mainMenuMiniBtn" type="button">Tricolor</button>
+                  <button id="mmFlagPresetCanton" class="mainMenuMiniBtn" type="button">Canton</button>
+                  <button id="mmFlagPresetQuartered" class="mainMenuMiniBtn" type="button">Quartered</button>
+                  <button id="mmFlagPresetSaltire" class="mainMenuMiniBtn" type="button">Saltire</button>
+                </div>
+              </section>
+
+              <section class="mainMenuFlagGroup isUtilityGroup" aria-label="Utilities">
+                <div class="mainMenuFlagSectionTitle">Utilities</div>
+                <div class="mainMenuFlagButtons mainMenuFlagButtonsUtil">
+                  <button id="mmFlagRandomBtn" class="mainMenuMiniBtn" type="button">Randomize</button>
+                  <button id="mmFlagResetBtn" class="mainMenuMiniBtn" type="button">Reset</button>
+                  <button id="mmFlagUndoBtn" class="mainMenuMiniBtn" type="button">Undo</button>
+                </div>
+              </section>
+
+              <section class="mainMenuFlagGroup isLayerStack" aria-label="Layer stack">
+                <div class="mainMenuFlagSectionTitle">Layer Stack</div>
+                <div id="mmFlagLayerList" class="mainMenuFlagLayerList" role="listbox" aria-label="Flag layers"></div>
+
+                <div class="mainMenuFlagLayerActions" aria-label="Layer actions">
+                  <button id="mmFlagLayerAddBtn" class="mainMenuMiniBtn" type="button">Add Emblem</button>
+                  <button id="mmFlagLayerDuplicateBtn" class="mainMenuMiniBtn" type="button">Duplicate</button>
+                  <button id="mmFlagLayerDeleteBtn" class="mainMenuMiniBtn" type="button">Delete</button>
+                </div>
+
+                <div class="mainMenuFlagLayerActions" aria-label="Reorder">
+                  <button id="mmFlagLayerDownBtn" class="mainMenuMiniBtn" type="button">Send Back</button>
+                  <button id="mmFlagLayerUpBtn" class="mainMenuMiniBtn" type="button">Bring Front</button>
+                </div>
+              </section>
+
+              <section class="mainMenuFlagGroup isCanvasOptions" aria-label="Canvas options">
+                <div class="mainMenuFlagSectionTitle">Canvas Options</div>
+                <div class="mainMenuFlagQuickToggles" aria-label="Canvas options">
+                  <label class="mainMenuTogglePill mainMenuTogglePillSlim"><input id="mmFlagSnapToGrid" type="checkbox" checked /> Snap</label>
+                  <label class="mainMenuTogglePill mainMenuTogglePillSlim"><input id="mmFlagShowGrid" type="checkbox" /> Grid</label>
+                </div>
+                <p class="mainMenuFlagHintCompact">
+                  Drag emblems on-canvas. Corner handles resize. Top handle rotates. Hold Shift for fine control.
+                </p>
+              </section>
+            </aside>
+
+            <section class="mainMenuFlagCanvasPane" aria-label="Flag canvas">
+              <div class="mainMenuFlagCanvasToolbar">
+                <div class="mainMenuFlagCanvasTitle">Design Workspace</div>
+                <div class="mainMenuFlagCanvasHelp">Select layer, then drag/resize/rotate on canvas.</div>
+              </div>
+
+              <div class="mainMenuFlagCanvasStage">
+                <div class="mainMenuFlagCanvasWrap" id="mmFlagCanvasWrap">
+                  <canvas id="mmFlagEditorPreview" class="mainMenuFlagEditorPreview" width="480" height="320" aria-label="Flag editor preview"></canvas>
+                  <canvas id="mmFlagEditorOverlay" class="mainMenuFlagEditorOverlay" width="480" height="320" aria-label="Flag editor overlay"></canvas>
+                </div>
+              </div>
+
+            </section>
+
+            <aside class="mainMenuFlagProps" aria-label="Properties">
+              <section class="mainMenuFlagGroup mainMenuFlagGroupInspectorInfo" aria-label="Inspector header">
+                <div class="mainMenuFlagSectionTitle">Inspector</div>
+                <p class="mainMenuFlagInspectorHint">Edit selected layer properties.</p>
+              </section>
+
+              <section id="mmFlagBaseSection" class="mainMenuFlagInspectorCard" aria-label="Base flag settings">
+                <div class="mainMenuFlagInspectorTitle">Background</div>
+                <div class="mainMenuFieldGrid">
+                  <label class="mainMenuField" for="mmFlagLayout">
+                    <span>Layout</span>
+                    <select id="mmFlagLayout"></select>
+                  </label>
+                  <label class="mainMenuField mainMenuRangeField" for="mmFlagStripeCount">
+                    <div class="mainMenuFieldHead"><span>Stripe Count</span><output id="mmFlagStripeCountValue" class="mainMenuRangeValue">3</output></div>
+                    <input id="mmFlagStripeCount" type="range" min="2" max="7" step="1" value="3" />
+                  </label>
+                </div>
+
+                <div class="mainMenuFlagColorGrid">
+                  <label class="mainMenuField" for="mmFlagColorA"><span>Color A</span><input id="mmFlagColorA" type="color" value="#203a8f" /></label>
+                  <label class="mainMenuField" for="mmFlagColorB"><span>Color B</span><input id="mmFlagColorB" type="color" value="#f2f2f2" /></label>
+                  <label class="mainMenuField" for="mmFlagColorC"><span>Color C</span><input id="mmFlagColorC" type="color" value="#d42c2c" /></label>
+                </div>
+
+                <div class="mainMenuFieldGrid">
+                  <label class="mainMenuTogglePill"><input id="mmFlagBorderEnabled" type="checkbox" checked /> Border</label>
+                  <label class="mainMenuField" for="mmFlagBorderColor">
+                    <span>Border Color</span>
+                    <input id="mmFlagBorderColor" type="color" value="#121212" />
+                  </label>
+                  <label class="mainMenuField mainMenuRangeField" for="mmFlagBorderWidth">
+                    <div class="mainMenuFieldHead"><span>Border Width</span><output id="mmFlagBorderWidthValue" class="mainMenuRangeValue">1px</output></div>
+                    <input id="mmFlagBorderWidth" type="range" min="1" max="8" step="1" value="1" />
+                  </label>
+                </div>
+              </section>
+
+              <section id="mmFlagShapeSection" class="mainMenuFlagInspectorCard" aria-label="Emblem settings">
+                <div class="mainMenuFlagInspectorHead">
+                  <div class="mainMenuFlagInspectorTitle">Emblem Layer</div>
+                  <div id="mmFlagSelectedLayerLabel" class="mainMenuFlagInspectorMeta">Emblem 1</div>
+                </div>
+
+                <div class="mainMenuFlagShapeMeta">
+                  <label class="mainMenuTogglePill"><input id="mmFlagShapeEnabled" type="checkbox" checked /> Enabled</label>
+                  <label class="mainMenuField" for="mmFlagShapeType">
+                    <span>Shape</span>
+                    <select id="mmFlagShapeType"></select>
+                  </label>
+                  <label class="mainMenuField" for="mmFlagShapeColor"><span>Color</span><input id="mmFlagShapeColor" type="color" value="#ffffff" /></label>
+                </div>
+
+                <div class="mainMenuFlagSliderGrid mainMenuFlagSliderGridV3">
+                  <label class="mainMenuField mainMenuRangeField" for="mmFlagShapeX"><div class="mainMenuFieldHead"><span>X</span><output id="mmFlagShapeXValue" class="mainMenuRangeValue">50%</output></div><input id="mmFlagShapeX" type="range" min="0" max="100" step="1" value="50" /></label>
+                  <label class="mainMenuField mainMenuRangeField" for="mmFlagShapeY"><div class="mainMenuFieldHead"><span>Y</span><output id="mmFlagShapeYValue" class="mainMenuRangeValue">50%</output></div><input id="mmFlagShapeY" type="range" min="0" max="100" step="1" value="50" /></label>
+                  <label class="mainMenuField mainMenuRangeField" for="mmFlagShapeW"><div class="mainMenuFieldHead"><span>Width</span><output id="mmFlagShapeWValue" class="mainMenuRangeValue">24%</output></div><input id="mmFlagShapeW" type="range" min="4" max="100" step="1" value="24" /></label>
+                  <label class="mainMenuField mainMenuRangeField" for="mmFlagShapeH"><div class="mainMenuFieldHead"><span>Height</span><output id="mmFlagShapeHValue" class="mainMenuRangeValue">24%</output></div><input id="mmFlagShapeH" type="range" min="4" max="100" step="1" value="24" /></label>
+                  <label class="mainMenuField mainMenuRangeField" for="mmFlagShapeR"><div class="mainMenuFieldHead"><span>Rotation</span><output id="mmFlagShapeRValue" class="mainMenuRangeValue">0deg</output></div><input id="mmFlagShapeR" type="range" min="-180" max="180" step="1" value="0" /></label>
+                  <label class="mainMenuField mainMenuRangeField" for="mmFlagShapeOpacity"><div class="mainMenuFieldHead"><span>Opacity</span><output id="mmFlagShapeOpacityValue" class="mainMenuRangeValue">100%</output></div><input id="mmFlagShapeOpacity" type="range" min="5" max="100" step="1" value="100" /></label>
+                </div>
+              </section>
+            </aside>
+          </div>
+
+          <footer class="mainMenuFlagEditorFooter">
+            <div class="mainMenuFlagFooterActions">
+              <button id="mmFlagCancelBtn" class="mainMenuBtn" type="button">Cancel</button>
+              <button id="mmFlagSaveBtn" class="mainMenuBtn isPrimary" type="button">Save Flag</button>
+            </div>
+          </footer>
+        </section>
+      </div>
+<div id="hud">
+        <div id="topHud" class="panel ui-interactive" aria-label="Game controls">
+          <button
+            id="btnLeaderboard"
+            class="btn subtle iconBtn"
+            type="button"
+            title="Toggle leaderboard"
+            aria-label="Toggle leaderboard"
+          >
+            &#127942;
+          </button>
+          <div id="gameTimer" class="topTimer">0:00</div>
+          <button id="btnPause" class="btn subtle" type="button">Pause</button>
+          <button id="btnSettings" class="btn subtle iconBtn" type="button" title="Open settings" aria-label="Open settings">
+            &#9881;
+          </button>
+        </div>
+        <div id="spawnProgressWrap" class="spawnProgress ui-interactive" hidden aria-hidden="true">
+          <div id="spawnProgressFill" class="spawnProgressFill"></div>
+          <div id="spawnProgressText" class="spawnProgressText"></div>
+        </div>
+
+        <!-- Bottom-left Dock: Events <-> Diplomacy -->
+        <aside id="events" class="ui-interactive" aria-label="Dock">
+          <div class="eventsHeader">
+            <div class="dockTabs" role="tablist" aria-label="Dock tabs">
+              <button id="btnDockEvents" class="btn subtle tabBtn isTabSelected" type="button" role="tab">
+                Events
+              </button>
+              <button id="btnDockDip" class="btn subtle tabBtn" type="button" role="tab">
+                Diplomacy
+              </button>
+              <button id="btnDockOps" class="btn subtle tabBtn" type="button" role="tab">
+                Operations
+              </button>
+            </div>
+            <div class="eventsBtns">
+              <button id="btnEventsToggle" class="btn subtle" type="button" title="Toggle dock (L)">
+                Hide
+              </button>
+            </div>
+          </div>
+
+          <div id="eventsBody" class="eventsBody" aria-label="Events log"></div>
+          <div id="eventsScopeControls" class="eventsScopeControls" aria-label="Event visibility scope">
+            <button id="btnEventsScopeNationwide" class="btn subtle eventsScopeBtn isTabSelected" type="button">
+              Nationwide
+            </button>
+            <button id="btnEventsScopeGlobal" class="btn subtle eventsScopeBtn" type="button">
+              Global
+            </button>
+          </div>
+
+          <div id="dipBody" class="dockBody" hidden aria-label="Diplomacy panel">
+            <div class="hint muted" style="margin-top: 2px;">
+              Hover a nation to highlight it. Right-click to open actions. Alliances block attacks for 3 minutes.
+            </div>
+
+            <div id="dipStatus" class="selectedMeta muted" style="margin-top: 8px;"></div>
+
+            <div id="donatePanel" class="subPanel" hidden>
+              <div class="subTitle">Donations</div>
+
+              <div class="opRow">
+                <div class="opLabel">Gold</div>
+                <div class="opValue"><span id="donGoldVal">0</span></div>
+              </div>
+              <input id="donGold" class="slider" type="range" min="0" max="0" value="0" />
+
+              <div class="opRow">
+                <div class="opLabel">Infantry</div>
+                <div class="opValue"><span id="donTroopsVal">0</span></div>
+              </div>
+              <input id="donTroops" class="slider" type="range" min="0" max="0" value="0" />
+
+              <button id="donateBtn" class="btn" type="button" disabled>Send</button>
+
+              <div class="hint muted" id="donateHint">
+                Donations transfer instantly. Allied AI may donate back over time.
+              </div>
+            </div>
+          </div>
+
+          <div id="opsBody" class="dockBody" hidden aria-label="Operations panel"></div>
+        </aside>
+
+        <!-- Context menu (right-click on land/nation) -->
+        <div id="ctxMenu" class="ctxMenu ui-interactive" hidden>
+          <div class="ctxTitle" id="ctxTitle">Actions</div>
+          <div class="ctxBtns">
+            <button id="ctxExpand" class="btn" type="button">Expand</button>
+
+            <button id="ctxAttack" class="btn danger" type="button">Attack</button>
+            <button id="ctxIntel" class="btn" type="button">Intel</button>
+
+            <button id="ctxSendWarship" class="btn" type="button">Send Warship</button>
+
+            <button id="ctxDeclareWar" class="btn" type="button">Declare War</button>
+            <button id="ctxMakePeace" class="btn warn" type="button">Ceasefire</button>
+            <button id="ctxRequestAlly" class="btn" type="button">Ally</button>
+          </div>
+          <div id="ctxHint" class="ctxHint muted"></div>
+        </div>
+
+        <div id="settingsModal" class="settingsModal ui-interactive" hidden>
+          <div id="settingsBackdrop" class="settingsBackdrop"></div>
+          <section id="settingsPanel" class="panel settingsPanel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+            <div class="settingsHeader">
+              <div>
+                <div id="settingsTitle" class="settingsTitle">Settings</div>
+                <div class="settingsSubtitle muted">These settings only change your client.</div>
+              </div>
+              <button id="settingsClose" class="btn subtle" type="button" aria-label="Close settings">Close</button>
+            </div>
+
+            <div class="settingsGrid">
+              <section class="settingsSection">
+                <div class="settingsSectionTitle">Gameplay View</div>
+
+                <label class="settingsRow" for="setShowAIStructures">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Show Other AI Structures</span>
+                    <span class="settingsRowHint muted">Show or hide AI structures on the map.</span>
+                  </span>
+                  <input id="setShowAIStructures" type="checkbox" checked />
+                </label>
+
+                <label class="settingsRow" for="setShowNationLabels">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Show Nation Labels</span>
+                    <span class="settingsRowHint muted">Show or hide nation names and population labels.</span>
+                  </span>
+                  <input id="setShowNationLabels" type="checkbox" checked />
+                </label>
+
+                <label class="settingsRow" for="setShowShips">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Show Ships and Routes</span>
+                    <span class="settingsRowHint muted">Show or hide ship routes and ship icons.</span>
+                  </span>
+                  <input id="setShowShips" type="checkbox" checked />
+                </label>
+
+                <label class="settingsRow" for="setHighlightNation">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Highlight Nation</span>
+                    <span class="settingsRowHint muted">Makes your territory stand out more clearly.</span>
+                  </span>
+                  <input id="setHighlightNation" type="checkbox" checked />
+                </label>
+              </section>
+
+              <section class="settingsSection">
+                <div class="settingsSectionTitle">Overlay Controls</div>
+
+                <label class="settingsRow" for="setShowHatchOverlay">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Show Active Battle Hatch</span>
+                    <span class="settingsRowHint muted">Marks tiles with active or recent battles.</span>
+                  </span>
+                  <input id="setShowHatchOverlay" type="checkbox" checked />
+                </label>
+
+                <label class="settingsRow" for="setShowHeatmap">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Show Tile Pressure Heatmap</span>
+                    <span class="settingsRowHint muted">Shows where fighting happens the most.</span>
+                  </span>
+                  <input id="setShowHeatmap" type="checkbox" />
+                </label>
+
+                <label class="settingsRow" for="setNukeDestinationOverlay">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Nuke Destination Overlay</span>
+                    <span class="settingsRowHint muted">Shows missile destination guidance lines.</span>
+                  </span>
+                  <input id="setNukeDestinationOverlay" type="checkbox" checked />
+                </label>
+
+                <label class="settingsRow" for="setPoliticalMapMode">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Political Map Mode</span>
+                    <span class="settingsRowHint muted">Uses a clean political-style map view.</span>
+                  </span>
+                  <input id="setPoliticalMapMode" type="checkbox" />
+                </label>
+              </section>
+
+              <section class="settingsSection">
+                <div class="settingsSectionTitle">Performance</div>
+
+                <label class="settingsRow" for="setDisableAtmosphere">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Disable Weather and Day/Night</span>
+                    <span class="settingsRowHint muted">Turns off weather and day/night lighting.</span>
+                  </span>
+                  <input id="setDisableAtmosphere" type="checkbox" />
+                </label>
+
+                <label class="settingsRow" for="setReduceMotion">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Reduce Camera Motion</span>
+                    <span class="settingsRowHint muted">Makes camera movement feel faster.</span>
+                  </span>
+                  <input id="setReduceMotion" type="checkbox" />
+                </label>
+
+                <label class="settingsRow" for="setLowPowerOverlays">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Low-Power Overlay Updates</span>
+                    <span class="settingsRowHint muted">Updates heavy overlays less often for better FPS.</span>
+                  </span>
+                  <input id="setLowPowerOverlays" type="checkbox" />
+                </label>
+              </section>
+
+              <section class="settingsSection settingsSectionAudio">
+                <div class="settingsSectionTitle">Audio</div>
+
+                <label class="settingsRow settingsRowAudio" for="setMenuMusicVolume">
+                  <span class="settingsAudioLabel settingsRowLabel">Menu Music Volume</span>
+                  <output id="setMenuMusicVolumeValue" class="settingsAudioValue">12%</output>
+                  <input id="setMenuMusicVolume" type="range" min="0" max="100" step="1" value="12" />
+                </label>
+
+                <label class="settingsRow settingsRowAudio" for="setWarMusicVolume">
+                  <span class="settingsAudioLabel settingsRowLabel">War Music Volume</span>
+                  <output id="setWarMusicVolumeValue" class="settingsAudioValue">9%</output>
+                  <input id="setWarMusicVolume" type="range" min="0" max="100" step="1" value="9" />
+                </label>
+              </section>
+
+            </div>
+          </section>
+        </div>
+
+        <!-- Nation Intel panel (center) -->
+        <div id="intelPanel" class="panel intelPanel ui-interactive" hidden>
+          <div class="intelHeader">
+            <div>
+              <div class="intelTitle" id="intelTitle">Nation Intel</div>
+              <div class="intelMeta muted" id="intelMeta"></div>
+            </div>
+            <button id="intelClose" class="btn subtle" type="button">Close</button>
+          </div>
+
+          <div class="intelSection">
+            <div class="intelSectionTitle">Structures</div>
+            <div id="intelStructs" class="intelStructs"></div>
+          </div>
+
+          <div class="intelSection">
+            <div class="intelSectionTitle">Overview</div>
+            <div class="intelGrid">
+              <div class="intelStat">
+                <div class="intelLabel">Territory</div>
+                <div class="intelValue" id="intelLand">0</div>
+              </div>
+              <div class="intelStat">
+                <div class="intelLabel">Gold</div>
+                <div class="intelValue" id="intelGold">0</div>
+              </div>
+              <div class="intelStat">
+                <div class="intelLabel">Infantry</div>
+                <div class="intelValue" id="intelInf">0</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="intelSection">
+            <div class="intelSectionTitle">Population (est.)</div>
+            <div class="intelPopulation" id="intelPop">0</div>
+          </div>
+        </div>
+
+        <aside id="sideHud" class="ui-interactive">
+          <section class="panel">
+            <div class="panelTitle">Nation Stats</div>
+
+            <dl class="statsGrid">
+              <div class="statRow">
+                <dt><img class="statIcon" src="/UI_Icons/gold.png" alt="" aria-hidden="true" /><span>Gold</span></dt>
+                <dd>
+                  <div class="statMain"><span id="statGoldVal">0</span></div>
+                  <div class="statSub"><span class="delta" id="statGoldDelta">+0/s</span></div>
+                </dd>
+              </div>
+
+              <div class="statRow">
+                <dt><img class="statIcon" src="/UI_Icons/population.png" alt="" aria-hidden="true" /><span>Population</span></dt>
+                <dd>
+                  <div class="statMain">
+                    <span id="statPopVal">0</span><span class="statDim"> / </span><span id="statPopCap">0</span>
+                  </div>
+                  <div class="statSub">
+                    <span class="delta" id="statPopDelta">+0/s</span>
+                  </div>
+                </dd>
+              </div>
+
+              <div class="statRow">
+                <dt><img class="statIcon" src="/UI_Icons/infantry.png" alt="" aria-hidden="true" /><span>Infantry</span></dt>
+                <dd>
+                  <div class="statMain">
+                    <span id="statInfVal">0</span><span class="statDim"> / </span><span id="statInfCap">0</span>
+                  </div>
+                  <div class="statSub"><span class="delta" id="statInfDelta">+0/s</span></div>
+                </dd>
+              </div>
+
+              <div class="statRow">
+                <dt><img class="statIcon" src="/UI_Icons/stability.png" alt="" aria-hidden="true" /><span>Stability</span></dt>
+                <dd>
+                  <div class="statMain"><span id="statStabilityVal">100%</span></div>
+                </dd>
+              </div>
+            </dl>
+
+            <div class="objective">
+              <div class="objectiveLabel">Objective</div>
+              <div class="objectiveValue">Eliminate all enemy capitals.</div>
+            </div>
+          </section>
+
+          <section id="selectedCard" class="panel">
+            <div class="panelTitle">Selected</div>
+            <div class="selectedName" id="selectedName">None</div>
+            <div class="selectedDesc" id="selectedDesc">
+              Click a structure to inspect it. Pick a structure at bottom to build.
+            </div>
+
+            <div id="selectedMeta" class="selectedMeta muted"></div>
+          </section>
+
+          <section id="operationsCard" class="panel">
+            <div class="panelTitle">Operations</div>
+
+            <div class="opRow">
+              <div class="opLabel">Attack Ratio</div>
+              <div class="opValue"><span id="opRatioVal">20</span>%</div>
+            </div>
+            <input id="opRatio" class="slider" type="range" min="1" max="100" value="20" />
+            <div class="hint muted" style="margin-top: 2px;">Higher = larger share of infantry committed to active attacks.</div>
+
+            <div class="opRow" style="margin-top: 10px;">
+              <div class="opLabel">Mobilization</div>
+              <div class="opValue"><span id="opMobVal">30</span>%</div>
+            </div>
+            <input id="opMob" class="slider" type="range" min="10" max="100" value="30" />
+            <div class="hint muted" style="margin-top: 2px;">Higher = bigger army, weaker economy.</div>
+
+
+            <div class="opRow split">
+              <button id="opStart" class="btn" type="button" disabled>Expand</button>
+              <button id="opCancel" class="btn danger" type="button" disabled>Cancel</button>
+            </div>
+
+            <div id="opMsg" class="hint muted"></div>
+          </section>
+        </aside>
+
+        <nav id="structureBar" class="ui-interactive" aria-label="Structures">
+          <div class="barLeft">
+            <div class="barTitle">Build</div>
+            <div class="barSub muted" id="buildModeLabel">No build mode</div>
+          </div>
+
+          <div class="barButtons" role="group" aria-label="Structure buttons">
+            <button class="btn structureBtn" data-structure="city" id="btnCity" type="button">
+              City
+            </button>
+            <button class="btn structureBtn" data-structure="factory" id="btnFactory" type="button">
+              Factory
+            </button>
+            <button class="btn structureBtn" data-structure="barracks" id="btnBarracks" type="button">
+              Barracks
+            </button>
+            <button class="btn structureBtn" data-structure="defence_post" id="btnDefencePost" type="button">
+              Defence Post
+            </button>
+            <button class="btn structureBtn" data-structure="port" id="btnPort" type="button">
+              Port
+            </button>
+            <button class="btn structureBtn" data-structure="missile_silo" id="btnMissileSilo" type="button">
+              Missile Silo
+            </button>
+            <button class="btn structureBtn" data-structure="abm_launcher" id="btnAbmLauncher" type="button">
+              ABM Launcher
+            </button>
+            <button class="btn structureBtn" data-structure="airbase" id="btnAirbase" type="button">
+              Airbase
+            </button>
+          </div>
+
+        </nav>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

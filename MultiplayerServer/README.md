@@ -1,11 +1,13 @@
-# PixelFront Multiplayer Service (Phase 2)
+# PixelFront Multiplayer Service
 
-This service powers the Phase 2 lobby flow used by the main menu:
+This service powers:
 - Create lobby
 - Join by code
 - Poll lobby state
 - Start lobby (host only)
 - Leave lobby
+- Realtime lobby updates (`/ws`)
+- Realtime in-match command relay (`match_cmd`)
 
 It uses in-memory storage for now (good for prototyping, not production persistence).
 
@@ -24,7 +26,9 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 - `POST /api/lobbies/state`
 - `POST /api/lobbies/start`
 - `POST /api/lobbies/leave`
-- `WS /ws?code=...&sessionId=...` (realtime lobby updates)
+- `WS /ws?code=...&sessionId=...`
+  - Lobby realtime events (`hello`, `lobby_update`, `started`, `pong`)
+  - In-match command relay (`match_cmd`)
 - Legacy compatibility:
   - `GET /api/lobbies/:code?sessionId=...`
   - `POST /api/lobbies/:code/start`
@@ -40,6 +44,7 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 ## Render deploy
 
 You can deploy this folder directly as a Render Web Service, or use `render.yaml`.
+Runtime should be **Node**, not Python.
 
 ## Full setup checklist (Render + Vercel)
 
@@ -52,6 +57,7 @@ You can deploy this folder directly as a Render Web Service, or use `render.yaml
    - `VITE_MULTIPLAYER_API_URL=https://pixelfront-multiplayer.onrender.com`
 5. Redeploy Vercel after setting env vars.
 6. Redeploy Render after changing CORS.
+7. Hard refresh the game tab after deploy to avoid stale JS bundle.
 
 ## Troubleshooting
 
@@ -64,3 +70,8 @@ You can deploy this folder directly as a Render Web Service, or use `render.yaml
   - Verify Render service is online (`GET /health`).
   - Verify `CORS_ORIGIN` includes your exact site origin.
   - Free Render instances may cold start (10-20s) on first request.
+
+- If players load different worlds:
+  - Make sure both frontend and backend are fully redeployed to latest code.
+  - Host must start lobby after backend update (old lobbies may miss the locked `worldSpec`).
+  - Confirm both clients are on the same Vercel build (hard refresh both browsers).

@@ -252,6 +252,52 @@ function computeWorldSize(mapMode = MAP_MODE.GENERATOR, matchConfig = null) {
   return { width: w, height: h, aiCount, totalTiles: w * h, requestedTiles, maxTiles, sizePreset: presetKey };
 }
 
+function sanitizeMultiplayerWorldSpec(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const width = Number(raw.width);
+  const height = Number(raw.height);
+  const aiCount = Number(raw.aiCount);
+  const mapModeRaw = String(raw.mapMode || "").toLowerCase();
+  const mapMode = mapModeRaw === MAP_MODE.WORLD_MAP ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(aiCount)) return null;
+  const w = Math.max(200, Math.min(4096, Math.floor(width)));
+  const h = Math.max(200, Math.min(4096, Math.floor(height)));
+  const ai = Math.max(1, Math.min(128, Math.floor(aiCount)));
+  if (w <= 0 || h <= 0 || ai <= 0) return null;
+  return { width: w, height: h, aiCount: ai, mapMode };
+}
+
+function buildMultiplayerWorldSpec(matchConfig = null) {
+  const cfg = sanitizeMatchConfig(matchConfig || activeMatchConfig);
+  const mapModeRaw = String(cfg.mapMode ?? WORLDGEN?.mapMode ?? MAP_MODE.GENERATOR).toLowerCase();
+  const mapMode = mapModeRaw === MAP_MODE.WORLD_MAP ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
+  const ws = computeWorldSize(mapMode, cfg);
+  return sanitizeMultiplayerWorldSpec({
+    width: ws.width,
+    height: ws.height,
+    aiCount: ws.aiCount,
+    mapMode
+  });
+}
+
+function buildMultiplayerWsUrl(codeRaw, sessionIdRaw) {
+  const base = String(MULTIPLAYER_API_BASE || "").trim();
+  const code = String(codeRaw || "").trim().toUpperCase();
+  const sessionId = String(sessionIdRaw || "").trim();
+  if (!base || !code || !sessionId) return "";
+  try {
+    const u = new URL(base);
+    u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
+    u.pathname = "/ws";
+    u.search = "";
+    u.searchParams.set("code", code);
+    u.searchParams.set("sessionId", sessionId);
+    return u.toString();
+  } catch {
+    return "";
+  }
+}
+
 // TEMP: set to false once you've verified Accept/Reject in the Events tab.
 const DEBUG_FORCE_ALLY_REQUEST = false;
 const DEBUG_FORCE_CEASEFIRE_REQUEST = false;
@@ -278,6 +324,116 @@ let menuBgm = null;
 let warBgm = null;
 let activeBgmMode = "none";
 let bgmUnlockArmed = false;
+let activeMultiplayerSession = null;
+let multiplayerMatchSocket = null;
+let multiplayerMatchConnected = false;
+let multiplayerMatchReconnectTimer = 0;
+let multiplayerMatchRttMs = 0;
+let multiplayerServerOffsetMs = 0;
+let multiplayerWorldSyncWorld = null;
+let multiplayerWorldSyncApplyingRemote = false;
+let multiplayerWorldSyncOriginals = new Map();
+let multiplayerCancelAllDepth = 0;
+const multiplayerSeenCommandIds = new Set();
+const multiplayerSeenCommandOrder = [];
+const MULTIPLAYER_SEEN_COMMAND_CAP = 4096;
+
+const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
+  setAttackRatio: Object.freeze({
+    cmd: "set_attack_ratio",
+    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
+  }),
+  setMobilization: Object.freeze({
+    cmd: "set_mobilization",
+    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
+  }),
+  startNeutral: Object.freeze({
+    cmd: "start_neutral",
+    shouldSync: () => true
+  }),
+  startWarFocus: Object.freeze({
+    cmd: "start_war_focus",
+    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
+  }),
+  cancelAllOperations: Object.freeze({
+    cmd: "cancel_all_operations",
+    shouldSync: (args) => (args.length === 0 ? true : ((Number(args?.[0]) | 0) === OWNER.PLAYER))
+  }),
+  cancelOperation: Object.freeze({
+    cmd: "cancel_operation",
+    shouldSync: () => true
+  }),
+  donate: Object.freeze({
+    cmd: "donate",
+    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
+  }),
+  declareWar: Object.freeze({
+    cmd: "declare_war",
+    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
+  }),
+  sendWarship: Object.freeze({
+    cmd: "send_warship",
+    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
+  }),
+  requestCeasefire: Object.freeze({
+    cmd: "request_ceasefire",
+    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
+  }),
+  requestAlliance: Object.freeze({
+    cmd: "request_alliance",
+    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
+  }),
+  respondCeasefireRequest: Object.freeze({
+    cmd: "respond_ceasefire_request",
+    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
+  }),
+  respondAllianceRequest: Object.freeze({
+    cmd: "respond_alliance_request",
+    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
+  }),
+  cancelShip: Object.freeze({
+    cmd: "cancel_ship",
+    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
+  }),
+  startMissileSiloBuild: Object.freeze({
+    cmd: "start_missile_silo_build",
+    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
+  }),
+  startAirbaseTransportBuild: Object.freeze({
+    cmd: "start_airbase_transport_build",
+    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
+  }),
+  startBurstExpand: Object.freeze({
+    cmd: "start_burst_expand",
+    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
+  }),
+  startBurstAttack: Object.freeze({
+    cmd: "start_burst_attack",
+    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
+  }),
+  pickSpawn: Object.freeze({
+    cmd: "pick_spawn",
+    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
+  }),
+  launchMissileWarhead: Object.freeze({
+    cmd: "launch_missile_warhead",
+    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
+  }),
+  launchAirbaseTransport: Object.freeze({
+    cmd: "launch_airbase_transport",
+    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
+  }),
+  placeStructure: Object.freeze({
+    cmd: "place_structure",
+    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
+  })
+});
+const MULTIPLAYER_CMD_TO_METHOD = Object.freeze(
+  Object.entries(MULTIPLAYER_WORLD_METHOD_SYNC).reduce((acc, [method, cfg]) => {
+    acc[cfg.cmd] = method;
+    return acc;
+  }, {})
+);
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, Number(value) || 0));
@@ -380,6 +536,265 @@ function setBgmMode(modeRaw) {
   }
   stopBgm(menuBgm, true);
   stopBgm(warBgm, true);
+}
+
+function makeMultiplayerCommandId() {
+  try {
+    if (globalThis?.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  } catch {
+    // Ignore randomUUID failures.
+  }
+  return `mpcmd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function rememberMultiplayerCommandId(cmdIdRaw) {
+  const cmdId = String(cmdIdRaw || "").trim();
+  if (!cmdId) return;
+  if (multiplayerSeenCommandIds.has(cmdId)) return;
+  multiplayerSeenCommandIds.add(cmdId);
+  multiplayerSeenCommandOrder.push(cmdId);
+  while (multiplayerSeenCommandOrder.length > MULTIPLAYER_SEEN_COMMAND_CAP) {
+    const old = multiplayerSeenCommandOrder.shift();
+    if (old) multiplayerSeenCommandIds.delete(old);
+  }
+}
+
+function hasSeenMultiplayerCommandId(cmdIdRaw) {
+  const cmdId = String(cmdIdRaw || "").trim();
+  if (!cmdId) return false;
+  return multiplayerSeenCommandIds.has(cmdId);
+}
+
+function normalizeMultiplayerSession(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const code = String(raw.code || "").trim().toUpperCase();
+  const sessionId = String(raw.sessionId || "").trim();
+  if (!code || !sessionId) return null;
+  const startedAt = Math.max(0, Number(raw.startedAt) || 0);
+  const isHost = !!raw.isHost;
+  return {
+    enabled: true,
+    code,
+    sessionId,
+    startedAt,
+    isHost,
+    worldSpec: sanitizeMultiplayerWorldSpec(raw.worldSpec)
+  };
+}
+
+function resetMultiplayerWorldSync() {
+  multiplayerWorldSyncWorld = null;
+  multiplayerWorldSyncApplyingRemote = false;
+  multiplayerWorldSyncOriginals = new Map();
+  multiplayerCancelAllDepth = 0;
+}
+
+function clearMultiplayerMatchSocket() {
+  if (multiplayerMatchReconnectTimer) {
+    clearTimeout(multiplayerMatchReconnectTimer);
+    multiplayerMatchReconnectTimer = 0;
+  }
+  multiplayerMatchConnected = false;
+  if (!multiplayerMatchSocket) return;
+  try {
+    multiplayerMatchSocket.onopen = null;
+    multiplayerMatchSocket.onclose = null;
+    multiplayerMatchSocket.onerror = null;
+    multiplayerMatchSocket.onmessage = null;
+    multiplayerMatchSocket.close();
+  } catch {
+    // Ignore close errors.
+  }
+  multiplayerMatchSocket = null;
+}
+
+function setActiveMultiplayerSession(raw) {
+  const next = normalizeMultiplayerSession(raw);
+  activeMultiplayerSession = next;
+  multiplayerMatchRttMs = 0;
+  multiplayerServerOffsetMs = 0;
+  multiplayerSeenCommandIds.clear();
+  multiplayerSeenCommandOrder.length = 0;
+  resetMultiplayerWorldSync();
+  clearMultiplayerMatchSocket();
+}
+
+function isMultiplayerMatchEnabled() {
+  return !!(activeMultiplayerSession && activeMultiplayerSession.enabled && activeMultiplayerSession.code && activeMultiplayerSession.sessionId);
+}
+
+function sendMultiplayerMatchCommand(cmdRaw, argsRaw, cmdIdRaw = "") {
+  if (!isMultiplayerMatchEnabled()) return false;
+  const ws = multiplayerMatchSocket;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  const cmd = String(cmdRaw || "").trim();
+  if (!cmd) return false;
+  const cmdId = String(cmdIdRaw || "").trim() || makeMultiplayerCommandId();
+  const args = Array.isArray(argsRaw) ? argsRaw : [];
+  try {
+    ws.send(JSON.stringify({
+      type: "match_cmd",
+      cmdId,
+      cmd,
+      args
+    }));
+    rememberMultiplayerCommandId(cmdId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function applyIncomingMultiplayerCommand(cmdRaw, argsRaw, cmdIdRaw = "") {
+  const cmd = String(cmdRaw || "").trim();
+  const cmdId = String(cmdIdRaw || "").trim();
+  if (!cmd) return;
+  if (cmdId && hasSeenMultiplayerCommandId(cmdId)) return;
+  const methodName = MULTIPLAYER_CMD_TO_METHOD[cmd];
+  if (!methodName) return;
+  const original = multiplayerWorldSyncOriginals.get(methodName);
+  if (typeof original !== "function") return;
+  if (cmdId) rememberMultiplayerCommandId(cmdId);
+  multiplayerWorldSyncApplyingRemote = true;
+  try {
+    const args = Array.isArray(argsRaw) ? argsRaw : [];
+    original(...args);
+  } catch (err) {
+    console.warn(`[Multiplayer] Failed to apply remote command '${cmd}'.`, err);
+  } finally {
+    multiplayerWorldSyncApplyingRemote = false;
+  }
+  refreshAllUI();
+}
+
+function installMultiplayerWorldSync(worldRef) {
+  if (!isMultiplayerMatchEnabled()) return;
+  if (!worldRef || typeof worldRef !== "object") return;
+  if (multiplayerWorldSyncWorld === worldRef) return;
+  resetMultiplayerWorldSync();
+  multiplayerWorldSyncWorld = worldRef;
+  for (const [methodName, rule] of Object.entries(MULTIPLAYER_WORLD_METHOD_SYNC)) {
+    const fn = worldRef[methodName];
+    if (typeof fn !== "function") continue;
+    const original = fn.bind(worldRef);
+    multiplayerWorldSyncOriginals.set(methodName, original);
+    worldRef[methodName] = (...args) => {
+      if (methodName === "cancelAllOperations") multiplayerCancelAllDepth++;
+      let out = null;
+      try {
+        out = original(...args);
+      } finally {
+        if (methodName === "cancelAllOperations" && multiplayerCancelAllDepth > 0) {
+          multiplayerCancelAllDepth--;
+        }
+      }
+      if (multiplayerWorldSyncApplyingRemote) return out;
+      const shouldSync = (typeof rule?.shouldSync === "function")
+        ? !!rule.shouldSync(args)
+        : true;
+      if (methodName === "cancelOperation" && multiplayerCancelAllDepth > 0) return out;
+      if (!shouldSync) return out;
+      const sent = sendMultiplayerMatchCommand(rule.cmd, args);
+      if (!sent && isMultiplayerMatchEnabled()) {
+        console.warn(`[Multiplayer] Command relay unavailable for '${rule.cmd}'.`);
+      }
+      return out;
+    };
+  }
+}
+
+function connectMultiplayerMatchSocket() {
+  if (!isMultiplayerMatchEnabled()) return;
+  if (typeof WebSocket === "undefined") return;
+  const url = buildMultiplayerWsUrl(activeMultiplayerSession.code, activeMultiplayerSession.sessionId);
+  if (!url) return;
+
+  clearMultiplayerMatchSocket();
+
+  const ws = new WebSocket(url);
+  multiplayerMatchSocket = ws;
+
+  ws.onopen = () => {
+    multiplayerMatchConnected = true;
+    try {
+      const t = Date.now();
+      ws.send(JSON.stringify({ type: "ping", clientTime: t }));
+    } catch {
+      // Ignore ping send errors.
+    }
+    if (hud && typeof hud.setOpMessage === "function") {
+      hud.setOpMessage("Multiplayer link connected.");
+    }
+  };
+
+  ws.onmessage = (ev) => {
+    let msg = null;
+    try {
+      msg = JSON.parse(String(ev?.data || ""));
+    } catch {
+      return;
+    }
+    const type = String(msg?.type || "");
+    if (type === "pong") {
+      const ct = Number(msg?.clientTime) || 0;
+      const st = Number(msg?.serverTime) || 0;
+      if (ct > 0) {
+        multiplayerMatchRttMs = Math.max(0, Date.now() - ct);
+      }
+      if (st > 0 && ct > 0) {
+        const now = Date.now();
+        multiplayerServerOffsetMs = (st + (multiplayerMatchRttMs * 0.5)) - now;
+      }
+      return;
+    }
+    if (type === "hello") {
+      const serverTime = Number(msg?.serverTime) || 0;
+      if (serverTime > 0) {
+        multiplayerServerOffsetMs = serverTime - Date.now();
+      }
+      const start = msg?.lobby?.start;
+      const startedAt = Math.max(0, Number(start?.startedAt) || 0);
+      if (startedAt > 0 && activeMultiplayerSession) {
+        activeMultiplayerSession.startedAt = startedAt;
+      }
+      const history = Array.isArray(msg?.match?.commands) ? msg.match.commands : [];
+      for (let i = 0; i < history.length; i++) {
+        const row = history[i];
+        applyIncomingMultiplayerCommand(row?.cmd, row?.args, row?.cmdId);
+      }
+      return;
+    }
+    if (type === "lobby_update" || type === "started") {
+      const serverTime = Number(msg?.serverTime) || 0;
+      if (serverTime > 0) {
+        multiplayerServerOffsetMs = serverTime - Date.now();
+      }
+      const start = msg?.lobby?.start;
+      const startedAt = Math.max(0, Number(start?.startedAt) || 0);
+      if (startedAt > 0 && activeMultiplayerSession) {
+        activeMultiplayerSession.startedAt = startedAt;
+      }
+      return;
+    }
+    if (type === "match_cmd") {
+      applyIncomingMultiplayerCommand(msg?.cmd, msg?.args, msg?.cmdId);
+    }
+  };
+
+  ws.onclose = () => {
+    multiplayerMatchConnected = false;
+    multiplayerMatchSocket = null;
+    if (!isMultiplayerMatchEnabled()) return;
+    if (multiplayerMatchReconnectTimer) clearTimeout(multiplayerMatchReconnectTimer);
+    multiplayerMatchReconnectTimer = setTimeout(() => {
+      multiplayerMatchReconnectTimer = 0;
+      connectMultiplayerMatchSocket();
+    }, 1500);
+  };
+
+  ws.onerror = () => {
+    // onclose handles reconnect path.
+  };
 }
 
 function getPlayer() {
@@ -1355,8 +1770,15 @@ async function initAndBoot(matchConfig = null, opts = null) {
   const forcedSeed = Number.isFinite(forcedSeedRaw) && forcedSeedRaw > 0
     ? (Math.floor(forcedSeedRaw) >>> 0)
     : 0;
+  const forcedWorldSpec = sanitizeMultiplayerWorldSpec(options.worldSpec);
+  const strictWorldSpec = !!options.strictWorldSpec;
   const cfg = sanitizeMatchConfig(matchConfig || activeMatchConfig);
-  const rawMode = String(cfg.mapMode ?? WORLDGEN?.mapMode ?? MAP_MODE.GENERATOR).toLowerCase();
+  const rawMode = String(
+    forcedWorldSpec?.mapMode ??
+    cfg.mapMode ??
+    WORLDGEN?.mapMode ??
+    MAP_MODE.GENERATOR
+  ).toLowerCase();
   const configuredMode = rawMode === MAP_MODE.WORLD_MAP ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
 
   if (onLoading) onLoading(12, "Loading map data...");
@@ -1365,14 +1787,29 @@ async function initAndBoot(matchConfig = null, opts = null) {
       earthData = await loadEarthData();
       console.info("[Earth] Earth assets loaded.");
     } catch (err) {
+      if (strictWorldSpec || forcedWorldSpec) {
+        throw new Error("World map assets failed to load for this multiplayer match.");
+      }
       console.error("[Earth] Failed to load Earth assets, falling back to procedural map.", err);
     }
   }
   if (onLoading) onLoading(44, "Preparing world...");
 
-  activeMapMode = (configuredMode === MAP_MODE.WORLD_MAP && earthData) ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
+  activeMapMode = (forcedWorldSpec)
+    ? configuredMode
+    : ((configuredMode === MAP_MODE.WORLD_MAP && earthData) ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR);
 
-  const worldSize = computeWorldSize(activeMapMode, cfg);
+  const worldSize = forcedWorldSpec
+    ? {
+        width: forcedWorldSpec.width,
+        height: forcedWorldSpec.height,
+        aiCount: forcedWorldSpec.aiCount,
+        totalTiles: forcedWorldSpec.width * forcedWorldSpec.height,
+        requestedTiles: forcedWorldSpec.width * forcedWorldSpec.height,
+        maxTiles: forcedWorldSpec.width * forcedWorldSpec.height,
+        sizePreset: "locked"
+      }
+    : computeWorldSize(activeMapMode, cfg);
   const worldW = worldSize.width;
   const worldH = worldSize.height;
 
@@ -1414,6 +1851,16 @@ async function startGameFromMainMenu(payload = null) {
   const playerName = resolvePlayerDisplayName(p.playerName || "");
   const seedRaw = Number(p.seed);
   const seedOverride = Number.isFinite(seedRaw) && seedRaw > 0 ? (Math.floor(seedRaw) >>> 0) : 0;
+  const worldSpecOverride = sanitizeMultiplayerWorldSpec(p.worldSpec);
+  const multiplayerSession = normalizeMultiplayerSession(p.multiplayer);
+  if (multiplayerSession && !multiplayerSession.worldSpec && worldSpecOverride) {
+    multiplayerSession.worldSpec = worldSpecOverride;
+  }
+  if (!multiplayerSession) {
+    setActiveMultiplayerSession(null);
+  } else {
+    setActiveMultiplayerSession(multiplayerSession);
+  }
   activeMatchConfig = sanitizeMatchConfig(matchConfigInput || activeMatchConfig);
   saveMatchConfig(activeMatchConfig);
   bootInProgress = true;
@@ -1430,6 +1877,8 @@ async function startGameFromMainMenu(payload = null) {
     await initAndBoot(activeMatchConfig, {
       playerName,
       seed: seedOverride,
+      worldSpec: worldSpecOverride || multiplayerSession?.worldSpec || null,
+      strictWorldSpec: !!multiplayerSession,
       onLoading: (pct, label) => {
         if (mainMenuLoadingController) {
           mainMenuLoadingController.setProgress(pct, label);
@@ -1725,7 +2174,8 @@ function createMainMenuController(options = null) {
       start: (src.start && typeof src.start === "object")
         ? {
             seed: Number(src.start.seed) || 0,
-            startedAt: Number(src.start.startedAt) || 0
+            startedAt: Number(src.start.startedAt) || 0,
+            worldSpec: sanitizeMultiplayerWorldSpec(src.start.worldSpec)
           }
         : null
     };
@@ -1807,7 +2257,7 @@ function createMainMenuController(options = null) {
     }
   };
 
-  const startLobbyOnServer = async (codeRaw, sessionIdRaw, matchConfig) => {
+  const startLobbyOnServer = async (codeRaw, sessionIdRaw, matchConfig, worldSpec = null) => {
     const code = String(codeRaw || "").trim().toUpperCase();
     const sessionId = String(sessionIdRaw || "").trim();
     const codeEnc = encodeURIComponent(code);
@@ -1816,7 +2266,7 @@ function createMainMenuController(options = null) {
       try {
         return await multiplayerFetch(`/api/lobbies/${codeEnc}/start`, {
           method: "POST",
-          body: { sessionId, matchConfig }
+          body: { sessionId, matchConfig, worldSpec }
         });
       } catch (err) {
         if ((Number(err?.status) || 0) === 404) multiplayerApiMode = "auto";
@@ -1827,7 +2277,7 @@ function createMainMenuController(options = null) {
     try {
       const payload = await multiplayerFetch("/api/lobbies/start", {
         method: "POST",
-        body: { code, sessionId, matchConfig }
+        body: { code, sessionId, matchConfig, worldSpec }
       });
       multiplayerApiMode = "modern";
       return payload;
@@ -1836,7 +2286,7 @@ function createMainMenuController(options = null) {
       multiplayerApiMode = "legacy";
       return await multiplayerFetch(`/api/lobbies/${codeEnc}/start`, {
         method: "POST",
-        body: { sessionId, matchConfig }
+        body: { sessionId, matchConfig, worldSpec }
       });
     }
   };
@@ -1892,18 +2342,7 @@ function createMainMenuController(options = null) {
     }
   };
 
-  const lobbyWsUrl = (codeRaw, sessionIdRaw) => {
-    const code = String(codeRaw || "").trim().toUpperCase();
-    const sessionId = String(sessionIdRaw || "").trim();
-    if (!code || !sessionId || !hasMultiplayerApi()) return "";
-    const u = new URL(MULTIPLAYER_API_BASE);
-    u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
-    u.pathname = "/ws";
-    u.search = "";
-    u.searchParams.set("code", code);
-    u.searchParams.set("sessionId", sessionId);
-    return u.toString();
-  };
+  const lobbyWsUrl = (codeRaw, sessionIdRaw) => buildMultiplayerWsUrl(codeRaw, sessionIdRaw);
 
   const closeLobbySocket = () => {
     if (lobbyPingTimer) {
@@ -2028,13 +2467,22 @@ function createMainMenuController(options = null) {
     if (!onStartRequested) return;
     const startSeed = Number(lobby?.start?.seed) || 0;
     const matchCfg = sanitizeMatchConfig(lobby?.matchConfig || activeMatchConfig);
+    const startWorldSpec = sanitizeMultiplayerWorldSpec(lobby?.start?.worldSpec);
     multiplayerAutoStartTriggered = true;
     stopLobbyPolling();
     closeLobbySocket();
     onStartRequested({
       matchConfig: matchCfg,
       playerName: resolvePlayerDisplayName(viewerName || playerNameFromInput()),
-      seed: startSeed
+      seed: startSeed,
+      worldSpec: startWorldSpec,
+      multiplayer: {
+        code: String(lobby.code || "").trim().toUpperCase(),
+        sessionId: String(multiplayerSessionId || "").trim(),
+        startedAt: Number(lobby?.start?.startedAt) || 0,
+        isHost: !!lobby.host,
+        worldSpec: startWorldSpec
+      }
     });
   };
 
@@ -3005,7 +3453,8 @@ function createMainMenuController(options = null) {
           startBtn.disabled = true;
           const prevLabel = startBtn.textContent || "Start";
           startBtn.textContent = "Starting...";
-          await startLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId, cfg);
+          const worldSpec = buildMultiplayerWorldSpec(cfg);
+          await startLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId, cfg, worldSpec);
           await pullLobbyState();
           setStatus("Lobby started. Launching match...");
           startBtn.textContent = prevLabel;
@@ -3470,6 +3919,13 @@ function boot() {
   wasSpawnPhaseActive = isSpawnPhaseActiveNow();
   if (isSpawnPhaseActiveNow()) {
     hud.setOpMessage("Pick your spawn location. The match starts when the top bar fills.");
+  }
+  if (isMultiplayerMatchEnabled()) {
+    installMultiplayerWorldSync(world);
+    connectMultiplayerMatchSocket();
+    if (!isSpawnPhaseActiveNow()) {
+      hud.setOpMessage("Multiplayer match linked.");
+    }
   }
   matchSummary.onSpectate(() => {
     matchSummary.hide();
@@ -4044,9 +4500,20 @@ function boot() {
     const perfFrameStart = performance.now();
     const frameDt = Math.min(0.05, (now - last) / 1000);
     last = now;
+    const multiplayerClockActive = isMultiplayerMatchEnabled() && (Number(activeMultiplayerSession?.startedAt) || 0) > 0;
     if (!paused) {
-      // Cap backlog so one slow frame does not create a long catch-up spiral.
-      simTickAcc = Math.min(MAX_ACCUMULATED_TICKS, simTickAcc + (frameDt / FIXED));
+      if (multiplayerClockActive) {
+        const startedAt = Math.max(0, Number(activeMultiplayerSession?.startedAt) || 0);
+        const syncedNowMs = Date.now() + (Number(multiplayerServerOffsetMs) || 0);
+        const elapsedS = Math.max(0, (syncedNowMs - startedAt) / 1000);
+        const targetTicks = Math.max(0, Math.floor(elapsedS / FIXED));
+        const currentTicks = Math.max(0, Math.floor((Number(world.time) || 0) / FIXED));
+        const behindTicks = Math.max(0, targetTicks - currentTicks);
+        simTickAcc = Math.min(MAX_ACCUMULATED_TICKS * 6, behindTicks);
+      } else {
+        // Cap backlog so one slow frame does not create a long catch-up spiral.
+        simTickAcc = Math.min(MAX_ACCUMULATED_TICKS, simTickAcc + (frameDt / FIXED));
+      }
     } else {
       simTickAcc = 0;
     }
@@ -4057,17 +4524,18 @@ function boot() {
 
     let simSteps = 0;
     let simMs = 0;
+    const maxSimStepsThisFrame = multiplayerClockActive ? (MAX_SIM_STEPS_PER_FRAME * 3) : MAX_SIM_STEPS_PER_FRAME;
     if (!paused) {
       const simStart = performance.now();
-      while (simTickAcc >= 1 && simSteps < MAX_SIM_STEPS_PER_FRAME) {
+      while (simTickAcc >= 1 && simSteps < maxSimStepsThisFrame) {
         world.tick();
         simTickAcc -= 1;
         simSteps++;
       }
       simMs = performance.now() - simStart;
-      if (simSteps >= MAX_SIM_STEPS_PER_FRAME && simTickAcc >= 1) {
-        // Keep at most one pending tick under sustained load to avoid visible time-jumps.
-        simTickAcc = Math.min(simTickAcc, 1);
+      if (simSteps >= maxSimStepsThisFrame && simTickAcc >= 1) {
+        // Keep a short pending queue under sustained load to avoid visible time-jumps.
+        simTickAcc = Math.min(simTickAcc, multiplayerClockActive ? 2 : 1);
       }
     }
     applyLiveMatchModifiers(frameDt);

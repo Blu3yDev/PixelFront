@@ -50,6 +50,21 @@ function sanitizeMatchConfig(raw) {
   }
 }
 
+function sanitizeWorldSpec(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const width = Number(raw.width);
+  const height = Number(raw.height);
+  const aiCount = Number(raw.aiCount);
+  const mapModeRaw = String(raw.mapMode || "").toLowerCase();
+  const mapMode = mapModeRaw === "world_map" ? "world_map" : "generator";
+  if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(aiCount)) return null;
+  const w = Math.max(200, Math.min(4096, Math.floor(width)));
+  const h = Math.max(200, Math.min(4096, Math.floor(height)));
+  const ai = Math.max(1, Math.min(128, Math.floor(aiCount)));
+  if (w <= 0 || h <= 0 || ai <= 0) return null;
+  return { width: w, height: h, aiCount: ai, mapMode };
+}
+
 function sanitizeName(raw) {
   const text = String(raw || "").trim().replace(/\s+/g, " ");
   if (!text) return "Player";
@@ -112,7 +127,8 @@ function lobbyView(lobby) {
     start: lobby.started
       ? {
           seed: lobby.matchSeed || 0,
-          startedAt: lobby.startedAt || 0
+          startedAt: lobby.startedAt || 0,
+          worldSpec: lobby.matchWorldSpec || null
         }
       : null,
     players: lobby.players.map((p) => ({
@@ -122,6 +138,34 @@ function lobbyView(lobby) {
       isHost: p.sessionId === lobby.hostSessionId
     }))
   };
+}
+
+function lobbyMatchView(lobby, includeCommands = false) {
+  const view = {
+    seq: Number(lobby?.matchSeq) || 0
+  };
+  if (includeCommands) {
+    const rows = Array.isArray(lobby?.matchHistory) ? lobby.matchHistory : [];
+    view.commands = rows.slice(-256);
+  }
+  return view;
+}
+
+function sanitizeMatchCommand(raw) {
+  const src = (raw && typeof raw === "object") ? raw : {};
+  const cmd = String(src.cmd || "").trim();
+  if (!/^[a-z0-9_]{2,40}$/i.test(cmd)) return null;
+  const cmdIdRaw = String(src.cmdId || "").trim();
+  const cmdId = cmdIdRaw ? cmdIdRaw.slice(0, 120) : randomUUID();
+  let args = [];
+  if (Array.isArray(src.args)) {
+    try {
+      args = JSON.parse(JSON.stringify(src.args));
+    } catch {
+      args = [];
+    }
+  }
+  return { cmdId, cmd, args };
 }
 
 function getLobbyByCodeOrThrow(codeRaw) {
@@ -209,8 +253,42 @@ function attachSocketToLobby(lobby, sessionId, ws) {
         type: "hello",
         serverTime: nowMs(),
         viewer: lobbyViewer(lobby, player),
-        lobby: lobbyView(lobby)
+        lobby: lobbyView(lobby),
+        match: lobbyMatchView(lobby, true)
       });
+      return;
+    }
+    if (type === "match_cmd") {
+      const player = lobby.players.find((p) => p.sessionId === sessionId);
+      if (!player || !lobby.started) return;
+      const cmd = sanitizeMatchCommand(msg);
+      if (!cmd) return;
+      lobby.matchSeq = ((lobby.matchSeq | 0) + 1) | 0;
+      touchLobby(lobby);
+      const packet = {
+        type: "match_cmd",
+        serverTime: nowMs(),
+        code: lobby.code,
+        seq: lobby.matchSeq,
+        fromSessionId: sessionId,
+        cmdId: cmd.cmdId,
+        cmd: cmd.cmd,
+        args: cmd.args
+      };
+      lobby.matchHistory.push({
+        seq: packet.seq,
+        serverTime: packet.serverTime,
+        fromSessionId: packet.fromSessionId,
+        cmdId: packet.cmdId,
+        cmd: packet.cmd,
+        args: packet.args
+      });
+      if (lobby.matchHistory.length > 4096) {
+        lobby.matchHistory.splice(0, lobby.matchHistory.length - 4096);
+      }
+      for (const peer of lobby.sockets.values()) {
+        wsSend(peer, packet);
+      }
     }
   });
 
@@ -270,6 +348,9 @@ const server = createServer(async (req, res) => {
         started: false,
         startedAt: 0,
         matchSeed: 0,
+        matchWorldSpec: null,
+        matchSeq: 0,
+        matchHistory: [],
         hostSessionId: sessionId,
         players: [{ sessionId, name: playerName, joinedAt: t }],
         matchConfig,
@@ -334,6 +415,8 @@ const server = createServer(async (req, res) => {
       if (!lobby.started) {
         const cfg = sanitizeMatchConfig(body?.matchConfig);
         if (cfg) lobby.matchConfig = cfg;
+        const worldSpec = sanitizeWorldSpec(body?.worldSpec);
+        if (worldSpec) lobby.matchWorldSpec = worldSpec;
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
         lobby.started = true;
@@ -393,6 +476,8 @@ const server = createServer(async (req, res) => {
       if (!lobby.started) {
         const cfg = sanitizeMatchConfig(body?.matchConfig);
         if (cfg) lobby.matchConfig = cfg;
+        const worldSpec = sanitizeWorldSpec(body?.worldSpec);
+        if (worldSpec) lobby.matchWorldSpec = worldSpec;
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
         lobby.started = true;
@@ -489,7 +574,8 @@ wss.on("connection", (ws, req, ctx) => {
     type: "hello",
     serverTime: nowMs(),
     viewer: lobbyViewer(lobby, player),
-    lobby: lobbyView(lobby)
+    lobby: lobbyView(lobby),
+    match: lobbyMatchView(lobby, true)
   });
 });
 

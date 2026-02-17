@@ -60,13 +60,14 @@ function writeJson(res, statusCode, data) {
 }
 
 function setCors(req, res) {
-  const reqOrigin = String(req?.headers?.origin || "").trim();
+  const normalizeOrigin = (value) => String(value || "").trim().replace(/\/+$/, "");
+  const reqOrigin = normalizeOrigin(req?.headers?.origin || "");
   if (CORS_ORIGIN === "*") {
     res.setHeader("Access-Control-Allow-Origin", "*");
   } else {
     const allowList = CORS_ORIGIN
       .split(",")
-      .map((v) => v.trim())
+      .map((v) => normalizeOrigin(v))
       .filter(Boolean);
     const allowed = reqOrigin && allowList.includes(reqOrigin);
     res.setHeader("Access-Control-Allow-Origin", allowed ? reqOrigin : allowList[0] || "null");
@@ -226,6 +227,68 @@ const server = createServer(async (req, res) => {
         sessionId,
         lobby: lobbyView(lobby)
       });
+      return;
+    }
+
+    if (req.method === "POST" && path === "/api/lobbies/state") {
+      const body = await parseJsonBody(req);
+      const code = String(body?.code || "").trim().toUpperCase();
+      const sessionId = String(body?.sessionId || "").trim();
+      const lobby = getLobbyByCodeOrThrow(code);
+      const viewer = getPlayerFromLobbyOrThrow(lobby, sessionId);
+      touchLobby(lobby);
+      writeJson(res, 200, {
+        ok: true,
+        viewer: {
+          sessionId: viewer.sessionId,
+          isHost: viewer.sessionId === lobby.hostSessionId,
+          name: viewer.name
+        },
+        lobby: lobbyView(lobby)
+      });
+      return;
+    }
+
+    if (req.method === "POST" && path === "/api/lobbies/start") {
+      const body = await parseJsonBody(req);
+      const code = String(body?.code || "").trim().toUpperCase();
+      const lobby = getLobbyByCodeOrThrow(code);
+      const player = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
+      if (player.sessionId !== lobby.hostSessionId) throw new Error("Only host can start.");
+      if (lobby.started) {
+        writeJson(res, 200, { ok: true, lobby: lobbyView(lobby) });
+        return;
+      }
+      const cfg = sanitizeMatchConfig(body?.matchConfig);
+      if (cfg) lobby.matchConfig = cfg;
+      lobby.matchSeed = toSeed(body?.seed);
+      lobby.startedAt = nowMs();
+      lobby.started = true;
+      touchLobby(lobby);
+      writeJson(res, 200, { ok: true, lobby: lobbyView(lobby) });
+      return;
+    }
+
+    if (req.method === "POST" && path === "/api/lobbies/leave") {
+      const body = await parseJsonBody(req);
+      const code = String(body?.code || "").trim().toUpperCase();
+      const lobby = getLobbyByCodeOrThrow(code);
+      const player = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
+
+      lobby.players = lobby.players.filter((p) => p.sessionId !== player.sessionId);
+      playerIndex.delete(player.sessionId);
+
+      if (!lobby.players.length) {
+        lobbiesByCode.delete(lobby.code);
+        writeJson(res, 200, { ok: true, removed: true });
+        return;
+      }
+
+      if (player.sessionId === lobby.hostSessionId) {
+        lobby.hostSessionId = lobby.players[0].sessionId;
+      }
+      touchLobby(lobby);
+      writeJson(res, 200, { ok: true, lobby: lobbyView(lobby) });
       return;
     }
 

@@ -148,23 +148,36 @@ if (MULTIPLAYER_API_BASE) {
   console.warn("[Multiplayer] API base is not configured.");
 }
 
+function normalizeApiBase(rawValue) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return "";
+  let out = raw;
+  if (!/^https?:\/\//i.test(out)) out = `https://${out}`;
+  try {
+    const u = new URL(out);
+    return `${u.protocol}//${u.host}${u.pathname}`.replace(/\/+$/, "");
+  } catch {
+    return out.replace(/\/+$/, "");
+  }
+}
+
 function resolveMultiplayerApiBase() {
   const fromEnv = String(import.meta?.env?.VITE_MULTIPLAYER_API_URL || "").trim();
-  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+  if (fromEnv) return normalizeApiBase(fromEnv);
 
   try {
     const fromStorage = String(globalThis?.localStorage?.getItem?.("pf-multiplayer-api-url") || "").trim();
-    if (fromStorage) return fromStorage.replace(/\/+$/, "");
+    if (fromStorage) return normalizeApiBase(fromStorage);
   } catch {
     // Ignore localStorage read errors.
   }
 
   const fromRuntimeGlobal = String(globalThis?.__PF_MULTIPLAYER_API_URL || "").trim();
-  if (fromRuntimeGlobal) return fromRuntimeGlobal.replace(/\/+$/, "");
+  if (fromRuntimeGlobal) return normalizeApiBase(fromRuntimeGlobal);
 
   // Fallback for mistaken env key usage in deployments.
   const fromLegacyEnv = String(import.meta?.env?.DOMAIN || "").trim();
-  if (fromLegacyEnv) return fromLegacyEnv.replace(/\/+$/, "");
+  if (fromLegacyEnv) return normalizeApiBase(fromLegacyEnv);
 
   return "";
 }
@@ -1671,8 +1684,21 @@ function createMainMenuController(options = null) {
   let joinLobbyInFlight = false;
   let startLobbyInFlight = false;
   let multiplayerAutoStartTriggered = false;
+  let multiplayerHealthOk = false;
+  let multiplayerHealthCheckInFlight = false;
+  let multiplayerApiMode = "auto"; // auto | modern | legacy
 
   const hasMultiplayerApi = () => !!MULTIPLAYER_API_BASE;
+
+  const shouldUseLegacyRoutes = (err) => {
+    const status = Number(err?.status) || 0;
+    if (status === 404) return true;
+    if (status === 400) {
+      const msg = String(err?.message || "").toLowerCase();
+      if (msg.includes("invalid lobby code")) return true;
+    }
+    return false;
+  };
 
   const toLobbyModel = (rawLobby, opts = null) => {
     const src = (rawLobby && typeof rawLobby === "object") ? rawLobby : {};
@@ -1740,9 +1766,126 @@ function createMainMenuController(options = null) {
     }
     if (!res.ok) {
       const msg = String(payload?.error || payload?.message || `Request failed (${res.status}).`);
-      throw new Error(msg);
+      const err = new Error(msg);
+      err.status = res.status;
+      err.payload = payload;
+      throw err;
     }
     return payload || {};
+  };
+
+  const fetchLobbyStatePayload = async (codeRaw, sessionIdRaw) => {
+    const code = String(codeRaw || "").trim().toUpperCase();
+    const sessionId = String(sessionIdRaw || "").trim();
+    const codeEnc = encodeURIComponent(code);
+    const sidEnc = encodeURIComponent(sessionId);
+
+    if (multiplayerApiMode === "legacy") {
+      try {
+        return await multiplayerFetch(`/api/lobbies/${codeEnc}?sessionId=${sidEnc}`);
+      } catch (err) {
+        if ((Number(err?.status) || 0) === 404) multiplayerApiMode = "auto";
+        else throw err;
+      }
+    }
+
+    try {
+      const payload = await multiplayerFetch("/api/lobbies/state", {
+        method: "POST",
+        body: { code, sessionId }
+      });
+      multiplayerApiMode = "modern";
+      return payload;
+    } catch (err) {
+      if (!shouldUseLegacyRoutes(err)) throw err;
+      multiplayerApiMode = "legacy";
+      return await multiplayerFetch(`/api/lobbies/${codeEnc}?sessionId=${sidEnc}`);
+    }
+  };
+
+  const startLobbyOnServer = async (codeRaw, sessionIdRaw, matchConfig) => {
+    const code = String(codeRaw || "").trim().toUpperCase();
+    const sessionId = String(sessionIdRaw || "").trim();
+    const codeEnc = encodeURIComponent(code);
+
+    if (multiplayerApiMode === "legacy") {
+      try {
+        return await multiplayerFetch(`/api/lobbies/${codeEnc}/start`, {
+          method: "POST",
+          body: { sessionId, matchConfig }
+        });
+      } catch (err) {
+        if ((Number(err?.status) || 0) === 404) multiplayerApiMode = "auto";
+        else throw err;
+      }
+    }
+
+    try {
+      const payload = await multiplayerFetch("/api/lobbies/start", {
+        method: "POST",
+        body: { code, sessionId, matchConfig }
+      });
+      multiplayerApiMode = "modern";
+      return payload;
+    } catch (err) {
+      if (!shouldUseLegacyRoutes(err)) throw err;
+      multiplayerApiMode = "legacy";
+      return await multiplayerFetch(`/api/lobbies/${codeEnc}/start`, {
+        method: "POST",
+        body: { sessionId, matchConfig }
+      });
+    }
+  };
+
+  const leaveLobbyOnServer = async (codeRaw, sessionIdRaw) => {
+    const code = String(codeRaw || "").trim().toUpperCase();
+    const sessionId = String(sessionIdRaw || "").trim();
+    const codeEnc = encodeURIComponent(code);
+
+    if (multiplayerApiMode === "legacy") {
+      try {
+        return await multiplayerFetch(`/api/lobbies/${codeEnc}/leave`, {
+          method: "POST",
+          body: { sessionId }
+        });
+      } catch (err) {
+        if ((Number(err?.status) || 0) === 404) multiplayerApiMode = "auto";
+        else throw err;
+      }
+    }
+
+    try {
+      const payload = await multiplayerFetch("/api/lobbies/leave", {
+        method: "POST",
+        body: { code, sessionId }
+      });
+      multiplayerApiMode = "modern";
+      return payload;
+    } catch (err) {
+      if (!shouldUseLegacyRoutes(err)) throw err;
+      multiplayerApiMode = "legacy";
+      return await multiplayerFetch(`/api/lobbies/${codeEnc}/leave`, {
+        method: "POST",
+        body: { sessionId }
+      });
+    }
+  };
+
+  const ensureMultiplayerReady = async () => {
+    if (!hasMultiplayerApi()) return { ok: false, reason: "Set VITE_MULTIPLAYER_API_URL to enable Create/Join." };
+    if (multiplayerHealthOk) return { ok: true };
+    if (multiplayerHealthCheckInFlight) return { ok: true };
+    multiplayerHealthCheckInFlight = true;
+    try {
+      await multiplayerFetch("/health");
+      multiplayerHealthOk = true;
+      return { ok: true };
+    } catch (err) {
+      multiplayerHealthOk = false;
+      return { ok: false, reason: err?.message || "Failed to reach multiplayer server." };
+    } finally {
+      multiplayerHealthCheckInFlight = false;
+    }
   };
 
   const pullLobbyState = async ({ quiet = false } = {}) => {
@@ -1750,9 +1893,7 @@ function createMainMenuController(options = null) {
     if (multiplayerPollInFlight) return;
     multiplayerPollInFlight = true;
     try {
-      const code = encodeURIComponent(activeMultiplayerLobby.code);
-      const sid = encodeURIComponent(multiplayerSessionId);
-      const payload = await multiplayerFetch(`/api/lobbies/${code}?sessionId=${sid}`);
+      const payload = await fetchLobbyStatePayload(activeMultiplayerLobby.code, multiplayerSessionId);
       activeMultiplayerLobby = toLobbyModel(payload?.lobby, {
         host: !!payload?.viewer?.isHost
       });
@@ -2723,8 +2864,14 @@ function createMainMenuController(options = null) {
     });
   }
   if (multiplayerBtn) {
-    multiplayerBtn.addEventListener("click", () => {
+    multiplayerBtn.addEventListener("click", async () => {
       setView("multiplayer");
+      const ready = await ensureMultiplayerReady();
+      if (!ready.ok) {
+        setStatus(ready.reason);
+      } else {
+        setStatus("Multiplayer service reachable. Create or join a private lobby.");
+      }
     });
   }
   if (settingsBtn) {
@@ -2753,14 +2900,7 @@ function createMainMenuController(options = null) {
           startBtn.disabled = true;
           const prevLabel = startBtn.textContent || "Start";
           startBtn.textContent = "Starting...";
-          const code = encodeURIComponent(activeMultiplayerLobby.code);
-          await multiplayerFetch(`/api/lobbies/${code}/start`, {
-            method: "POST",
-            body: {
-              sessionId: multiplayerSessionId,
-              matchConfig: cfg
-            }
-          });
+          await startLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId, cfg);
           await pullLobbyState();
           setStatus("Lobby started. Launching match...");
           startBtn.textContent = prevLabel;
@@ -2806,8 +2946,9 @@ function createMainMenuController(options = null) {
   if (createLobbyBtn) {
     createLobbyBtn.addEventListener("click", async () => {
       if (createLobbyInFlight) return;
-      if (!hasMultiplayerApi()) {
-        setStatus("Set VITE_MULTIPLAYER_API_URL to enable Create/Join.");
+      const ready = await ensureMultiplayerReady();
+      if (!ready.ok) {
+        setStatus(ready.reason);
         return;
       }
       commitNameInput();
@@ -2864,8 +3005,9 @@ function createMainMenuController(options = null) {
   if (joinCodeBtn) {
     joinCodeBtn.addEventListener("click", async () => {
       if (joinLobbyInFlight) return;
-      if (!hasMultiplayerApi()) {
-        setStatus("Set VITE_MULTIPLAYER_API_URL to enable Create/Join.");
+      const ready = await ensureMultiplayerReady();
+      if (!ready.ok) {
+        setStatus(ready.reason);
         return;
       }
       const code = String(joinCodeInput?.value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -2923,11 +3065,7 @@ function createMainMenuController(options = null) {
     mpLobbyBackBtn.addEventListener("click", async () => {
       try {
         if (hasMultiplayerApi() && activeMultiplayerLobby?.code && multiplayerSessionId) {
-          const code = encodeURIComponent(activeMultiplayerLobby.code);
-          await multiplayerFetch(`/api/lobbies/${code}/leave`, {
-            method: "POST",
-            body: { sessionId: multiplayerSessionId }
-          });
+          await leaveLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId);
         }
       } catch {
         // Best-effort leave.

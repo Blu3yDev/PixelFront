@@ -40,6 +40,7 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 - `CORS_ORIGIN` (default `*`)
 - `MAX_PLAYERS_PER_LOBBY` (default `8`)
 - `LOBBY_IDLE_TTL_MS` (default `21600000`, 6 hours)
+- `MATCH_CMD_LEAD_MS` (default `90`, server-side command scheduling buffer)
 
 ## Render deploy
 

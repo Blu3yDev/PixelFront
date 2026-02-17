@@ -6,6 +6,7 @@ const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
 const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 60 * 6));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
+const MATCH_CMD_LEAD_MS = Math.max(10, Number(process.env.MATCH_CMD_LEAD_MS || 90));
 
 const lobbiesByCode = new Map(); // code -> lobby
 const playerIndex = new Map(); // sessionId -> code
@@ -56,7 +57,11 @@ function sanitizeWorldSpec(raw) {
   const height = Number(raw.height);
   const aiCount = Number(raw.aiCount);
   const mapModeRaw = String(raw.mapMode || "").toLowerCase();
-  const mapMode = mapModeRaw === "world_map" ? "world_map" : "generator";
+  const mapMode = (
+    mapModeRaw === "earth" ||
+    mapModeRaw === "world_map" ||
+    mapModeRaw === "world-map"
+  ) ? "earth" : "generator";
   if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(aiCount)) return null;
   const w = Math.max(200, Math.min(4096, Math.floor(width)));
   const h = Math.max(200, Math.min(4096, Math.floor(height)));
@@ -270,21 +275,27 @@ function attachSocketToLobby(lobby, sessionId, ws) {
         serverTime: nowMs(),
         code: lobby.code,
         seq: lobby.matchSeq,
+        applyAtMs: 0,
         fromSessionId: sessionId,
         cmdId: cmd.cmdId,
         cmd: cmd.cmd,
         args: cmd.args
       };
+      const baseApplyAt = packet.serverTime + MATCH_CMD_LEAD_MS;
+      const prevApplyAt = Math.max(0, Number(lobby.lastMatchApplyAtMs) || 0);
+      packet.applyAtMs = Math.max(baseApplyAt, prevApplyAt + 1);
+      lobby.lastMatchApplyAtMs = packet.applyAtMs;
       lobby.matchHistory.push({
         seq: packet.seq,
         serverTime: packet.serverTime,
+        applyAtMs: packet.applyAtMs,
         fromSessionId: packet.fromSessionId,
         cmdId: packet.cmdId,
         cmd: packet.cmd,
         args: packet.args
       });
-      if (lobby.matchHistory.length > 4096) {
-        lobby.matchHistory.splice(0, lobby.matchHistory.length - 4096);
+      if (lobby.matchHistory.length > 20000) {
+        lobby.matchHistory.splice(0, lobby.matchHistory.length - 20000);
       }
       for (const peer of lobby.sockets.values()) {
         wsSend(peer, packet);
@@ -351,6 +362,7 @@ const server = createServer(async (req, res) => {
         matchWorldSpec: null,
         matchSeq: 0,
         matchHistory: [],
+        lastMatchApplyAtMs: 0,
         hostSessionId: sessionId,
         players: [{ sessionId, name: playerName, joinedAt: t }],
         matchConfig,
@@ -419,6 +431,7 @@ const server = createServer(async (req, res) => {
         if (worldSpec) lobby.matchWorldSpec = worldSpec;
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
+        lobby.lastMatchApplyAtMs = lobby.startedAt;
         lobby.started = true;
         touchLobby(lobby);
         broadcastLobby(lobby, "started");
@@ -480,6 +493,7 @@ const server = createServer(async (req, res) => {
         if (worldSpec) lobby.matchWorldSpec = worldSpec;
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
+        lobby.lastMatchApplyAtMs = lobby.startedAt;
         lobby.started = true;
         touchLobby(lobby);
         broadcastLobby(lobby, "started");

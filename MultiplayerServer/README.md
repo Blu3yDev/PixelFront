@@ -24,9 +24,11 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 - `POST /api/lobbies/state`
 - `POST /api/lobbies/start`
 - `POST /api/lobbies/leave`
-- `GET /api/lobbies/:code?sessionId=...`
-- `POST /api/lobbies/:code/start`
-- `POST /api/lobbies/:code/leave`
+- `WS /ws?code=...&sessionId=...` (realtime lobby updates)
+- Legacy compatibility:
+  - `GET /api/lobbies/:code?sessionId=...`
+  - `POST /api/lobbies/:code/start`
+  - `POST /api/lobbies/:code/leave`
 
 ## Environment variables
 

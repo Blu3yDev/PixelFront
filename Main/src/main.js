@@ -1687,6 +1687,10 @@ function createMainMenuController(options = null) {
   let multiplayerHealthOk = false;
   let multiplayerHealthCheckInFlight = false;
   let multiplayerApiMode = "auto"; // auto | modern | legacy
+  let lobbySocket = null;
+  let lobbySocketConnected = false;
+  let lobbyPingTimer = 0;
+  let lobbyRttMs = 0;
 
   const hasMultiplayerApi = () => !!MULTIPLAYER_API_BASE;
 
@@ -1888,8 +1892,104 @@ function createMainMenuController(options = null) {
     }
   };
 
+  const lobbyWsUrl = (codeRaw, sessionIdRaw) => {
+    const code = String(codeRaw || "").trim().toUpperCase();
+    const sessionId = String(sessionIdRaw || "").trim();
+    if (!code || !sessionId || !hasMultiplayerApi()) return "";
+    const u = new URL(MULTIPLAYER_API_BASE);
+    u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
+    u.pathname = "/ws";
+    u.search = "";
+    u.searchParams.set("code", code);
+    u.searchParams.set("sessionId", sessionId);
+    return u.toString();
+  };
+
+  const closeLobbySocket = () => {
+    if (lobbyPingTimer) {
+      clearInterval(lobbyPingTimer);
+      lobbyPingTimer = 0;
+    }
+    lobbySocketConnected = false;
+    if (!lobbySocket) return;
+    try {
+      lobbySocket.onopen = null;
+      lobbySocket.onclose = null;
+      lobbySocket.onerror = null;
+      lobbySocket.onmessage = null;
+      lobbySocket.close();
+    } catch {
+      // Ignore close errors.
+    }
+    lobbySocket = null;
+  };
+
+  const connectLobbySocket = () => {
+    if (!activeMultiplayerLobby?.code || !multiplayerSessionId || !hasMultiplayerApi()) return;
+    if (typeof WebSocket === "undefined") return;
+    const url = lobbyWsUrl(activeMultiplayerLobby.code, multiplayerSessionId);
+    if (!url) return;
+
+    closeLobbySocket();
+    const ws = new WebSocket(url);
+    lobbySocket = ws;
+
+    ws.onopen = () => {
+      lobbySocketConnected = true;
+      if (lobbyPingTimer) clearInterval(lobbyPingTimer);
+      lobbyPingTimer = setInterval(() => {
+        if (!lobbySocket || lobbySocket.readyState !== WebSocket.OPEN) return;
+        try {
+          lobbySocket.send(JSON.stringify({ type: "ping", clientTime: Date.now() }));
+        } catch {
+          // Ignore ping send errors.
+        }
+      }, 3500);
+      setStatus("Realtime lobby connected.");
+    };
+
+    ws.onmessage = (ev) => {
+      let msg = null;
+      try {
+        msg = JSON.parse(String(ev?.data || ""));
+      } catch {
+        return;
+      }
+      const type = String(msg?.type || "");
+      if (type === "pong") {
+        const ct = Number(msg?.clientTime) || 0;
+        if (ct > 0) lobbyRttMs = Math.max(0, Date.now() - ct);
+        return;
+      }
+      if (type !== "hello" && type !== "lobby_update" && type !== "started") return;
+
+      const viewer = (msg?.viewer && typeof msg.viewer === "object") ? msg.viewer : null;
+      activeMultiplayerLobby = toLobbyModel(msg?.lobby, {
+        host: !!viewer?.isHost
+      });
+      multiplayerLastKnownStart = !!activeMultiplayerLobby?.started;
+      refreshMultiplayerUI();
+      if (activeMultiplayerLobby?.started) {
+        launchStartedLobbyMatch(activeMultiplayerLobby, String(viewer?.name || "") || playerNameFromInput());
+      }
+    };
+
+    ws.onclose = () => {
+      lobbySocketConnected = false;
+      if (lobbyPingTimer) {
+        clearInterval(lobbyPingTimer);
+        lobbyPingTimer = 0;
+      }
+    };
+
+    ws.onerror = () => {
+      // Polling remains as fallback.
+    };
+  };
+
   const pullLobbyState = async ({ quiet = false } = {}) => {
     if (!activeMultiplayerLobby?.code || !multiplayerSessionId || !hasMultiplayerApi()) return;
+    if (quiet && lobbySocketConnected) return;
     if (multiplayerPollInFlight) return;
     multiplayerPollInFlight = true;
     try {
@@ -1930,6 +2030,7 @@ function createMainMenuController(options = null) {
     const matchCfg = sanitizeMatchConfig(lobby?.matchConfig || activeMatchConfig);
     multiplayerAutoStartTriggered = true;
     stopLobbyPolling();
+    closeLobbySocket();
     onStartRequested({
       matchConfig: matchCfg,
       playerName: resolvePlayerDisplayName(viewerName || playerNameFromInput()),
@@ -1968,9 +2069,13 @@ function createMainMenuController(options = null) {
       if (lobby?.started) {
         mpLobbyStatus.textContent = "Lobby started. Launching match...";
       } else {
-        mpLobbyStatus.textContent = lobby?.host
+        const net = lobbySocketConnected
+          ? `Realtime connected${lobbyRttMs > 0 ? ` (${Math.round(lobbyRttMs)}ms)` : ""}`
+          : "Realtime reconnecting...";
+        const flow = lobby?.host
           ? "Host controls are in Create mode."
           : "Waiting for host to start.";
+        mpLobbyStatus.textContent = `${flow} ${net}`;
       }
     }
     if (startBtn) {
@@ -2940,6 +3045,7 @@ function createMainMenuController(options = null) {
   if (multiplayerBackBtn) {
     multiplayerBackBtn.addEventListener("click", () => {
       stopLobbyPolling();
+      closeLobbySocket();
       setView("home");
     });
   }
@@ -2976,8 +3082,10 @@ function createMainMenuController(options = null) {
         activeMultiplayerLobby = toLobbyModel(payload.lobby, { host: true });
         multiplayerLastKnownStart = !!activeMultiplayerLobby.started;
         multiplayerAutoStartTriggered = false;
+        lobbyRttMs = 0;
         refreshMultiplayerUI();
         startLobbyPolling();
+        connectLobbySocket();
         setView("play");
         setStatus("Lobby created. Share the code and press Start when ready.");
         createLobbyBtn.textContent = prevLabel;
@@ -3038,8 +3146,10 @@ function createMainMenuController(options = null) {
         multiplayerLastKnownStart = !!activeMultiplayerLobby.started;
         multiplayerAutoStartTriggered = false;
         playMenuMode = "singleplayer";
+        lobbyRttMs = 0;
         refreshMultiplayerUI();
         startLobbyPolling();
+        connectLobbySocket();
         setView("mplobby");
         setStatus(`Joined lobby ${code}.`);
         joinCodeBtn.textContent = prevLabel;
@@ -3071,6 +3181,7 @@ function createMainMenuController(options = null) {
         // Best-effort leave.
       }
       stopLobbyPolling();
+      closeLobbySocket();
       multiplayerSessionId = "";
       activeMultiplayerLobby = null;
       multiplayerAutoStartTriggered = false;
@@ -3315,6 +3426,7 @@ function createMainMenuController(options = null) {
   return {
     hide: () => {
       stopLobbyPolling();
+      closeLobbySocket();
       root.hidden = true;
       root.setAttribute("aria-hidden", "true");
     },

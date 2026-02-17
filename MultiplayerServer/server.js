@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { WebSocketServer, WebSocket } from "ws";
 
 const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
@@ -13,6 +14,10 @@ function nowMs() {
   return Date.now();
 }
 
+function normalizeOrigin(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
 function randCode(length = 6) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let out = "";
@@ -23,68 +28,11 @@ function randCode(length = 6) {
 }
 
 function makeUniqueCode() {
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 16; i++) {
     const code = randCode(6);
     if (!lobbiesByCode.has(code)) return code;
   }
   throw new Error("Failed to generate unique lobby code.");
-}
-
-function parseJsonBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on("data", (chunk) => {
-      chunks.push(chunk);
-      if (Buffer.concat(chunks).length > 1_000_000) {
-        reject(new Error("Payload too large."));
-      }
-    });
-    req.on("end", () => {
-      if (!chunks.length) return resolve({});
-      try {
-        const raw = Buffer.concat(chunks).toString("utf8");
-        resolve(JSON.parse(raw));
-      } catch {
-        reject(new Error("Invalid JSON body."));
-      }
-    });
-    req.on("error", reject);
-  });
-}
-
-function writeJson(res, statusCode, data) {
-  res.statusCode = statusCode;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store");
-  res.end(JSON.stringify(data));
-}
-
-function setCors(req, res) {
-  const normalizeOrigin = (value) => String(value || "").trim().replace(/\/+$/, "");
-  const reqOrigin = normalizeOrigin(req?.headers?.origin || "");
-  if (CORS_ORIGIN === "*") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  } else {
-    const allowList = CORS_ORIGIN
-      .split(",")
-      .map((v) => normalizeOrigin(v))
-      .filter(Boolean);
-    const allowed = reqOrigin && allowList.includes(reqOrigin);
-    res.setHeader("Access-Control-Allow-Origin", allowed ? reqOrigin : allowList[0] || "null");
-    res.setHeader("Vary", "Origin");
-  }
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
-
-function sanitizeName(raw) {
-  const text = String(raw || "").trim().replace(/\s+/g, " ");
-  if (!text) return "Player";
-  return text.slice(0, 20);
-}
-
-function touchLobby(lobby) {
-  lobby.updatedAt = nowMs();
 }
 
 function toSeed(raw) {
@@ -100,6 +48,58 @@ function sanitizeMatchConfig(raw) {
   } catch {
     return null;
   }
+}
+
+function sanitizeName(raw) {
+  const text = String(raw || "").trim().replace(/\s+/g, " ");
+  if (!text) return "Player";
+  return text.slice(0, 20);
+}
+
+function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (chunk) => {
+      chunks.push(chunk);
+      if (Buffer.concat(chunks).length > 1_000_000) {
+        reject(new Error("Payload too large."));
+      }
+    });
+    req.on("end", () => {
+      if (!chunks.length) return resolve({});
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch {
+        reject(new Error("Invalid JSON body."));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function setCors(req, res) {
+  const reqOrigin = normalizeOrigin(req?.headers?.origin || "");
+  if (CORS_ORIGIN === "*") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  } else {
+    const allowList = CORS_ORIGIN.split(",").map(normalizeOrigin).filter(Boolean);
+    const allow = reqOrigin && allowList.includes(reqOrigin) ? reqOrigin : (allowList[0] || "null");
+    res.setHeader("Access-Control-Allow-Origin", allow);
+    res.setHeader("Vary", "Origin");
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function writeJson(res, statusCode, data) {
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.end(JSON.stringify(data));
+}
+
+function touchLobby(lobby) {
+  lobby.updatedAt = nowMs();
 }
 
 function lobbyView(lobby) {
@@ -140,6 +140,86 @@ function getPlayerFromLobbyOrThrow(lobby, sessionIdRaw) {
   return player;
 }
 
+function wsSend(ws, payload) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify(payload));
+}
+
+function lobbyViewer(lobby, player) {
+  return {
+    sessionId: player.sessionId,
+    isHost: player.sessionId === lobby.hostSessionId,
+    name: player.name
+  };
+}
+
+function broadcastLobby(lobby, type = "lobby_update") {
+  const payload = {
+    type,
+    serverTime: nowMs(),
+    lobby: lobbyView(lobby)
+  };
+  for (const ws of lobby.sockets.values()) {
+    wsSend(ws, payload);
+  }
+}
+
+function closeLobbySocket(lobby, sessionId) {
+  const ws = lobby?.sockets?.get(sessionId);
+  if (!ws) return;
+  try {
+    ws.close();
+  } catch {
+    // Ignore close errors.
+  }
+  lobby.sockets.delete(sessionId);
+}
+
+function attachSocketToLobby(lobby, sessionId, ws) {
+  closeLobbySocket(lobby, sessionId);
+  lobby.sockets.set(sessionId, ws);
+  ws.sessionId = sessionId;
+  ws.code = lobby.code;
+  ws.isAlive = true;
+
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
+
+  ws.on("message", (raw) => {
+    let msg = null;
+    try {
+      msg = JSON.parse(String(raw || ""));
+    } catch {
+      return;
+    }
+    const type = String(msg?.type || "");
+    if (type === "ping") {
+      wsSend(ws, {
+        type: "pong",
+        clientTime: Number(msg?.clientTime) || 0,
+        serverTime: nowMs()
+      });
+      return;
+    }
+    if (type === "lobby_state_request") {
+      const player = lobby.players.find((p) => p.sessionId === sessionId);
+      if (!player) return;
+      wsSend(ws, {
+        type: "hello",
+        serverTime: nowMs(),
+        viewer: lobbyViewer(lobby, player),
+        lobby: lobbyView(lobby)
+      });
+    }
+  });
+
+  ws.on("close", () => {
+    const cur = lobby.sockets.get(sessionId);
+    if (cur === ws) lobby.sockets.delete(sessionId);
+  });
+}
+
 function cleanupIdleLobbies() {
   const cutoff = nowMs() - Math.max(60_000, LOBBY_IDLE_TTL_MS);
   for (const [code, lobby] of lobbiesByCode) {
@@ -147,15 +227,19 @@ function cleanupIdleLobbies() {
     for (const p of lobby.players) {
       playerIndex.delete(p.sessionId);
     }
+    for (const ws of lobby.sockets.values()) {
+      try {
+        ws.close();
+      } catch {
+        // Ignore close errors.
+      }
+    }
     lobbiesByCode.delete(code);
   }
 }
 
-setInterval(cleanupIdleLobbies, 60_000).unref();
-
 const server = createServer(async (req, res) => {
   setCors(req, res);
-
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     res.end();
@@ -187,18 +271,16 @@ const server = createServer(async (req, res) => {
         startedAt: 0,
         matchSeed: 0,
         hostSessionId: sessionId,
-        players: [{
-          sessionId,
-          name: playerName,
-          joinedAt: t
-        }],
-        matchConfig
+        players: [{ sessionId, name: playerName, joinedAt: t }],
+        matchConfig,
+        sockets: new Map()
       };
       lobbiesByCode.set(code, lobby);
       playerIndex.set(sessionId, code);
       writeJson(res, 200, {
         ok: true,
         sessionId,
+        viewer: { sessionId, isHost: true, name: playerName },
         lobby: lobbyView(lobby)
       });
       return;
@@ -215,16 +297,14 @@ const server = createServer(async (req, res) => {
       }
       const sessionId = randomUUID();
       const t = nowMs();
-      lobby.players.push({
-        sessionId,
-        name: playerName,
-        joinedAt: t
-      });
+      lobby.players.push({ sessionId, name: playerName, joinedAt: t });
       touchLobby(lobby);
       playerIndex.set(sessionId, lobby.code);
+      broadcastLobby(lobby, "lobby_update");
       writeJson(res, 200, {
         ok: true,
         sessionId,
+        viewer: { sessionId, isHost: false, name: playerName },
         lobby: lobbyView(lobby)
       });
       return;
@@ -235,15 +315,11 @@ const server = createServer(async (req, res) => {
       const code = String(body?.code || "").trim().toUpperCase();
       const sessionId = String(body?.sessionId || "").trim();
       const lobby = getLobbyByCodeOrThrow(code);
-      const viewer = getPlayerFromLobbyOrThrow(lobby, sessionId);
+      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, sessionId);
       touchLobby(lobby);
       writeJson(res, 200, {
         ok: true,
-        viewer: {
-          sessionId: viewer.sessionId,
-          isHost: viewer.sessionId === lobby.hostSessionId,
-          name: viewer.name
-        },
+        viewer: lobbyViewer(lobby, viewerPlayer),
         lobby: lobbyView(lobby)
       });
       return;
@@ -253,18 +329,17 @@ const server = createServer(async (req, res) => {
       const body = await parseJsonBody(req);
       const code = String(body?.code || "").trim().toUpperCase();
       const lobby = getLobbyByCodeOrThrow(code);
-      const player = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
-      if (player.sessionId !== lobby.hostSessionId) throw new Error("Only host can start.");
-      if (lobby.started) {
-        writeJson(res, 200, { ok: true, lobby: lobbyView(lobby) });
-        return;
+      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
+      if (viewerPlayer.sessionId !== lobby.hostSessionId) throw new Error("Only host can start.");
+      if (!lobby.started) {
+        const cfg = sanitizeMatchConfig(body?.matchConfig);
+        if (cfg) lobby.matchConfig = cfg;
+        lobby.matchSeed = toSeed(body?.seed);
+        lobby.startedAt = nowMs();
+        lobby.started = true;
+        touchLobby(lobby);
+        broadcastLobby(lobby, "started");
       }
-      const cfg = sanitizeMatchConfig(body?.matchConfig);
-      if (cfg) lobby.matchConfig = cfg;
-      lobby.matchSeed = toSeed(body?.seed);
-      lobby.startedAt = nowMs();
-      lobby.started = true;
-      touchLobby(lobby);
       writeJson(res, 200, { ok: true, lobby: lobbyView(lobby) });
       return;
     }
@@ -273,10 +348,11 @@ const server = createServer(async (req, res) => {
       const body = await parseJsonBody(req);
       const code = String(body?.code || "").trim().toUpperCase();
       const lobby = getLobbyByCodeOrThrow(code);
-      const player = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
+      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
 
-      lobby.players = lobby.players.filter((p) => p.sessionId !== player.sessionId);
-      playerIndex.delete(player.sessionId);
+      lobby.players = lobby.players.filter((p) => p.sessionId !== viewerPlayer.sessionId);
+      playerIndex.delete(viewerPlayer.sessionId);
+      closeLobbySocket(lobby, viewerPlayer.sessionId);
 
       if (!lobby.players.length) {
         lobbiesByCode.delete(lobby.code);
@@ -284,27 +360,25 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      if (player.sessionId === lobby.hostSessionId) {
+      if (viewerPlayer.sessionId === lobby.hostSessionId) {
         lobby.hostSessionId = lobby.players[0].sessionId;
       }
       touchLobby(lobby);
+      broadcastLobby(lobby, "lobby_update");
       writeJson(res, 200, { ok: true, lobby: lobbyView(lobby) });
       return;
     }
 
+    // Legacy compatibility routes
     if (req.method === "GET" && path.startsWith("/api/lobbies/")) {
       const code = decodeURIComponent(path.slice("/api/lobbies/".length));
       const sessionId = String(u.searchParams.get("sessionId") || "").trim();
       const lobby = getLobbyByCodeOrThrow(code);
-      const viewer = getPlayerFromLobbyOrThrow(lobby, sessionId);
+      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, sessionId);
       touchLobby(lobby);
       writeJson(res, 200, {
         ok: true,
-        viewer: {
-          sessionId: viewer.sessionId,
-          isHost: viewer.sessionId === lobby.hostSessionId,
-          name: viewer.name
-        },
+        viewer: lobbyViewer(lobby, viewerPlayer),
         lobby: lobbyView(lobby)
       });
       return;
@@ -314,18 +388,17 @@ const server = createServer(async (req, res) => {
       const code = decodeURIComponent(path.slice("/api/lobbies/".length, -"/start".length));
       const body = await parseJsonBody(req);
       const lobby = getLobbyByCodeOrThrow(code);
-      const player = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
-      if (player.sessionId !== lobby.hostSessionId) throw new Error("Only host can start.");
-      if (lobby.started) {
-        writeJson(res, 200, { ok: true, lobby: lobbyView(lobby) });
-        return;
+      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
+      if (viewerPlayer.sessionId !== lobby.hostSessionId) throw new Error("Only host can start.");
+      if (!lobby.started) {
+        const cfg = sanitizeMatchConfig(body?.matchConfig);
+        if (cfg) lobby.matchConfig = cfg;
+        lobby.matchSeed = toSeed(body?.seed);
+        lobby.startedAt = nowMs();
+        lobby.started = true;
+        touchLobby(lobby);
+        broadcastLobby(lobby, "started");
       }
-      const cfg = sanitizeMatchConfig(body?.matchConfig);
-      if (cfg) lobby.matchConfig = cfg;
-      lobby.matchSeed = toSeed(body?.seed);
-      lobby.startedAt = nowMs();
-      lobby.started = true;
-      touchLobby(lobby);
       writeJson(res, 200, { ok: true, lobby: lobbyView(lobby) });
       return;
     }
@@ -334,21 +407,20 @@ const server = createServer(async (req, res) => {
       const code = decodeURIComponent(path.slice("/api/lobbies/".length, -"/leave".length));
       const body = await parseJsonBody(req);
       const lobby = getLobbyByCodeOrThrow(code);
-      const player = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
-
-      lobby.players = lobby.players.filter((p) => p.sessionId !== player.sessionId);
-      playerIndex.delete(player.sessionId);
-
+      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
+      lobby.players = lobby.players.filter((p) => p.sessionId !== viewerPlayer.sessionId);
+      playerIndex.delete(viewerPlayer.sessionId);
+      closeLobbySocket(lobby, viewerPlayer.sessionId);
       if (!lobby.players.length) {
         lobbiesByCode.delete(lobby.code);
         writeJson(res, 200, { ok: true, removed: true });
         return;
       }
-
-      if (player.sessionId === lobby.hostSessionId) {
+      if (viewerPlayer.sessionId === lobby.hostSessionId) {
         lobby.hostSessionId = lobby.players[0].sessionId;
       }
       touchLobby(lobby);
+      broadcastLobby(lobby, "lobby_update");
       writeJson(res, 200, { ok: true, lobby: lobbyView(lobby) });
       return;
     }
@@ -359,7 +431,84 @@ const server = createServer(async (req, res) => {
   }
 });
 
+const wss = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+  try {
+    const u = new URL(req.url || "/", "http://localhost");
+    if (u.pathname !== "/ws") {
+      socket.destroy();
+      return;
+    }
+    const sessionId = String(u.searchParams.get("sessionId") || "").trim();
+    const requestedCode = String(u.searchParams.get("code") || "").trim().toUpperCase();
+    if (!sessionId) {
+      socket.destroy();
+      return;
+    }
+    const indexCode = String(playerIndex.get(sessionId) || "").trim().toUpperCase();
+    const code = requestedCode || indexCode;
+    if (!code) {
+      socket.destroy();
+      return;
+    }
+    const lobby = lobbiesByCode.get(code);
+    if (!lobby) {
+      socket.destroy();
+      return;
+    }
+    const player = lobby.players.find((p) => p.sessionId === sessionId);
+    if (!player) {
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req, { code, sessionId });
+    });
+  } catch {
+    socket.destroy();
+  }
+});
+
+wss.on("connection", (ws, req, ctx) => {
+  const sessionId = String(ctx?.sessionId || "").trim();
+  const code = String(ctx?.code || "").trim().toUpperCase();
+  const lobby = lobbiesByCode.get(code);
+  if (!lobby) {
+    try { ws.close(); } catch {}
+    return;
+  }
+  const player = lobby.players.find((p) => p.sessionId === sessionId);
+  if (!player) {
+    try { ws.close(); } catch {}
+    return;
+  }
+  attachSocketToLobby(lobby, sessionId, ws);
+  wsSend(ws, {
+    type: "hello",
+    serverTime: nowMs(),
+    viewer: lobbyViewer(lobby, player),
+    lobby: lobbyView(lobby)
+  });
+});
+
+setInterval(() => {
+  for (const lobby of lobbiesByCode.values()) {
+    for (const [sid, ws] of lobby.sockets.entries()) {
+      if (ws.isAlive === false) {
+        try { ws.terminate(); } catch {}
+        lobby.sockets.delete(sid);
+        continue;
+      }
+      ws.isAlive = false;
+      try { ws.ping(); } catch {}
+    }
+  }
+}, 30000).unref();
+
+setInterval(cleanupIdleLobbies, 60000).unref();
+
 server.listen(PORT, () => {
-  // eslint-disable-next-line no-console
   console.log(`[multiplayer-server] listening on :${PORT}`);
 });

@@ -59,8 +59,19 @@ function writeJson(res, statusCode, data) {
   res.end(JSON.stringify(data));
 }
 
-function setCors(res) {
-  res.setHeader("Access-Control-Allow-Origin", CORS_ORIGIN);
+function setCors(req, res) {
+  const reqOrigin = String(req?.headers?.origin || "").trim();
+  if (CORS_ORIGIN === "*") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  } else {
+    const allowList = CORS_ORIGIN
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean);
+    const allowed = reqOrigin && allowList.includes(reqOrigin);
+    res.setHeader("Access-Control-Allow-Origin", allowed ? reqOrigin : allowList[0] || "null");
+    res.setHeader("Vary", "Origin");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
@@ -75,6 +86,21 @@ function touchLobby(lobby) {
   lobby.updatedAt = nowMs();
 }
 
+function toSeed(raw) {
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return (Math.floor(n) >>> 0) || 1;
+  return ((Math.random() * 0xFFFFFFFF) >>> 0) || 1;
+}
+
+function sanitizeMatchConfig(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  try {
+    return JSON.parse(JSON.stringify(raw));
+  } catch {
+    return null;
+  }
+}
+
 function lobbyView(lobby) {
   return {
     code: lobby.code,
@@ -82,6 +108,12 @@ function lobbyView(lobby) {
     createdAt: lobby.createdAt,
     updatedAt: lobby.updatedAt,
     matchConfig: lobby.matchConfig || null,
+    start: lobby.started
+      ? {
+          seed: lobby.matchSeed || 0,
+          startedAt: lobby.startedAt || 0
+        }
+      : null,
     players: lobby.players.map((p) => ({
       sessionId: p.sessionId,
       name: p.name,
@@ -121,7 +153,7 @@ function cleanupIdleLobbies() {
 setInterval(cleanupIdleLobbies, 60_000).unref();
 
 const server = createServer(async (req, res) => {
-  setCors(res);
+  setCors(req, res);
 
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
@@ -141,7 +173,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && path === "/api/lobbies/create") {
       const body = await parseJsonBody(req);
       const playerName = sanitizeName(body?.playerName);
-      const matchConfig = (body?.matchConfig && typeof body.matchConfig === "object") ? body.matchConfig : null;
+      const matchConfig = sanitizeMatchConfig(body?.matchConfig);
 
       const code = makeUniqueCode();
       const sessionId = randomUUID();
@@ -151,6 +183,8 @@ const server = createServer(async (req, res) => {
         createdAt: t,
         updatedAt: t,
         started: false,
+        startedAt: 0,
+        matchSeed: 0,
         hostSessionId: sessionId,
         players: [{
           sessionId,
@@ -205,7 +239,8 @@ const server = createServer(async (req, res) => {
         ok: true,
         viewer: {
           sessionId: viewer.sessionId,
-          isHost: viewer.sessionId === lobby.hostSessionId
+          isHost: viewer.sessionId === lobby.hostSessionId,
+          name: viewer.name
         },
         lobby: lobbyView(lobby)
       });
@@ -218,6 +253,14 @@ const server = createServer(async (req, res) => {
       const lobby = getLobbyByCodeOrThrow(code);
       const player = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
       if (player.sessionId !== lobby.hostSessionId) throw new Error("Only host can start.");
+      if (lobby.started) {
+        writeJson(res, 200, { ok: true, lobby: lobbyView(lobby) });
+        return;
+      }
+      const cfg = sanitizeMatchConfig(body?.matchConfig);
+      if (cfg) lobby.matchConfig = cfg;
+      lobby.matchSeed = toSeed(body?.seed);
+      lobby.startedAt = nowMs();
       lobby.started = true;
       touchLobby(lobby);
       writeJson(res, 200, { ok: true, lobby: lobbyView(lobby) });

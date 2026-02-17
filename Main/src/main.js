@@ -142,11 +142,31 @@ const DEFAULT_MATCH_CONFIG = Object.freeze({
 let activeMatchConfig = loadMatchConfig();
 let liveModifierAccS = 0;
 const MULTIPLAYER_API_BASE = resolveMultiplayerApiBase();
+if (MULTIPLAYER_API_BASE) {
+  console.info(`[Multiplayer] API base: ${MULTIPLAYER_API_BASE}`);
+} else {
+  console.warn("[Multiplayer] API base is not configured.");
+}
 
 function resolveMultiplayerApiBase() {
-  const raw = String(import.meta?.env?.VITE_MULTIPLAYER_API_URL || "").trim();
-  if (!raw) return "";
-  return raw.replace(/\/+$/, "");
+  const fromEnv = String(import.meta?.env?.VITE_MULTIPLAYER_API_URL || "").trim();
+  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+
+  try {
+    const fromStorage = String(globalThis?.localStorage?.getItem?.("pf-multiplayer-api-url") || "").trim();
+    if (fromStorage) return fromStorage.replace(/\/+$/, "");
+  } catch {
+    // Ignore localStorage read errors.
+  }
+
+  const fromRuntimeGlobal = String(globalThis?.__PF_MULTIPLAYER_API_URL || "").trim();
+  if (fromRuntimeGlobal) return fromRuntimeGlobal.replace(/\/+$/, "");
+
+  // Fallback for mistaken env key usage in deployments.
+  const fromLegacyEnv = String(import.meta?.env?.DOMAIN || "").trim();
+  if (fromLegacyEnv) return fromLegacyEnv.replace(/\/+$/, "");
+
+  return "";
 }
 
 function computeWorldSize(mapMode = MAP_MODE.GENERATOR, matchConfig = null) {
@@ -1318,6 +1338,10 @@ async function initAndBoot(matchConfig = null, opts = null) {
   const options = (opts && typeof opts === "object") ? opts : {};
   const onLoading = (typeof options.onLoading === "function") ? options.onLoading : null;
   const playerName = resolvePlayerDisplayName(options.playerName || loadMainMenuPlayerName());
+  const forcedSeedRaw = Number(options.seed);
+  const forcedSeed = Number.isFinite(forcedSeedRaw) && forcedSeedRaw > 0
+    ? (Math.floor(forcedSeedRaw) >>> 0)
+    : 0;
   const cfg = sanitizeMatchConfig(matchConfig || activeMatchConfig);
   const rawMode = String(cfg.mapMode ?? WORLDGEN?.mapMode ?? MAP_MODE.GENERATOR).toLowerCase();
   const configuredMode = rawMode === MAP_MODE.WORLD_MAP ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
@@ -1340,7 +1364,7 @@ async function initAndBoot(matchConfig = null, opts = null) {
   const worldH = worldSize.height;
 
   if (onLoading) onLoading(62, "Generating nations...");
-  seed = (Date.now() >>> 0) || 1;
+  seed = forcedSeed || ((Date.now() >>> 0) || 1);
   world = new World(worldW, worldH, seed, { mapMode: activeMapMode, earthData, aiCount: worldSize.aiCount });
   applyMatchWorldRestrictions(world, cfg);
   applyMatchStartModifiers(world, cfg, playerName);
@@ -1375,6 +1399,8 @@ async function startGameFromMainMenu(payload = null) {
   const p = (payload && typeof payload === "object") ? payload : {};
   const matchConfigInput = p.matchConfig || payload || null;
   const playerName = resolvePlayerDisplayName(p.playerName || "");
+  const seedRaw = Number(p.seed);
+  const seedOverride = Number.isFinite(seedRaw) && seedRaw > 0 ? (Math.floor(seedRaw) >>> 0) : 0;
   activeMatchConfig = sanitizeMatchConfig(matchConfigInput || activeMatchConfig);
   saveMatchConfig(activeMatchConfig);
   bootInProgress = true;
@@ -1390,6 +1416,7 @@ async function startGameFromMainMenu(payload = null) {
   try {
     await initAndBoot(activeMatchConfig, {
       playerName,
+      seed: seedOverride,
       onLoading: (pct, label) => {
         if (mainMenuLoadingController) {
           mainMenuLoadingController.setProgress(pct, label);
@@ -1482,6 +1509,8 @@ function createMainMenuController(options = null) {
   const mpLobbyCode = document.getElementById("mmMpLobbyCode");
   const mpLobbyPlayers = document.getElementById("mmMpLobbyPlayers");
   const mpLobbyStatus = document.getElementById("mmMpLobbyStatus");
+  const multiplayerStatus = document.getElementById("mmMultiplayerStatus");
+  const joinStatus = document.getElementById("mmJoinStatus");
   const playLobbyCard = document.getElementById("mmPlayLobbyCard");
   const playLobbyCode = document.getElementById("mmPlayLobbyCode");
   const playLobbyPlayers = document.getElementById("mmPlayLobbyPlayers");
@@ -1638,6 +1667,10 @@ function createMainMenuController(options = null) {
   let multiplayerPollTimer = 0;
   let multiplayerPollInFlight = false;
   let multiplayerLastKnownStart = false;
+  let createLobbyInFlight = false;
+  let joinLobbyInFlight = false;
+  let startLobbyInFlight = false;
+  let multiplayerAutoStartTriggered = false;
 
   const hasMultiplayerApi = () => !!MULTIPLAYER_API_BASE;
 
@@ -1657,7 +1690,14 @@ function createMainMenuController(options = null) {
       code: String(src.code || ""),
       host: !!opts?.host,
       players,
-      started: !!src.started
+      started: !!src.started,
+      matchConfig: (src.matchConfig && typeof src.matchConfig === "object") ? sanitizeMatchConfig(src.matchConfig) : null,
+      start: (src.start && typeof src.start === "object")
+        ? {
+            seed: Number(src.start.seed) || 0,
+            startedAt: Number(src.start.startedAt) || 0
+          }
+        : null
     };
   };
 
@@ -1671,14 +1711,27 @@ function createMainMenuController(options = null) {
 
   const multiplayerFetch = async (path, init = null) => {
     const url = `${MULTIPLAYER_API_BASE}${path}`;
-    const res = await fetch(url, {
-      method: init?.method || "GET",
-      headers: {
-        "Content-Type": "application/json",
-        ...(init?.headers || {})
-      },
-      body: init?.body ? JSON.stringify(init.body) : undefined
-    });
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 15000);
+    let res = null;
+    try {
+      res = await fetch(url, {
+        method: init?.method || "GET",
+        headers: {
+          "Content-Type": "application/json",
+          ...(init?.headers || {})
+        },
+        body: init?.body ? JSON.stringify(init.body) : undefined,
+        signal: ctrl.signal
+      });
+    } catch (err) {
+      const msg = String(err?.name || "").toLowerCase() === "aborterror"
+        ? "Multiplayer request timed out. Render may be waking up; try again in 10-20 seconds."
+        : "Failed to reach multiplayer server. Check API URL and CORS settings.";
+      throw new Error(msg);
+    } finally {
+      clearTimeout(t);
+    }
     let payload = null;
     try {
       payload = await res.json();
@@ -1705,11 +1758,16 @@ function createMainMenuController(options = null) {
       });
       if (activeMultiplayerLobby.started && !multiplayerLastKnownStart && !quiet) {
         setStatus(activeMultiplayerLobby.host
-          ? "Lobby started. Match bootstrap integration is next."
-          : "Host started the lobby. Match bootstrap integration is next.");
+          ? "Lobby started. Launching match..."
+          : "Host started the lobby. Launching match...");
       }
       multiplayerLastKnownStart = !!activeMultiplayerLobby.started;
       refreshMultiplayerUI();
+      if (activeMultiplayerLobby.started) {
+        const viewer = payload?.viewer && typeof payload.viewer === "object" ? payload.viewer : null;
+        const viewerName = String(viewer?.name || "") || playerNameFromInput();
+        launchStartedLobbyMatch(activeMultiplayerLobby, viewerName);
+      }
     } catch (err) {
       if (!quiet) setStatus(err?.message || "Failed to sync lobby state.");
     } finally {
@@ -1722,6 +1780,20 @@ function createMainMenuController(options = null) {
     multiplayerPollTimer = setInterval(() => {
       void pullLobbyState({ quiet: true });
     }, 2500);
+  };
+
+  const launchStartedLobbyMatch = (lobby, viewerName) => {
+    if (!lobby || !lobby.started || multiplayerAutoStartTriggered) return;
+    if (!onStartRequested) return;
+    const startSeed = Number(lobby?.start?.seed) || 0;
+    const matchCfg = sanitizeMatchConfig(lobby?.matchConfig || activeMatchConfig);
+    multiplayerAutoStartTriggered = true;
+    stopLobbyPolling();
+    onStartRequested({
+      matchConfig: matchCfg,
+      playerName: resolvePlayerDisplayName(viewerName || playerNameFromInput()),
+      seed: startSeed
+    });
   };
 
   const renderLobbyPlayers = (listEl, players) => {
@@ -1753,7 +1825,7 @@ function createMainMenuController(options = null) {
     }
     if (mpLobbyStatus) {
       if (lobby?.started) {
-        mpLobbyStatus.textContent = "Lobby started. Match bootstrap integration is next.";
+        mpLobbyStatus.textContent = "Lobby started. Launching match...";
       } else {
         mpLobbyStatus.textContent = lobby?.host
           ? "Host controls are in Create mode."
@@ -2596,9 +2668,15 @@ function createMainMenuController(options = null) {
   };
 
   const setStatus = (text) => {
-    if (!statusText) return;
     const next = String(text || "").trim();
-    statusText.textContent = next || IDLE_STATUS_BY_VIEW[currentView] || IDLE_STATUS_BY_VIEW.home;
+    const fallback = next || IDLE_STATUS_BY_VIEW[currentView] || IDLE_STATUS_BY_VIEW.home;
+    if (statusText) statusText.textContent = fallback;
+    if (multiplayerStatus) multiplayerStatus.textContent = fallback;
+    if (joinStatus) joinStatus.textContent = fallback;
+    if (mpLobbyStatus && !activeMultiplayerLobby?.started) {
+      // Keep started-state message intact when host has already launched lobby.
+      mpLobbyStatus.textContent = fallback;
+    }
   };
 
   const syncInteractiveState = () => {
@@ -2656,6 +2734,7 @@ function createMainMenuController(options = null) {
   }
   if (startBtn) {
     startBtn.addEventListener("click", async () => {
+      if (startLobbyInFlight) return;
       commitNameInput();
       persistSettingsFromForm();
       const cfg = persistMatchConfigFromForm();
@@ -2670,15 +2749,27 @@ function createMainMenuController(options = null) {
           return;
         }
         try {
+          startLobbyInFlight = true;
+          startBtn.disabled = true;
+          const prevLabel = startBtn.textContent || "Start";
+          startBtn.textContent = "Starting...";
           const code = encodeURIComponent(activeMultiplayerLobby.code);
           await multiplayerFetch(`/api/lobbies/${code}/start`, {
             method: "POST",
-            body: { sessionId: multiplayerSessionId }
+            body: {
+              sessionId: multiplayerSessionId,
+              matchConfig: cfg
+            }
           });
           await pullLobbyState();
-          setStatus("Lobby started. Match bootstrap integration is next.");
+          setStatus("Lobby started. Launching match...");
+          startBtn.textContent = prevLabel;
         } catch (err) {
           setStatus(err?.message || "Failed to start lobby.");
+        } finally {
+          startLobbyInFlight = false;
+          startBtn.disabled = false;
+          refreshMultiplayerUI();
         }
         return;
       }
@@ -2714,6 +2805,7 @@ function createMainMenuController(options = null) {
   }
   if (createLobbyBtn) {
     createLobbyBtn.addEventListener("click", async () => {
+      if (createLobbyInFlight) return;
       if (!hasMultiplayerApi()) {
         setStatus("Set VITE_MULTIPLAYER_API_URL to enable Create/Join.");
         return;
@@ -2722,6 +2814,10 @@ function createMainMenuController(options = null) {
       persistSettingsFromForm();
       const cfg = persistMatchConfigFromForm();
       try {
+        createLobbyInFlight = true;
+        createLobbyBtn.disabled = true;
+        const prevLabel = createLobbyBtn.textContent || "Create";
+        createLobbyBtn.textContent = "Creating...";
         const payload = await multiplayerFetch("/api/lobbies/create", {
           method: "POST",
           body: {
@@ -2738,12 +2834,20 @@ function createMainMenuController(options = null) {
         playMenuMode = "multiplayer_host";
         activeMultiplayerLobby = toLobbyModel(payload.lobby, { host: true });
         multiplayerLastKnownStart = !!activeMultiplayerLobby.started;
+        multiplayerAutoStartTriggered = false;
         refreshMultiplayerUI();
         startLobbyPolling();
         setView("play");
         setStatus("Lobby created. Share the code and press Start when ready.");
+        createLobbyBtn.textContent = prevLabel;
       } catch (err) {
         setStatus(err?.message || "Failed to create lobby.");
+      } finally {
+        createLobbyInFlight = false;
+        createLobbyBtn.disabled = false;
+        if (String(createLobbyBtn.textContent || "").trim() === "Creating...") {
+          createLobbyBtn.textContent = "Create";
+        }
       }
     });
   }
@@ -2759,6 +2863,7 @@ function createMainMenuController(options = null) {
   }
   if (joinCodeBtn) {
     joinCodeBtn.addEventListener("click", async () => {
+      if (joinLobbyInFlight) return;
       if (!hasMultiplayerApi()) {
         setStatus("Set VITE_MULTIPLAYER_API_URL to enable Create/Join.");
         return;
@@ -2769,6 +2874,10 @@ function createMainMenuController(options = null) {
         return;
       }
       try {
+        joinLobbyInFlight = true;
+        joinCodeBtn.disabled = true;
+        const prevLabel = joinCodeBtn.textContent || "Join Lobby";
+        joinCodeBtn.textContent = "Joining...";
         const payload = await multiplayerFetch("/api/lobbies/join", {
           method: "POST",
           body: {
@@ -2785,13 +2894,21 @@ function createMainMenuController(options = null) {
         multiplayerSessionId = sessionId;
         activeMultiplayerLobby = toLobbyModel(payload.lobby, { host: false });
         multiplayerLastKnownStart = !!activeMultiplayerLobby.started;
+        multiplayerAutoStartTriggered = false;
         playMenuMode = "singleplayer";
         refreshMultiplayerUI();
         startLobbyPolling();
         setView("mplobby");
         setStatus(`Joined lobby ${code}.`);
+        joinCodeBtn.textContent = prevLabel;
       } catch (err) {
         setStatus(err?.message || "Failed to join lobby.");
+      } finally {
+        joinLobbyInFlight = false;
+        joinCodeBtn.disabled = false;
+        if (String(joinCodeBtn.textContent || "").trim() === "Joining...") {
+          joinCodeBtn.textContent = "Join Lobby";
+        }
       }
     });
   }
@@ -2818,6 +2935,7 @@ function createMainMenuController(options = null) {
       stopLobbyPolling();
       multiplayerSessionId = "";
       activeMultiplayerLobby = null;
+      multiplayerAutoStartTriggered = false;
       refreshMultiplayerUI();
       setView("multiplayer");
       setStatus("Left lobby.");
@@ -6902,4 +7020,3 @@ function clampInt(v, a, b) {
 }
 
 // --- END unchanged block ---
-

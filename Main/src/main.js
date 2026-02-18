@@ -2881,6 +2881,7 @@ function createMainMenuController(options = null) {
   let startLobbyInFlight = false;
   let multiplayerAutoStartTriggered = false;
   let multiplayerHealthOk = false;
+  let multiplayerHealthCheckedAtMs = 0;
   let multiplayerHealthCheckInFlight = false;
   let multiplayerApiMode = "auto"; // auto | modern | legacy
   let lobbySocket = null;
@@ -2889,6 +2890,7 @@ function createMainMenuController(options = null) {
   let lobbyRttMs = 0;
   let multiplayerViewerPlayerId = "";
   let multiplayerViewerNationId = 0;
+  const MULTIPLAYER_HEALTH_CACHE_MS = 15000;
 
   const hasMultiplayerApi = () => !!MULTIPLAYER_API_BASE;
 
@@ -2960,41 +2962,71 @@ function createMainMenuController(options = null) {
 
   const multiplayerFetch = async (path, init = null) => {
     const url = `${MULTIPLAYER_API_BASE}${path}`;
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 15000);
-    let res = null;
-    try {
-      res = await fetch(url, {
-        method: init?.method || "GET",
-        headers: {
-          "Content-Type": "application/json",
-          ...(init?.headers || {})
-        },
-        body: init?.body ? JSON.stringify(init.body) : undefined,
-        signal: ctrl.signal
-      });
-    } catch (err) {
-      const msg = String(err?.name || "").toLowerCase() === "aborterror"
-        ? "Multiplayer request timed out. Render may be waking up; try again in 10-20 seconds."
-        : "Failed to reach multiplayer server. Check API URL and CORS settings.";
-      throw new Error(msg);
-    } finally {
-      clearTimeout(t);
+    const method = String(init?.method || "GET").toUpperCase();
+    const hasBody = Object.prototype.hasOwnProperty.call(init || {}, "body") && init?.body != null;
+    const timeoutMs = Math.max(3000, Number(init?.timeoutMs) || (path === "/api/lobbies/start" ? 45000 : 15000));
+    const maxAttempts = Math.max(1, Number(init?.retries) || 2);
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+
+    let lastErr = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), timeoutMs);
+      let res = null;
+      try {
+        const headers = { ...(init?.headers || {}) };
+        if (hasBody && !Object.keys(headers).some((k) => String(k).toLowerCase() === "content-type")) {
+          // Use text/plain to avoid CORS preflight for lobby POSTs.
+          headers["Content-Type"] = "text/plain";
+        }
+
+        res = await fetch(url, {
+          method,
+          headers,
+          body: hasBody ? (typeof init.body === "string" ? init.body : JSON.stringify(init.body)) : undefined,
+          signal: ctrl.signal
+        });
+      } catch (err) {
+        clearTimeout(t);
+        lastErr = err;
+        multiplayerHealthOk = false;
+        if (attempt < maxAttempts) {
+          await sleep(450 * attempt);
+          continue;
+        }
+        const msg = String(err?.name || "").toLowerCase() === "aborterror"
+          ? "Multiplayer request timed out. Render may be waking up; try again in 10-20 seconds."
+          : "Failed to reach multiplayer server. Check API URL and CORS settings.";
+        throw new Error(msg);
+      } finally {
+        clearTimeout(t);
+      }
+
+      let payload = null;
+      try {
+        payload = await res.json();
+      } catch {
+        payload = null;
+      }
+
+      if (!res.ok) {
+        const msg = String(payload?.error || payload?.message || `Request failed (${res.status}).`);
+        const err = new Error(msg);
+        err.status = res.status;
+        err.payload = payload;
+        lastErr = err;
+        if (Number(res.status) >= 500 && attempt < maxAttempts) {
+          multiplayerHealthOk = false;
+          await sleep(450 * attempt);
+          continue;
+        }
+        throw err;
+      }
+
+      return payload || {};
     }
-    let payload = null;
-    try {
-      payload = await res.json();
-    } catch {
-      payload = null;
-    }
-    if (!res.ok) {
-      const msg = String(payload?.error || payload?.message || `Request failed (${res.status}).`);
-      const err = new Error(msg);
-      err.status = res.status;
-      err.payload = payload;
-      throw err;
-    }
-    return payload || {};
+
+    throw (lastErr || new Error("Multiplayer request failed."));
   };
 
   const fetchLobbyStatePayload = async (codeRaw, sessionIdRaw) => {
@@ -3096,15 +3128,18 @@ function createMainMenuController(options = null) {
 
   const ensureMultiplayerReady = async () => {
     if (!hasMultiplayerApi()) return { ok: false, reason: "Set VITE_MULTIPLAYER_API_URL to enable Create/Join." };
-    if (multiplayerHealthOk) return { ok: true };
+    const now = Date.now();
+    if (multiplayerHealthOk && (now - multiplayerHealthCheckedAtMs) < MULTIPLAYER_HEALTH_CACHE_MS) return { ok: true };
     if (multiplayerHealthCheckInFlight) return { ok: true };
     multiplayerHealthCheckInFlight = true;
     try {
-      await multiplayerFetch("/health");
+      await multiplayerFetch("/health", { method: "GET", timeoutMs: 10000, retries: 2 });
       multiplayerHealthOk = true;
+      multiplayerHealthCheckedAtMs = Date.now();
       return { ok: true };
     } catch (err) {
       multiplayerHealthOk = false;
+      multiplayerHealthCheckedAtMs = Date.now();
       return { ok: false, reason: err?.message || "Failed to reach multiplayer server." };
     } finally {
       multiplayerHealthCheckInFlight = false;
@@ -3273,9 +3308,9 @@ function createMainMenuController(options = null) {
       activeMultiplayerLobby = authoritativeLobby;
       refreshMultiplayerUI();
     } catch (err) {
-      multiplayerAutoStartTriggered = false;
-      setStatus(err?.message || "Failed to verify lobby state before launch.");
-      return;
+      // Best effort verification. If API is temporarily unavailable, continue
+      // launching from the already-started lobby model and rely on WS full-sync.
+      setStatus((err?.message || "Failed to verify lobby state before launch.") + " Launching with current lobby snapshot...");
     }
 
     if (!authoritativeLobby?.started) {
@@ -4276,12 +4311,39 @@ function createMainMenuController(options = null) {
           const prevLabel = startBtn.textContent || "Start";
           startBtn.textContent = "Starting...";
           const worldSpec = buildMultiplayerWorldSpec(cfg);
-          await startLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId, cfg, worldSpec);
-          await pullLobbyState();
-          setStatus("Lobby started. Launching match...");
+          const payload = await startLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId, cfg, worldSpec);
+          const viewer = (payload?.viewer && typeof payload.viewer === "object") ? payload.viewer : null;
+          if (viewer) applyViewerIdentity(viewer);
+          if (payload?.lobby) {
+            activeMultiplayerLobby = toLobbyModel(payload.lobby, {
+              host: true
+            });
+            multiplayerLastKnownStart = !!activeMultiplayerLobby?.started;
+            refreshMultiplayerUI();
+            if (activeMultiplayerLobby?.started) {
+              void launchStartedLobbyMatch(activeMultiplayerLobby, String(viewer?.name || "") || playerNameFromInput(), viewer);
+            }
+          } else {
+            await pullLobbyState();
+          }
+          setStatus("Lobby start accepted. Launching match...");
           startBtn.textContent = prevLabel;
         } catch (err) {
-          setStatus(err?.message || "Failed to start lobby.");
+          let startedFallback = false;
+          try {
+            await pullLobbyState({ quiet: true });
+            startedFallback = !!activeMultiplayerLobby?.started;
+            if (startedFallback) {
+              void launchStartedLobbyMatch(activeMultiplayerLobby, playerNameFromInput(), null);
+            }
+          } catch {
+            // Ignore fallback poll failures.
+          }
+          if (startedFallback) {
+            setStatus("Start request was unstable, but lobby started. Launching match...");
+          } else {
+            setStatus(err?.message || "Failed to start lobby.");
+          }
         } finally {
           startLobbyInFlight = false;
           startBtn.disabled = false;

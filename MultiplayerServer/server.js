@@ -429,36 +429,53 @@ function ensureRuntimeAssignments(lobby, runtime) {
 async function ensureLobbyRuntime(lobby) {
   if (!lobby || !lobby.started) return null;
   if (lobby.runtime && lobby.runtime.world) return lobby.runtime;
+  if (lobby.runtimeInitPromise) return lobby.runtimeInitPromise;
 
-  const worldSpec = resolveWorldSpecForLobby(lobby);
-  if (!worldSpec) throw new Error("Lobby world spec is missing.");
+  lobby.runtimeInitPromise = (async () => {
+    const worldSpec = resolveWorldSpecForLobby(lobby);
+    if (!worldSpec) throw new Error("Lobby world spec is missing.");
 
-  const mods = await loadRuntimeModules();
-  lobby.matchWorldSpec = worldSpec;
-  const mapMode = resolveMatchMapMode(worldSpec, lobby.matchConfig);
-  const earthData = (mapMode === MAP_MODE_WORLD) ? await loadEarthDataNode() : null;
-  const world = new mods.World(
-    worldSpec.width,
-    worldSpec.height,
-    (Number(lobby.matchSeed) >>> 0) || 1,
-    {
-      mapMode,
-      earthData,
-      aiCount: Math.max(1, Number(worldSpec.aiCount) || 1)
-    }
-  );
+    const mods = await loadRuntimeModules();
+    lobby.matchWorldSpec = worldSpec;
+    const mapMode = resolveMatchMapMode(worldSpec, lobby.matchConfig);
+    const earthData = (mapMode === MAP_MODE_WORLD) ? await loadEarthDataNode() : null;
+    const world = new mods.World(
+      worldSpec.width,
+      worldSpec.height,
+      (Number(lobby.matchSeed) >>> 0) || 1,
+      {
+        mapMode,
+        earthData,
+        aiCount: Math.max(1, Number(worldSpec.aiCount) || 1)
+      }
+    );
 
-  const runtime = {
-    world,
-    simTick: 0,
-    lastSnapshotAtMs: 0,
-    lastEntityHashes: Object.create(null),
-    assignmentsBySession: new Map(),
-    nationToSession: new Map()
-  };
-  lobby.runtime = runtime;
-  ensureRuntimeAssignments(lobby, runtime);
-  return runtime;
+    const runtime = {
+      world,
+      simTick: 0,
+      lastSnapshotAtMs: 0,
+      lastEntityHashes: Object.create(null),
+      assignmentsBySession: new Map(),
+      nationToSession: new Map()
+    };
+    lobby.runtime = runtime;
+    ensureRuntimeAssignments(lobby, runtime);
+    return runtime;
+  })();
+
+  try {
+    return await lobby.runtimeInitPromise;
+  } finally {
+    lobby.runtimeInitPromise = null;
+  }
+}
+
+function kickRuntimeInit(lobby, reason = "") {
+  if (!lobby?.started || (lobby.runtime && lobby.runtime.world)) return;
+  void ensureLobbyRuntime(lobby).catch((err) => {
+    const msg = String(err?.message || err || "unknown runtime init failure");
+    console.error(`[runtime-init] lobby=${String(lobby?.code || "")} reason=${String(reason || "n/a")} error=${msg}`);
+  });
 }
 
 function getRuntimeAssignment(lobby, sessionId) {
@@ -1305,7 +1322,7 @@ const server = createServer(async (req, res) => {
       const lobby = getLobbyByCodeOrThrow(code);
       const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, sessionId);
 
-      if (lobby.started && !lobby.runtime) await ensureLobbyRuntime(lobby);
+      if (lobby.started && !lobby.runtime) kickRuntimeInit(lobby, "state");
 
       touchLobby(lobby);
       writeJson(res, 200, {
@@ -1331,7 +1348,7 @@ const server = createServer(async (req, res) => {
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
         lobby.started = true;
-        await ensureLobbyRuntime(lobby);
+        kickRuntimeInit(lobby, "start");
         touchLobby(lobby);
         broadcastLobby(lobby, "started");
       }
@@ -1374,7 +1391,7 @@ const server = createServer(async (req, res) => {
       const lobby = getLobbyByCodeOrThrow(code);
       const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, sessionId);
 
-      if (lobby.started && !lobby.runtime) await ensureLobbyRuntime(lobby);
+      if (lobby.started && !lobby.runtime) kickRuntimeInit(lobby, "state_legacy");
 
       touchLobby(lobby);
       writeJson(res, 200, {
@@ -1400,7 +1417,7 @@ const server = createServer(async (req, res) => {
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
         lobby.started = true;
-        await ensureLobbyRuntime(lobby);
+        kickRuntimeInit(lobby, "start_legacy");
         touchLobby(lobby);
         broadcastLobby(lobby, "started");
       }

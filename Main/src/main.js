@@ -148,6 +148,15 @@ if (MULTIPLAYER_API_BASE) {
   console.warn("[Multiplayer] API base is not configured.");
 }
 
+const MULTIPLAYER_WORLD_LIMITS = Object.freeze({
+  minWidth: 480,
+  minHeight: 240,
+  maxWidth: 1600,
+  maxHeight: 900,
+  maxTiles: 700_000,
+  maxAiCount: 16
+});
+
 function normalizeApiBase(rawValue) {
   const raw = String(rawValue || "").trim();
   if (!raw) return "";
@@ -264,9 +273,21 @@ function sanitizeMultiplayerWorldSpec(raw) {
     mapModeRaw === "world-map"
   ) ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
   if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(aiCount)) return null;
-  const w = Math.max(200, Math.min(4096, Math.floor(width)));
-  const h = Math.max(200, Math.min(4096, Math.floor(height)));
-  const ai = Math.max(1, Math.min(128, Math.floor(aiCount)));
+  const lim = MULTIPLAYER_WORLD_LIMITS;
+  let w = Math.max(lim.minWidth, Math.min(lim.maxWidth, Math.floor(width)));
+  let h = Math.max(lim.minHeight, Math.min(lim.maxHeight, Math.floor(height)));
+  const area = Math.max(1, w * h);
+  if (area > lim.maxTiles) {
+    const scale = Math.sqrt(lim.maxTiles / area);
+    w = Math.max(lim.minWidth, Math.min(lim.maxWidth, Math.floor(w * scale)));
+    h = Math.max(lim.minHeight, Math.min(lim.maxHeight, Math.floor(h * scale)));
+    while ((w * h) > lim.maxTiles && (w > lim.minWidth || h > lim.minHeight)) {
+      if (w >= h && w > lim.minWidth) w--;
+      else if (h > lim.minHeight) h--;
+      else break;
+    }
+  }
+  const ai = Math.max(1, Math.min(lim.maxAiCount, Math.floor(aiCount)));
   if (w <= 0 || h <= 0 || ai <= 0) return null;
   return { width: w, height: h, aiCount: ai, mapMode };
 }

@@ -44,6 +44,11 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 - `LOBBY_IDLE_TTL_MS` (default `21600000`, 6 hours)
 - `MATCH_SNAPSHOT_INTERVAL_MS` (default `100`, snapshot cadence in ms)
 - `MATCH_MAX_STEPS_PER_PUMP` (default `160`, max sim steps per server pump)
+- `MATCH_MAX_WORLD_WIDTH` (default `1600`)
+- `MATCH_MAX_WORLD_HEIGHT` (default `900`)
+- `MATCH_MAX_WORLD_TILES` (default `700000`)
+- `MATCH_MAX_AI_COUNT` (default `16`)
+- `WS_DEBUG_LOGS` (default `0`, set `1` for temporary websocket reject diagnostics)
 
 ## Render deploy
 
@@ -60,6 +65,10 @@ Runtime should be **Node**, not Python.
    - `LOBBY_IDLE_TTL_MS=21600000`
    - `MATCH_SNAPSHOT_INTERVAL_MS=100`
    - `MATCH_MAX_STEPS_PER_PUMP=160`
+   - `MATCH_MAX_WORLD_WIDTH=1600`
+   - `MATCH_MAX_WORLD_HEIGHT=900`
+   - `MATCH_MAX_WORLD_TILES=700000`
+   - `MATCH_MAX_AI_COUNT=16`
 4. In Vercel project env vars (Production + Preview):
    - `VITE_MULTIPLAYER_API_URL=https://pixelfront-multiplayer.onrender.com`
 5. Redeploy Vercel after setting env vars.

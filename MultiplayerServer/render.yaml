@@ -19,5 +19,13 @@ services:
         value: 100
       - key: MATCH_MAX_STEPS_PER_PUMP
         value: 160
+      - key: MATCH_MAX_WORLD_WIDTH
+        value: 1600
+      - key: MATCH_MAX_WORLD_HEIGHT
+        value: 900
+      - key: MATCH_MAX_WORLD_TILES
+        value: 700000
+      - key: MATCH_MAX_AI_COUNT
+        value: 16
       - key: WS_DEBUG_LOGS
         value: 0

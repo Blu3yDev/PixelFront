@@ -10,6 +10,10 @@ const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
 const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(40, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 100));
 const MATCH_MAX_STEPS_PER_PUMP = Math.max(30, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 160));
 const WS_DEBUG_LOGS = /^(1|true|yes|on)$/i.test(String(process.env.WS_DEBUG_LOGS || "").trim());
+const MATCH_MAX_WORLD_WIDTH = Math.max(480, Number(process.env.MATCH_MAX_WORLD_WIDTH || 1600));
+const MATCH_MAX_WORLD_HEIGHT = Math.max(240, Number(process.env.MATCH_MAX_WORLD_HEIGHT || 900));
+const MATCH_MAX_WORLD_TILES = Math.max(120000, Number(process.env.MATCH_MAX_WORLD_TILES || 700_000));
+const MATCH_MAX_AI_COUNT = Math.max(2, Number(process.env.MATCH_MAX_AI_COUNT || 16));
 
 const MAP_MODE_WORLD = "earth";
 const MAP_MODE_GENERATOR = "generator";
@@ -271,9 +275,22 @@ function sanitizeWorldSpec(raw) {
     mapModeRaw === "world-map"
   ) ? "earth" : "generator";
   if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(aiCount)) return null;
-  const w = Math.max(200, Math.min(4096, Math.floor(width)));
-  const h = Math.max(200, Math.min(4096, Math.floor(height)));
-  const ai = Math.max(1, Math.min(128, Math.floor(aiCount)));
+  const minW = 480;
+  const minH = 240;
+  let w = Math.max(minW, Math.min(MATCH_MAX_WORLD_WIDTH, Math.floor(width)));
+  let h = Math.max(minH, Math.min(MATCH_MAX_WORLD_HEIGHT, Math.floor(height)));
+  const area = Math.max(1, w * h);
+  if (area > MATCH_MAX_WORLD_TILES) {
+    const scale = Math.sqrt(MATCH_MAX_WORLD_TILES / area);
+    w = Math.max(minW, Math.min(MATCH_MAX_WORLD_WIDTH, Math.floor(w * scale)));
+    h = Math.max(minH, Math.min(MATCH_MAX_WORLD_HEIGHT, Math.floor(h * scale)));
+    while ((w * h) > MATCH_MAX_WORLD_TILES && (w > minW || h > minH)) {
+      if (w >= h && w > minW) w--;
+      else if (h > minH) h--;
+      else break;
+    }
+  }
+  const ai = Math.max(1, Math.min(MATCH_MAX_AI_COUNT, Math.floor(aiCount)));
   return { width: w, height: h, aiCount: ai, mapMode };
 }
 

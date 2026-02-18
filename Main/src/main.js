@@ -18,9 +18,9 @@ import {
 import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
 
-// PF_BUILD: v10 2026-01-18
-window.__PF_BUILD = "v10";
-console.info("[PixelFront] BUILD v1.5 Beta loaded");
+// PF_BUILD: v11 2026-02-18
+window.__PF_BUILD = "v11";
+console.info("[PixelFront] BUILD v1.5 Beta loaded (v11)");
 document.title = "PixelFront | Beta";
 
 const canvas = document.getElementById("game");
@@ -200,12 +200,58 @@ function normalizeApiBase(rawValue) {
   }
 }
 
+function readMetaMultiplayerApiBase() {
+  try {
+    const doc = globalThis?.document;
+    if (!doc || typeof doc.querySelector !== "function") return "";
+    const el = doc.querySelector('meta[name="pf-multiplayer-api-url"]');
+    const raw = String(el?.getAttribute?.("content") || "").trim();
+    if (!raw || raw.includes("%VITE_")) return "";
+    return raw;
+  } catch {
+    return "";
+  }
+}
+
+function readQueryParamMultiplayerApiBase() {
+  try {
+    const u = new URL(String(globalThis?.location?.href || ""));
+    const raw = String(u.searchParams.get("mpApi") || "").trim();
+    return raw;
+  } catch {
+    return "";
+  }
+}
+
 function resolveMultiplayerApiBase() {
   const fromEnv = String(import.meta?.env?.VITE_MULTIPLAYER_API_URL || "").trim();
   if (fromEnv) return normalizeApiBase(fromEnv);
 
   const fromRuntimeGlobal = String(globalThis?.__PF_MULTIPLAYER_API_URL || "").trim();
   if (fromRuntimeGlobal) return normalizeApiBase(fromRuntimeGlobal);
+
+  const fromMeta = readMetaMultiplayerApiBase();
+  if (fromMeta) return normalizeApiBase(fromMeta);
+
+  const fromQuery = readQueryParamMultiplayerApiBase();
+  if (fromQuery) return normalizeApiBase(fromQuery);
+
+  // Explicit manual override (works in production without rebuild).
+  try {
+    const fromOverrideStorage = String(globalThis?.localStorage?.getItem?.("pf-multiplayer-api-url-override") || "").trim();
+    if (fromOverrideStorage) return normalizeApiBase(fromOverrideStorage);
+  } catch {
+    // Ignore localStorage read errors.
+  }
+
+  // Backward-compatible manual override key.
+  // Keep this available in production so console-based hotfixes work instantly.
+  try {
+    const fromCompatStorage = String(globalThis?.localStorage?.getItem?.("pf-multiplayer-api-url") || "").trim();
+    if (fromCompatStorage) return normalizeApiBase(fromCompatStorage);
+  } catch {
+    // Ignore localStorage read errors.
+  }
 
   // In production, avoid stale persisted endpoints (e.g. old Render URL) causing silent CORS failures.
   // Keep localStorage override only for localhost/dev workflows.
@@ -516,6 +562,7 @@ let multiplayerConnectFailureStreak = 0;
 let multiplayerSessionProbeInFlight = false;
 let multiplayerSessionTerminated = false;
 let multiplayerHasAuthoritativeSync = false;
+let multiplayerIdentityRefreshAtMs = 0;
 
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 4500;
@@ -645,15 +692,25 @@ function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
   if (!isMultiplayerMatchEnabled()) {
     return { ok: false, reason: "Multiplayer session inactive.", seq: 0 };
   }
-  if (!hasMultiplayerIdentity()) {
-    return { ok: false, reason: "Awaiting server player assignment.", seq: 0 };
-  }
   if (!multiplayerHasAuthoritativeSync) {
     return { ok: false, reason: "Waiting for authoritative sync...", seq: 0 };
   }
   const ws = multiplayerMatchSocket;
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     return { ok: false, reason: "Multiplayer link disconnected. Reconnecting...", seq: 0 };
+  }
+  if (!hasMultiplayerIdentity()) {
+    const now = Date.now();
+    if (now >= multiplayerIdentityRefreshAtMs) {
+      multiplayerIdentityRefreshAtMs = now + 1200;
+      try {
+        ws.send(JSON.stringify({ type: "lobby_state_request" }));
+      } catch {
+        // Ignore send errors; reconnect path handles this.
+      }
+      void probeActiveMultiplayerSessionState();
+    }
+    return { ok: false, reason: "Awaiting server player assignment.", seq: 0 };
   }
   const cmd = String(cmdRaw || "").trim();
   if (!cmd) {
@@ -1311,9 +1368,20 @@ function queueMultiplayerSnapshotPacket(packet) {
 function drainMultiplayerSnapshotBuffer(force = false) {
   if (!isMultiplayerMatchEnabled()) return;
   if (!multiplayerWorldSyncWorld) return;
-  if (!multiplayerHasAuthoritativeSync) return;
 
   const now = Date.now();
+  if (!multiplayerHasAuthoritativeSync) {
+    // Keep actively requesting initial authoritative state until first full sync arrives.
+    if ((now - multiplayerLastSnapshotAtMs) > MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS) {
+      const ws = multiplayerMatchSocket;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: "lobby_state_request" })); } catch {}
+      }
+      requestMultiplayerFullSync("awaiting_initial_full_sync");
+    }
+    return;
+  }
+
   if (multiplayerLatestServerTick <= 0) {
     if (now - multiplayerLastSnapshotAtMs > MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS) {
       requestMultiplayerFullSync("no_snapshot");
@@ -1409,6 +1477,13 @@ async function probeActiveMultiplayerSessionState() {
   }
 
   if (res.ok && (data == null || data.ok !== false)) {
+    const viewer = (data?.viewer && typeof data.viewer === "object") ? data.viewer : null;
+    if (activeMultiplayerSession && viewer) {
+      const pid = String(viewer.playerId || "").trim();
+      const nid = Math.max(0, Number(viewer.nationId) | 0);
+      if (pid) activeMultiplayerSession.playerId = pid;
+      if (nid > 0) activeMultiplayerSession.nationId = nid;
+    }
     return { checked: true, valid: true, terminal: false, reason: "" };
   }
 
@@ -1446,6 +1521,7 @@ function connectMultiplayerMatchSocket() {
     try {
       const t = Date.now();
       ws.send(JSON.stringify({ type: "ping", clientTime: t }));
+      ws.send(JSON.stringify({ type: "lobby_state_request" }));
     } catch {
       // Ignore ping send errors.
     }
@@ -1516,6 +1592,14 @@ function connectMultiplayerMatchSocket() {
         const nid = Math.max(0, Number(viewer.nationId) | 0);
         if (pid) activeMultiplayerSession.playerId = pid;
         if (nid > 0) activeMultiplayerSession.nationId = nid;
+      }
+      if (type === "started") {
+        try {
+          ws.send(JSON.stringify({ type: "lobby_state_request" }));
+        } catch {
+          // Ignore send errors; reconnect path handles this.
+        }
+        requestMultiplayerFullSync("started_event");
       }
       return;
     }
@@ -3036,10 +3120,11 @@ function createMainMenuController(options = null) {
 
   const applyViewerIdentity = (viewerRaw) => {
     const viewer = (viewerRaw && typeof viewerRaw === "object") ? viewerRaw : null;
-    const pid = String(viewer?.playerId || "").trim();
-    const nid = Math.max(0, Number(viewer?.nationId) | 0);
-    multiplayerViewerPlayerId = pid;
-    multiplayerViewerNationId = nid;
+    if (!viewer) return;
+    const pid = String(viewer.playerId || "").trim();
+    const nid = Math.max(0, Number(viewer.nationId) | 0);
+    if (pid) multiplayerViewerPlayerId = pid;
+    if (nid > 0) multiplayerViewerNationId = nid;
   };
 
   const toLobbyModel = (rawLobby, opts = null) => {
@@ -3405,7 +3490,7 @@ function createMainMenuController(options = null) {
   const launchStartedLobbyMatch = async (lobby, viewerName, viewerRaw = null) => {
     if (!lobby || !lobby.started || multiplayerAutoStartTriggered) return;
     if (!onStartRequested) return;
-    applyViewerIdentity(viewerRaw);
+    if (viewerRaw) applyViewerIdentity(viewerRaw);
     multiplayerAutoStartTriggered = true;
 
     if (!hasMultiplayerApi() || !multiplayerSessionId) {

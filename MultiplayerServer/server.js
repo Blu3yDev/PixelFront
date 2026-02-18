@@ -1071,6 +1071,17 @@ function closeLobbySocket(lobby, sessionId) {
   try { ws.close(); } catch {}
   lobby.sockets.delete(sessionId);
 }
+
+function markLobbySocketsPendingInitialSync(lobby) {
+  if (!lobby || !lobby.sockets) return;
+  for (const ws of lobby.sockets.values()) {
+    try {
+      ws.initialSyncPending = true;
+    } catch {
+      // Ignore property set failures.
+    }
+  }
+}
 function sanitizeMatchInput(raw) {
   const src = (raw && typeof raw === "object") ? raw : {};
   const cmd = String(src.cmd || "").trim();
@@ -1229,6 +1240,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
   ws.sessionId = sessionId;
   ws.code = lobby.code;
   ws.isAlive = true;
+  ws.initialSyncPending = !!lobby.started;
 
   ws.on("pong", () => {
     ws.isAlive = true;
@@ -1258,6 +1270,11 @@ function attachSocketToLobby(lobby, sessionId, ws) {
           runtime = await ensureLobbyRuntime(lobby);
         } catch {
           runtime = null;
+          wsSend(ws, {
+            type: "error",
+            serverTime: nowMs(),
+            reason: "Authoritative world failed to initialize on server."
+          });
         }
       }
 
@@ -1271,6 +1288,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
 
       if (lobby.started && runtime) {
         sendFullSyncToSession(lobby, runtime, sessionId, ws, "lobby_state_request");
+        ws.initialSyncPending = false;
       }
       return;
     }
@@ -1283,10 +1301,23 @@ function attachSocketToLobby(lobby, sessionId, ws) {
           runtime = await ensureLobbyRuntime(lobby);
         } catch {
           runtime = null;
+          wsSend(ws, {
+            type: "error",
+            serverTime: nowMs(),
+            reason: "Authoritative world failed to initialize on server."
+          });
         }
       }
-      if (!runtime) return;
+      if (!runtime) {
+        wsSend(ws, {
+          type: "error",
+          serverTime: nowMs(),
+          reason: "Authoritative world is still initializing."
+        });
+        return;
+      }
       sendFullSyncToSession(lobby, runtime, sessionId, ws, String(msg?.reason || "full_sync_request"));
+      ws.initialSyncPending = false;
       return;
     }
 
@@ -1316,6 +1347,16 @@ function cleanupIdleLobbies() {
 function stepLobbyRuntime(lobby, now) {
   const runtime = lobby?.runtime;
   if (!runtime || !runtime.world || !lobby.started) return;
+
+  // If sockets were connected before runtime existed (common host/join/start race),
+  // push an initial full sync as soon as runtime is ready.
+  for (const [sessionId, ws] of lobby.sockets.entries()) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) continue;
+    if (!ws.initialSyncPending) continue;
+    sendFullSyncToSession(lobby, runtime, sessionId, ws, "runtime_ready");
+    ws.initialSyncPending = false;
+  }
+
   flushRuntimeTick(lobby, runtime, now);
 }
 const server = createServer(async (req, res) => {
@@ -1430,6 +1471,7 @@ const server = createServer(async (req, res) => {
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
         lobby.started = true;
+        markLobbySocketsPendingInitialSync(lobby);
         kickRuntimeInit(lobby, "start");
         touchLobby(lobby);
         broadcastLobby(lobby, "started");
@@ -1499,6 +1541,7 @@ const server = createServer(async (req, res) => {
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
         lobby.started = true;
+        markLobbySocketsPendingInitialSync(lobby);
         kickRuntimeInit(lobby, "start_legacy");
         touchLobby(lobby);
         broadcastLobby(lobby, "started");
@@ -1630,6 +1673,7 @@ wss.on("connection", (ws, _req, ctx) => {
 
     if (lobby.started && runtime) {
       sendFullSyncToSession(lobby, runtime, sessionId, ws, "join");
+      ws.initialSyncPending = false;
     }
   })();
 });

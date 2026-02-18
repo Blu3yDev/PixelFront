@@ -2676,23 +2676,37 @@ World.prototype._initNations = function() {
     }
 
   World.prototype.isSpawnPhaseActive = function() {
-      return !!(this._spawnPhase && this._spawnPhase.active);
+      const self = this;
+      if (!self || typeof self !== "object") return false;
+      return !!(self._spawnPhase && self._spawnPhase.active);
     }
 
   World.prototype.getSpawnPhaseStatus = function() {
-      const phase = this._spawnPhase;
-      if (!phase || !phase.active) {
+      const self = this;
+      if (!self || typeof self !== "object") {
         return {
           active: false,
           progress01: 1,
-          picked: this._nationCount | 0,
-          total: this._nationCount | 0,
+          picked: 0,
+          total: 0,
           playerPicked: true,
           label: "Match in progress"
         };
       }
 
-      const total = this._nationCount | 0;
+      const phase = self._spawnPhase;
+      if (!phase || !phase.active) {
+        return {
+          active: false,
+          progress01: 1,
+          picked: self._nationCount | 0,
+          total: self._nationCount | 0,
+          playerPicked: true,
+          label: "Match in progress"
+        };
+      }
+
+      const total = self._nationCount | 0;
       const picked = phase.pickedCount | 0;
       const progress01 = clamp01(phase.elapsedS / Math.max(0.001, Number(phase.durationS) || 0.001));
       const remainS = Math.max(0, (Number(phase.durationS) || 0) - (Number(phase.elapsedS) || 0));
@@ -2888,30 +2902,33 @@ World.prototype._initNations = function() {
     }
 
   World.prototype.pickSpawn = function(ownerId, x, y) {
-      const phase = this._spawnPhase;
+      const self = this;
+      if (!self || typeof self !== "object") return { ok: false, reason: "World unavailable." };
+
+      const phase = self._spawnPhase;
       const id = ownerId | 0;
       if (!phase || !phase.active) return { ok: false, reason: "Spawn phase is over." };
-      if (id <= 0 || id > this._nationCount) return { ok: false, reason: "Invalid nation." };
-      if (!this.nation[id]?.alive) return { ok: false, reason: "Nation is not active." };
+      if (id <= 0 || id > self._nationCount) return { ok: false, reason: "Invalid nation." };
+      if (!self.nation[id]?.alive) return { ok: false, reason: "Nation is not active." };
       const canRepick = (id === OWNER.PLAYER);
       if (phase.picked[id] && !canRepick) return { ok: false, reason: "Nation already spawned." };
 
-      const tx = clampInt(x | 0, 0, this.w - 1);
-      const ty = clampInt(y | 0, 0, this.h - 1);
+      const tx = clampInt(x | 0, 0, self.w - 1);
+      const ty = clampInt(y | 0, 0, self.h - 1);
       const opts = canRepick
         ? { requireDensity: false, allowAnyBiome: true, minDistanceScale: 0.25 }
         : { requireDensity: false };
       let pick = null;
-      if (this._isSpawnLocationAllowed(tx, ty, id, opts)) {
+      if (self._isSpawnLocationAllowed(tx, ty, id, opts)) {
         pick = { x: tx, y: ty };
       } else {
         // Keep snap radius tiny for player picks so the result stays close to the cursor.
         const snapRadius = canRepick ? 1 : 40;
-        pick = this._findNearestSpawnTile(tx, ty, id, snapRadius, opts);
+        pick = self._findNearestSpawnTile(tx, ty, id, snapRadius, opts);
       }
       if (!pick) return { ok: false, reason: "Pick a land tile (distance limit is now minimal)." };
 
-      const res = this._lockSpawnSelection(id, pick.x, pick.y, canRepick ? { allowRepick: true } : null);
+      const res = self._lockSpawnSelection(id, pick.x, pick.y, canRepick ? { allowRepick: true } : null);
       if (!res.ok) return res;
       return {
         ok: true,

@@ -203,6 +203,7 @@ export function createHUD() {
   let donateEnabled = false;
   let fallbackEventId = 1;
   let paused = false;
+  let pauseEnabled = true;
   let perfReadoutSig = "";
   let eventsRenderSig = "";
   let opListRenderSig = "";
@@ -534,7 +535,10 @@ export function createHUD() {
     btnRegenerate.addEventListener("click", () => cbRegenerate && cbRegenerate());
   }
 
-  btnPause.addEventListener("click", () => cbPauseToggle && cbPauseToggle());
+  btnPause.addEventListener("click", () => {
+    if (!pauseEnabled) return;
+    if (cbPauseToggle) cbPauseToggle();
+  });
   btnSettings.addEventListener("click", () => setSettingsOpen(settingsModal.hidden));
   settingsClose.addEventListener("click", () => setSettingsOpen(false));
   settingsBackdrop.addEventListener("click", () => setSettingsOpen(false));
@@ -1622,6 +1626,16 @@ export function createHUD() {
     onDonate: (cb) => (cbDonate = cb),
 
     onPauseToggle: (cb) => (cbPauseToggle = cb),
+    setPauseEnabled: (v) => {
+      pauseEnabled = Boolean(v);
+      btnPause.hidden = !pauseEnabled;
+      btnPause.disabled = !pauseEnabled;
+      if (!pauseEnabled) {
+        paused = false;
+        btnPause.textContent = "Pause";
+        btnPause.classList.remove("isPaused");
+      }
+    },
     setPaused: (v) => {
       paused = Boolean(v);
       btnPause.textContent = paused ? "Resume" : "Pause";
@@ -1748,6 +1762,7 @@ export function createHUD() {
   selectedCard.hidden = true;
   applyDonateVisibility();
   hideCtx();
+  api.setPauseEnabled(true);
   api.setPaused(false);
   applySettingsUI(defaultSettings);
   setSettingsOpen(false);

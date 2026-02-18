@@ -44,6 +44,36 @@ const screenAlert = createScreenAlertOverlay();
 const voiceLines = createVoiceLineToast();
 
 const hud = createHUD();
+let runtimeErrorHudCooldownUntilMs = 0;
+
+function notifyRuntimeError(prefixRaw, err) {
+  const prefix = String(prefixRaw || "Client error").trim() || "Client error";
+  console.error(`[Runtime] ${prefix}`, err);
+  const now = Date.now();
+  if (now < runtimeErrorHudCooldownUntilMs) return;
+  runtimeErrorHudCooldownUntilMs = now + 3000;
+  if (hud && typeof hud.setOpMessage === "function") {
+    hud.setOpMessage(`${prefix}. Attempting recovery...`);
+  }
+  let multiplayerActive = false;
+  try {
+    multiplayerActive = (typeof isMultiplayerMatchEnabled === "function") && isMultiplayerMatchEnabled();
+  } catch {
+    multiplayerActive = false;
+  }
+  if (multiplayerActive) {
+    try { requestMultiplayerFullSync("client_runtime_error"); } catch {}
+  }
+}
+
+if (typeof window !== "undefined" && window && typeof window.addEventListener === "function") {
+  window.addEventListener("error", (ev) => {
+    notifyRuntimeError("Client runtime error", ev?.error || ev?.message || ev);
+  });
+  window.addEventListener("unhandledrejection", (ev) => {
+    notifyRuntimeError("Unhandled promise error", ev?.reason || ev);
+  });
+}
 const CLIENT_SETTINGS_STORAGE_KEY = "pf-client-settings-v1";
 const DEFAULT_CLIENT_SETTINGS = Object.freeze({
   showAIStructures: true,
@@ -478,6 +508,7 @@ let multiplayerLastHashMismatchAtMs = 0;
 let multiplayerConnectFailureStreak = 0;
 let multiplayerSessionProbeInFlight = false;
 let multiplayerSessionTerminated = false;
+let multiplayerHasAuthoritativeSync = false;
 
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 1;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 4500;
@@ -552,6 +583,7 @@ function resetMultiplayerSnapshotState() {
   multiplayerLatestServerTick = 0;
   multiplayerLastAppliedTick = 0;
   multiplayerAwaitingFullSync = false;
+  multiplayerHasAuthoritativeSync = false;
   multiplayerLastSnapshotAtMs = Date.now();
   multiplayerLastFullSyncRequestAtMs = 0;
   multiplayerLastHashMismatchAtMs = 0;
@@ -589,6 +621,7 @@ function setActiveMultiplayerSession(raw) {
   resetMultiplayerSnapshotState();
   resetMultiplayerWorldSync();
   clearMultiplayerMatchSocket();
+  syncPauseAvailability();
 }
 
 function isMultiplayerMatchEnabled() {
@@ -607,6 +640,9 @@ function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
   }
   if (!hasMultiplayerIdentity()) {
     return { ok: false, reason: "Awaiting server player assignment.", seq: 0 };
+  }
+  if (!multiplayerHasAuthoritativeSync) {
+    return { ok: false, reason: "Waiting for authoritative sync...", seq: 0 };
   }
   const ws = multiplayerMatchSocket;
   if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -1231,6 +1267,7 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false) {
   multiplayerLatestServerTick = Math.max(multiplayerLatestServerTick, tick);
   multiplayerLastSnapshotAtMs = Date.now();
   multiplayerAwaitingFullSync = false;
+  if (isFullSync) multiplayerHasAuthoritativeSync = true;
 
   if (activeMultiplayerSession) {
     activeMultiplayerSession.serverTick = Math.max(Number(activeMultiplayerSession.serverTick) || 0, tick);
@@ -1267,6 +1304,7 @@ function queueMultiplayerSnapshotPacket(packet) {
 function drainMultiplayerSnapshotBuffer(force = false) {
   if (!isMultiplayerMatchEnabled()) return;
   if (!multiplayerWorldSyncWorld) return;
+  if (!multiplayerHasAuthoritativeSync) return;
 
   const now = Date.now();
   if (multiplayerLatestServerTick <= 0) {
@@ -1406,7 +1444,7 @@ function connectMultiplayerMatchSocket() {
     }
     requestMultiplayerFullSync("on_open");
     if (hud && typeof hud.setOpMessage === "function") {
-      hud.setOpMessage("Multiplayer link connected.");
+      hud.setOpMessage("Multiplayer link connected. Waiting for authoritative sync...");
     }
   };
 
@@ -1489,6 +1527,10 @@ function connectMultiplayerMatchSocket() {
     }
 
     if (type === "snapshot_delta") {
+      if (!multiplayerHasAuthoritativeSync) {
+        requestMultiplayerFullSync("delta_before_full_sync");
+        return;
+      }
       queueMultiplayerSnapshotPacket(msg);
       drainMultiplayerSnapshotBuffer(false);
       return;
@@ -2125,12 +2167,33 @@ const BUILD_HOTKEY_BUTTON_IDS = Object.freeze({
 });
 
 function isSpawnPhaseActiveNow() {
-  return !!(world && typeof world.isSpawnPhaseActive === "function" && world.isSpawnPhaseActive());
+  const worldRef = world;
+  if (!worldRef || typeof worldRef.isSpawnPhaseActive !== "function") return false;
+  try {
+    return !!worldRef.isSpawnPhaseActive.call(worldRef);
+  } catch (err) {
+    console.error("[SpawnPhase] Failed to read spawn phase active state.", err);
+    return false;
+  }
 }
 
 function getSpawnPhaseStatusNow() {
-  if (!world || typeof world.getSpawnPhaseStatus !== "function") return null;
-  return world.getSpawnPhaseStatus();
+  const worldRef = world;
+  if (!worldRef || typeof worldRef.getSpawnPhaseStatus !== "function") return null;
+  try {
+    return worldRef.getSpawnPhaseStatus.call(worldRef);
+  } catch (err) {
+    console.error("[SpawnPhase] Failed to read spawn phase status.", err);
+    const total = Math.max(0, Number(worldRef?._nationCount) | 0);
+    return {
+      active: false,
+      progress01: 1,
+      picked: total,
+      total,
+      playerPicked: true,
+      label: "Match in progress"
+    };
+  }
 }
 
 function syncSpawnProgressUI() {
@@ -2138,8 +2201,35 @@ function syncSpawnProgressUI() {
   hud.setSpawnProgress(getSpawnPhaseStatusNow());
 }
 
+function syncPauseAvailability() {
+  const allowPause = !isMultiplayerMatchEnabled();
+  if (hud && typeof hud.setPauseEnabled === "function") {
+    hud.setPauseEnabled(allowPause);
+  }
+  if (!allowPause) {
+    paused = false;
+    if (hud && typeof hud.setPaused === "function") hud.setPaused(false);
+  }
+}
+
 function canPlayerIssueOrders(showReason = true) {
   if (!world) return false;
+  if (isMultiplayerMatchEnabled()) {
+    if (!hasMultiplayerIdentity()) {
+      if (showReason) hud.setOpMessage("Waiting for server player assignment...");
+      return false;
+    }
+    if (!multiplayerHasAuthoritativeSync) {
+      if (showReason) hud.setOpMessage("Waiting for authoritative sync...");
+      requestMultiplayerFullSync("orders_before_full_sync");
+      return false;
+    }
+    const ws = multiplayerMatchSocket;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      if (showReason) hud.setOpMessage("Multiplayer link disconnected. Reconnecting...");
+      return false;
+    }
+  }
   if (isSpawnPhaseActiveNow()) {
     if (showReason) hud.setOpMessage("Pick your spawn location before issuing orders.");
     return false;
@@ -4825,6 +4915,7 @@ function boot() {
   applyClientSettings(clientSettings, { persist: false, syncHUD: true, announce: false });
   applyMatchBuildButtonRestrictions(activeMatchConfig);
   resetMatchSessionTracking();
+  syncPauseAvailability();
   wasSpawnPhaseActive = isSpawnPhaseActiveNow();
   if (isSpawnPhaseActiveNow()) {
     hud.setOpMessage("Pick your spawn location. The match starts when the top bar fills.");
@@ -5278,6 +5369,12 @@ function boot() {
   });
 
   hud.onPauseToggle(() => {
+    if (isMultiplayerMatchEnabled()) {
+      paused = false;
+      hud.setPaused(false);
+      hud.setOpMessage("Pause is disabled in multiplayer.");
+      return;
+    }
     if (world.gameOver) return;
     if (matchSummaryState && !matchSummaryState.isTest && matchSummaryState.result === "loss") return;
     paused = !paused;
@@ -5643,6 +5740,7 @@ function resetMatchSessionTracking() {
 
   paused = false;
   hud.setPaused(false);
+  syncPauseAvailability();
   updateMatchProgressTracker();
 }
 

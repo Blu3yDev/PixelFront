@@ -2307,6 +2307,18 @@ function createMainMenuController(options = null) {
     return false;
   };
 
+  const isTerminalLobbyStateError = (err) => {
+    const status = Number(err?.status) || 0;
+    const msg = String(err?.message || "").toLowerCase();
+    if (status === 404) return true;
+    if (msg.includes("lobby not found")) return true;
+    if (msg.includes("session is not part of this lobby")) return true;
+    if (msg.includes("missing sessionid")) return true;
+    if (msg.includes("invalid lobby code")) return true;
+    if (status === 400 && msg.includes("request failed")) return true;
+    return false;
+  };
+
   const toLobbyModel = (rawLobby, opts = null) => {
     const src = (rawLobby && typeof rawLobby === "object") ? rawLobby : {};
     const p = Array.isArray(src.players) ? src.players : [];
@@ -2603,7 +2615,21 @@ function createMainMenuController(options = null) {
         launchStartedLobbyMatch(activeMultiplayerLobby, viewerName);
       }
     } catch (err) {
-      if (!quiet) setStatus(err?.message || "Failed to sync lobby state.");
+      if (isTerminalLobbyStateError(err)) {
+        stopLobbyPolling();
+        closeLobbySocket();
+        multiplayerSessionId = "";
+        activeMultiplayerLobby = null;
+        multiplayerAutoStartTriggered = false;
+        playMenuMode = "singleplayer";
+        refreshMultiplayerUI();
+        if (!quiet) {
+          setView("multiplayer");
+          setStatus("Lobby session expired. Create or join again.");
+        }
+      } else if (!quiet) {
+        setStatus(err?.message || "Failed to sync lobby state.");
+      }
     } finally {
       multiplayerPollInFlight = false;
     }

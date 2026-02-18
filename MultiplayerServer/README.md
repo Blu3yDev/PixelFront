@@ -74,6 +74,17 @@ Runtime should be **Node**, not Python.
   - Verify `CORS_ORIGIN` includes your exact site origin.
   - Free Render instances may cold start (10-20s) on first request.
 
+- If browser says `No 'Access-Control-Allow-Origin' header`:
+  - Most often the backend crashed or did not redeploy successfully.
+  - Check Render logs first; if service is not listening, CORS headers will not be returned.
+  - Confirm `CORS_ORIGIN` is exactly `https://pixelfront-official.vercel.app` (protocol required, no trailing slash).
+  - Redeploy Render after env changes.
+
+- If `/api/lobbies/state` returns `400` repeatedly:
+  - Session/lobby is stale (common after backend restart, because lobbies are in-memory).
+  - Create a fresh lobby and rejoin.
+  - Frontend now auto-resets stale sessions, but old tabs may need hard refresh.
+
 - If players load different worlds:
   - Make sure both frontend and backend are fully redeployed to latest code.
   - Host must start lobby after backend update (old lobbies may miss the locked `worldSpec`).

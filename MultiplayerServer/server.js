@@ -1,8 +1,6 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
-import { World } from "../Main/src/game/core/world.js";
-import { MAP_MODE, SIM_DT_S } from "../Main/src/game/config.js";
 import { loadEarthDataNode } from "./earthDataNode.js";
 
 const PORT = Number(process.env.PORT || 8080);
@@ -11,17 +9,61 @@ const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 6
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
 const MATCH_CMD_LEAD_MS = Math.max(10, Number(process.env.MATCH_CMD_LEAD_MS || 90));
 const MATCH_TICK_BROADCAST_MS = Math.max(50, Number(process.env.MATCH_TICK_BROADCAST_MS || 250));
-const SIM_DT_MS = Math.max(1, Number(SIM_DT_S) * 1000);
+const MAP_MODE_WORLD = "earth";
+const MAP_MODE_GENERATOR = "generator";
+const DEFAULT_SIM_DT_S = 1 / 60;
+let activeSimDtS = DEFAULT_SIM_DT_S;
+let runtimeModulesPromise = null;
 
 const lobbiesByCode = new Map(); // code -> lobby
 const playerIndex = new Map(); // sessionId -> code
+
+function simDtMs() {
+  return Math.max(1, Number(activeSimDtS) * 1000);
+}
+
+async function loadRuntimeModules() {
+  if (runtimeModulesPromise) return runtimeModulesPromise;
+  runtimeModulesPromise = (async () => {
+    const worldMod = await import("../Main/src/game/core/world.js");
+    const cfgMod = await import("../Main/src/game/config.js");
+    const WorldCtor = worldMod?.World;
+    if (typeof WorldCtor !== "function") {
+      throw new Error("Main world module is missing 'World' export.");
+    }
+    const mapModeWorld = String(cfgMod?.MAP_MODE?.WORLD_MAP || MAP_MODE_WORLD);
+    const mapModeGenerator = String(cfgMod?.MAP_MODE?.GENERATOR || MAP_MODE_GENERATOR);
+    const simDt = Number(cfgMod?.SIM_DT_S);
+    if (Number.isFinite(simDt) && simDt > 0) {
+      activeSimDtS = simDt;
+    }
+    return {
+      World: WorldCtor,
+      MAP_MODE_WORLD: mapModeWorld,
+      MAP_MODE_GENERATOR: mapModeGenerator
+    };
+  })();
+  return runtimeModulesPromise;
+}
 
 function nowMs() {
   return Date.now();
 }
 
 function normalizeOrigin(value) {
-  return String(value || "").trim().replace(/\/+$/, "");
+  const raw = String(value || "").trim().replace(/\/+$/, "");
+  if (!raw) return "";
+  if (raw === "*") return "*";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return `https://${raw}`;
+}
+
+function hostOfOrigin(value) {
+  try {
+    return new URL(String(value || "")).host.toLowerCase();
+  } catch {
+    return "";
+  }
 }
 
 function randCode(length = 6) {
@@ -108,12 +150,30 @@ function setCors(req, res) {
     res.setHeader("Access-Control-Allow-Origin", "*");
   } else {
     const allowList = CORS_ORIGIN.split(",").map(normalizeOrigin).filter(Boolean);
-    const allow = reqOrigin && allowList.includes(reqOrigin) ? reqOrigin : (allowList[0] || "null");
+    const reqHost = hostOfOrigin(reqOrigin);
+    let allow = allowList[0] || "null";
+    if (reqOrigin) {
+      for (let i = 0; i < allowList.length; i++) {
+        const allowed = allowList[i];
+        if (!allowed) continue;
+        if (allowed.toLowerCase() === reqOrigin.toLowerCase()) {
+          allow = reqOrigin;
+          break;
+        }
+        const allowedHost = hostOfOrigin(allowed);
+        if (allowedHost && reqHost && allowedHost === reqHost) {
+          allow = reqOrigin;
+          break;
+        }
+      }
+    }
     res.setHeader("Access-Control-Allow-Origin", allow);
     res.setHeader("Vary", "Origin");
   }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  const reqHeaders = String(req?.headers?.["access-control-request-headers"] || "").trim();
+  res.setHeader("Access-Control-Allow-Headers", reqHeaders || "Content-Type");
+  res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 function writeJson(res, statusCode, data) {
@@ -227,14 +287,14 @@ function applyAuthoritativeCommand(world, packet) {
 
 function resolveMatchMapMode(worldSpec, matchConfig) {
   const specMode = String(worldSpec?.mapMode || "").trim().toLowerCase();
-  if (specMode === MAP_MODE.WORLD_MAP || specMode === "world_map" || specMode === "world-map") {
-    return MAP_MODE.WORLD_MAP;
+  if (specMode === MAP_MODE_WORLD || specMode === "world_map" || specMode === "world-map") {
+    return MAP_MODE_WORLD;
   }
   const cfgMode = String(matchConfig?.mapMode || "").trim().toLowerCase();
-  if (cfgMode === MAP_MODE.WORLD_MAP || cfgMode === "world_map" || cfgMode === "world-map") {
-    return MAP_MODE.WORLD_MAP;
+  if (cfgMode === MAP_MODE_WORLD || cfgMode === "world_map" || cfgMode === "world-map") {
+    return MAP_MODE_WORLD;
   }
-  return MAP_MODE.GENERATOR;
+  return MAP_MODE_GENERATOR;
 }
 
 function resolveWorldSpecForLobby(lobby) {
@@ -256,12 +316,13 @@ async function ensureLobbyRuntime(lobby) {
 
   const worldSpec = resolveWorldSpecForLobby(lobby);
   if (!worldSpec) throw new Error("Lobby world spec is missing.");
+  const runtimeMods = await loadRuntimeModules();
   lobby.matchWorldSpec = worldSpec;
   const mapMode = resolveMatchMapMode(worldSpec, lobby.matchConfig);
-  const earthData = (mapMode === MAP_MODE.WORLD_MAP)
+  const earthData = (mapMode === MAP_MODE_WORLD)
     ? await loadEarthDataNode()
     : null;
-  const world = new World(
+  const world = new runtimeMods.World(
     worldSpec.width,
     worldSpec.height,
     (Number(lobby.matchSeed) >>> 0) || 1,
@@ -384,7 +445,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
         return;
       }
       if (!runtime) return;
-      const leadTicks = Math.max(1, Math.ceil(MATCH_CMD_LEAD_MS / Math.max(1, SIM_DT_MS)));
+      const leadTicks = Math.max(1, Math.ceil(MATCH_CMD_LEAD_MS / simDtMs()));
       const nextApplyTickBase = (runtime.simTick | 0) + leadTicks;
       const prevApplyTick = Math.max(-1, Number(runtime.lastApplyTick) || -1);
       const applyTick = Math.max(nextApplyTickBase, prevApplyTick + 1);
@@ -397,7 +458,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
         code: lobby.code,
         seq: lobby.matchSeq,
         applyTick,
-        applyAtMs: lobby.startedAt + Math.floor(applyTick * SIM_DT_MS),
+        applyAtMs: lobby.startedAt + Math.floor(applyTick * simDtMs()),
         fromSessionId: sessionId,
         cmdId: cmd.cmdId,
         cmd: cmd.cmd,
@@ -470,7 +531,7 @@ function stepLobbyRuntime(lobby, now) {
   if (!runtime || !runtime.world || !lobby.started) return;
 
   const elapsedMs = Math.max(0, now - Number(lobby.startedAt || 0));
-  const targetTick = Math.max(0, Math.floor(elapsedMs / Math.max(1, SIM_DT_MS)));
+  const targetTick = Math.max(0, Math.floor(elapsedMs / simDtMs()));
   const maxSteps = 120;
   let steps = 0;
   while ((runtime.simTick | 0) < targetTick && steps < maxSteps) {

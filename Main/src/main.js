@@ -181,10 +181,10 @@ if (MULTIPLAYER_API_BASE) {
 const MULTIPLAYER_WORLD_LIMITS = Object.freeze({
   minWidth: 480,
   minHeight: 240,
-  maxWidth: 1600,
-  maxHeight: 900,
-  maxTiles: 700_000,
-  maxAiCount: 16
+  maxWidth: 1280,
+  maxHeight: 720,
+  maxTiles: 360_000,
+  maxAiCount: 10
 });
 
 function normalizeApiBase(rawValue) {
@@ -204,19 +204,26 @@ function resolveMultiplayerApiBase() {
   const fromEnv = String(import.meta?.env?.VITE_MULTIPLAYER_API_URL || "").trim();
   if (fromEnv) return normalizeApiBase(fromEnv);
 
-  try {
-    const fromStorage = String(globalThis?.localStorage?.getItem?.("pf-multiplayer-api-url") || "").trim();
-    if (fromStorage) return normalizeApiBase(fromStorage);
-  } catch {
-    // Ignore localStorage read errors.
-  }
-
   const fromRuntimeGlobal = String(globalThis?.__PF_MULTIPLAYER_API_URL || "").trim();
   if (fromRuntimeGlobal) return normalizeApiBase(fromRuntimeGlobal);
 
-  // Fallback for mistaken env key usage in deployments.
-  const fromLegacyEnv = String(import.meta?.env?.DOMAIN || "").trim();
-  if (fromLegacyEnv) return normalizeApiBase(fromLegacyEnv);
+  // In production, avoid stale persisted endpoints (e.g. old Render URL) causing silent CORS failures.
+  // Keep localStorage override only for localhost/dev workflows.
+  let isDevHost = false;
+  try {
+    const host = String(globalThis?.location?.hostname || "").toLowerCase();
+    isDevHost = (host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local"));
+  } catch {
+    isDevHost = false;
+  }
+  if (isDevHost) {
+    try {
+      const fromStorage = String(globalThis?.localStorage?.getItem?.("pf-multiplayer-api-url") || "").trim();
+      if (fromStorage) return normalizeApiBase(fromStorage);
+    } catch {
+      // Ignore localStorage read errors.
+    }
+  }
 
   return "";
 }

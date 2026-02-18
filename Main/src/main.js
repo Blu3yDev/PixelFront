@@ -8333,4 +8333,20 @@ function clampInt(v, a, b) {
   return Math.max(a, Math.min(b, n));
 }
 
+function clamp01(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  if (n <= 0) return 0;
+  if (n >= 1) return 1;
+  return n;
+}
+
+function clampPct(value, fallback = 100) {
+  const fallbackNum = Number(fallback);
+  const safeFallback = Number.isFinite(fallbackNum) ? fallbackNum : 100;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return Math.max(0, Math.min(100, Math.round(safeFallback)));
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
 // --- END unchanged block ---

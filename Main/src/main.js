@@ -328,250 +328,54 @@ let menuBgm = null;
 let warBgm = null;
 let activeBgmMode = "none";
 let bgmUnlockArmed = false;
+
 let activeMultiplayerSession = null;
 let multiplayerMatchSocket = null;
 let multiplayerMatchConnected = false;
 let multiplayerMatchReconnectTimer = 0;
 let multiplayerMatchRttMs = 0;
 let multiplayerServerOffsetMs = 0;
+let multiplayerPendingInputSeq = 1;
+let multiplayerLastAckSeq = 0;
 let multiplayerWorldSyncWorld = null;
-let multiplayerWorldSyncApplyingRemote = false;
 let multiplayerWorldSyncOriginals = new Map();
-let multiplayerCancelAllDepth = 0;
-const multiplayerSeenCommandIds = new Set();
-const multiplayerSeenCommandOrder = [];
-const MULTIPLAYER_SEEN_COMMAND_CAP = 4096;
-const multiplayerPendingPacketsBySeq = new Map();
-let multiplayerNextSeqExpected = 1;
-let multiplayerHighestSeqSeen = 0;
-let multiplayerGapResyncAtMs = 0;
+const multiplayerSnapshotBuffer = new Map();
+let multiplayerLatestServerTick = 0;
+let multiplayerLastAppliedTick = 0;
+let multiplayerAwaitingFullSync = false;
+let multiplayerLastSnapshotAtMs = 0;
+let multiplayerLastFullSyncRequestAtMs = 0;
+let multiplayerLastHashMismatchAtMs = 0;
+
+const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 2;
+const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 4500;
+const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 1200;
+const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 1200;
 
 const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
-  setAttackRatio: Object.freeze({
-    cmd: "set_attack_ratio",
-    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
-  }),
-  setMobilization: Object.freeze({
-    cmd: "set_mobilization",
-    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
-  }),
-  startNeutral: Object.freeze({
-    cmd: "start_neutral",
-    shouldSync: () => true
-  }),
-  startWarFocus: Object.freeze({
-    cmd: "start_war_focus",
-    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
-  }),
-  cancelAllOperations: Object.freeze({
-    cmd: "cancel_all_operations",
-    shouldSync: (args) => (args.length === 0 ? true : ((Number(args?.[0]) | 0) === OWNER.PLAYER))
-  }),
-  cancelOperation: Object.freeze({
-    cmd: "cancel_operation",
-    shouldSync: () => true
-  }),
-  donate: Object.freeze({
-    cmd: "donate",
-    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
-  }),
-  declareWar: Object.freeze({
-    cmd: "declare_war",
-    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
-  }),
-  sendWarship: Object.freeze({
-    cmd: "send_warship",
-    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
-  }),
-  requestCeasefire: Object.freeze({
-    cmd: "request_ceasefire",
-    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
-  }),
-  requestAlliance: Object.freeze({
-    cmd: "request_alliance",
-    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
-  }),
-  respondCeasefireRequest: Object.freeze({
-    cmd: "respond_ceasefire_request",
-    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
-  }),
-  respondAllianceRequest: Object.freeze({
-    cmd: "respond_alliance_request",
-    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
-  }),
-  cancelShip: Object.freeze({
-    cmd: "cancel_ship",
-    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
-  }),
-  startMissileSiloBuild: Object.freeze({
-    cmd: "start_missile_silo_build",
-    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
-  }),
-  startAirbaseTransportBuild: Object.freeze({
-    cmd: "start_airbase_transport_build",
-    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
-  }),
-  startBurstExpand: Object.freeze({
-    cmd: "start_burst_expand",
-    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
-  }),
-  startBurstAttack: Object.freeze({
-    cmd: "start_burst_attack",
-    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
-  }),
-  pickSpawn: Object.freeze({
-    cmd: "pick_spawn",
-    shouldSync: (args) => ((Number(args?.[0]) | 0) === OWNER.PLAYER)
-  }),
-  launchMissileWarhead: Object.freeze({
-    cmd: "launch_missile_warhead",
-    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
-  }),
-  launchAirbaseTransport: Object.freeze({
-    cmd: "launch_airbase_transport",
-    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
-  }),
-  placeStructure: Object.freeze({
-    cmd: "place_structure",
-    shouldSync: (args) => ((Number(args?.[1]) | 0) === OWNER.PLAYER)
-  })
+  setAttackRatio: Object.freeze({ cmd: "set_attack_ratio" }),
+  setMobilization: Object.freeze({ cmd: "set_mobilization" }),
+  startNeutral: Object.freeze({ cmd: "start_neutral" }),
+  startWarFocus: Object.freeze({ cmd: "start_war_focus" }),
+  cancelAllOperations: Object.freeze({ cmd: "cancel_all_operations" }),
+  cancelOperation: Object.freeze({ cmd: "cancel_operation" }),
+  donate: Object.freeze({ cmd: "donate" }),
+  declareWar: Object.freeze({ cmd: "declare_war" }),
+  sendWarship: Object.freeze({ cmd: "send_warship" }),
+  requestCeasefire: Object.freeze({ cmd: "request_ceasefire" }),
+  requestAlliance: Object.freeze({ cmd: "request_alliance" }),
+  respondCeasefireRequest: Object.freeze({ cmd: "respond_ceasefire_request" }),
+  respondAllianceRequest: Object.freeze({ cmd: "respond_alliance_request" }),
+  cancelShip: Object.freeze({ cmd: "cancel_ship" }),
+  startMissileSiloBuild: Object.freeze({ cmd: "start_missile_silo_build" }),
+  startAirbaseTransportBuild: Object.freeze({ cmd: "start_airbase_transport_build" }),
+  startBurstExpand: Object.freeze({ cmd: "start_burst_expand" }),
+  startBurstAttack: Object.freeze({ cmd: "start_burst_attack" }),
+  pickSpawn: Object.freeze({ cmd: "pick_spawn" }),
+  launchMissileWarhead: Object.freeze({ cmd: "launch_missile_warhead" }),
+  launchAirbaseTransport: Object.freeze({ cmd: "launch_airbase_transport" }),
+  placeStructure: Object.freeze({ cmd: "place_structure" })
 });
-const MULTIPLAYER_CMD_TO_METHOD = Object.freeze(
-  Object.entries(MULTIPLAYER_WORLD_METHOD_SYNC).reduce((acc, [method, cfg]) => {
-    acc[cfg.cmd] = method;
-    return acc;
-  }, {})
-);
-
-function clamp01(value) {
-  return Math.max(0, Math.min(1, Number(value) || 0));
-}
-
-function clampPct(value, fallback = 0) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return Math.max(0, Math.min(100, Number(fallback) || 0));
-  return Math.max(0, Math.min(100, Math.round(n)));
-}
-
-function menuBgmVolumeValue() {
-  const src = Number(clientSettings?.menuMusicVolume);
-  if (!Number.isFinite(src)) return DEFAULT_MENU_BGM_VOLUME;
-  return clamp01(src / 100);
-}
-
-function warBgmVolumeValue() {
-  const src = Number(clientSettings?.warMusicVolume);
-  if (!Number.isFinite(src)) return DEFAULT_WAR_BGM_VOLUME;
-  return clamp01(src / 100);
-}
-
-function applyBgmVolumes() {
-  if (menuBgm) menuBgm.volume = menuBgmVolumeValue();
-  if (warBgm) warBgm.volume = warBgmVolumeValue();
-}
-
-function createLoopTrack(url, volume) {
-  const a = new Audio(url);
-  a.loop = true;
-  a.preload = "auto";
-  a.volume = clamp01(volume);
-  return a;
-}
-
-function ensureBgmTracks() {
-  if (!menuBgm) menuBgm = createLoopTrack(menuSoundUrl, menuBgmVolumeValue());
-  if (!warBgm) warBgm = createLoopTrack(warSoundUrl, warBgmVolumeValue());
-  applyBgmVolumes();
-}
-
-function stopBgm(track, rewind = true) {
-  if (!track) return;
-  track.pause();
-  if (rewind) {
-    try {
-      track.currentTime = 0;
-    } catch {
-      // Ignore reset errors from unloaded tracks.
-    }
-  }
-}
-
-function playBgm(track) {
-  if (!track) return;
-  const p = track.play();
-  if (p && typeof p.catch === "function") {
-    p.catch(() => {});
-  }
-}
-
-function armBgmUnlock() {
-  if (bgmUnlockArmed || typeof window === "undefined") return;
-  bgmUnlockArmed = true;
-  const unlock = () => {
-    window.removeEventListener("pointerdown", unlock, true);
-    window.removeEventListener("keydown", unlock, true);
-    bgmUnlockArmed = false;
-    if (activeBgmMode === "menu") playBgm(menuBgm);
-    else if (activeBgmMode === "war") playBgm(warBgm);
-  };
-  window.addEventListener("pointerdown", unlock, { capture: true, once: true });
-  window.addEventListener("keydown", unlock, { capture: true, once: true });
-}
-
-function setBgmMode(modeRaw) {
-  const mode = modeRaw === "war" ? "war" : modeRaw === "menu" ? "menu" : "none";
-  ensureBgmTracks();
-  activeBgmMode = mode;
-  if (mode === "menu") {
-    stopBgm(warBgm, true);
-    if (menuBgm) {
-      menuBgm.currentTime = 0;
-      applyBgmVolumes();
-      playBgm(menuBgm);
-    }
-    armBgmUnlock();
-    return;
-  }
-  if (mode === "war") {
-    stopBgm(menuBgm, true);
-    if (warBgm) {
-      warBgm.currentTime = 0;
-      applyBgmVolumes();
-      playBgm(warBgm);
-    }
-    armBgmUnlock();
-    return;
-  }
-  stopBgm(menuBgm, true);
-  stopBgm(warBgm, true);
-}
-
-function makeMultiplayerCommandId() {
-  try {
-    if (globalThis?.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-  } catch {
-    // Ignore randomUUID failures.
-  }
-  return `mpcmd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function rememberMultiplayerCommandId(cmdIdRaw) {
-  const cmdId = String(cmdIdRaw || "").trim();
-  if (!cmdId) return;
-  if (multiplayerSeenCommandIds.has(cmdId)) return;
-  multiplayerSeenCommandIds.add(cmdId);
-  multiplayerSeenCommandOrder.push(cmdId);
-  while (multiplayerSeenCommandOrder.length > MULTIPLAYER_SEEN_COMMAND_CAP) {
-    const old = multiplayerSeenCommandOrder.shift();
-    if (old) multiplayerSeenCommandIds.delete(old);
-  }
-}
-
-function hasSeenMultiplayerCommandId(cmdIdRaw) {
-  const cmdId = String(cmdIdRaw || "").trim();
-  if (!cmdId) return false;
-  return multiplayerSeenCommandIds.has(cmdId);
-}
 
 function normalizeMultiplayerSession(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -580,10 +384,14 @@ function normalizeMultiplayerSession(raw) {
   if (!code || !sessionId) return null;
   const startedAt = Math.max(0, Number(raw.startedAt) || 0);
   const isHost = !!raw.isHost;
+  const playerId = String(raw.playerId || "").trim();
+  const nationId = Math.max(0, Number(raw.nationId) | 0);
   return {
     enabled: true,
     code,
     sessionId,
+    playerId,
+    nationId,
     startedAt,
     serverTick: Math.max(0, Number(raw.serverTick) || 0),
     isHost,
@@ -593,9 +401,17 @@ function normalizeMultiplayerSession(raw) {
 
 function resetMultiplayerWorldSync() {
   multiplayerWorldSyncWorld = null;
-  multiplayerWorldSyncApplyingRemote = false;
   multiplayerWorldSyncOriginals = new Map();
-  multiplayerCancelAllDepth = 0;
+}
+
+function resetMultiplayerSnapshotState() {
+  multiplayerSnapshotBuffer.clear();
+  multiplayerLatestServerTick = 0;
+  multiplayerLastAppliedTick = 0;
+  multiplayerAwaitingFullSync = false;
+  multiplayerLastSnapshotAtMs = Date.now();
+  multiplayerLastFullSyncRequestAtMs = 0;
+  multiplayerLastHashMismatchAtMs = 0;
 }
 
 function clearMultiplayerMatchSocket() {
@@ -622,12 +438,9 @@ function setActiveMultiplayerSession(raw) {
   activeMultiplayerSession = next;
   multiplayerMatchRttMs = 0;
   multiplayerServerOffsetMs = 0;
-  multiplayerSeenCommandIds.clear();
-  multiplayerSeenCommandOrder.length = 0;
-  multiplayerPendingPacketsBySeq.clear();
-  multiplayerNextSeqExpected = 1;
-  multiplayerHighestSeqSeen = 0;
-  multiplayerGapResyncAtMs = 0;
+  multiplayerPendingInputSeq = 1;
+  multiplayerLastAckSeq = 0;
+  resetMultiplayerSnapshotState();
   resetMultiplayerWorldSync();
   clearMultiplayerMatchSocket();
 }
@@ -636,92 +449,44 @@ function isMultiplayerMatchEnabled() {
   return !!(activeMultiplayerSession && activeMultiplayerSession.enabled && activeMultiplayerSession.code && activeMultiplayerSession.sessionId);
 }
 
-function sendMultiplayerMatchCommand(cmdRaw, argsRaw, cmdIdRaw = "") {
-  if (!isMultiplayerMatchEnabled()) return { ok: false, cmdId: "" };
+function hasMultiplayerIdentity() {
+  const sess = activeMultiplayerSession;
+  if (!sess) return false;
+  return !!(String(sess.playerId || "").trim() && ((Number(sess.nationId) | 0) > 0));
+}
+
+function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
+  if (!isMultiplayerMatchEnabled()) {
+    return { ok: false, reason: "Multiplayer session inactive.", seq: 0 };
+  }
+  if (!hasMultiplayerIdentity()) {
+    return { ok: false, reason: "Awaiting server player assignment.", seq: 0 };
+  }
   const ws = multiplayerMatchSocket;
-  if (!ws || ws.readyState !== WebSocket.OPEN) return { ok: false, cmdId: "" };
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return { ok: false, reason: "Multiplayer link disconnected. Reconnecting...", seq: 0 };
+  }
   const cmd = String(cmdRaw || "").trim();
-  if (!cmd) return { ok: false, cmdId: "" };
-  const cmdId = String(cmdIdRaw || "").trim() || makeMultiplayerCommandId();
+  if (!cmd) {
+    return { ok: false, reason: "Invalid multiplayer command.", seq: 0 };
+  }
   const args = Array.isArray(argsRaw) ? argsRaw : [];
+  const seq = Math.max(1, multiplayerPendingInputSeq | 0);
+  multiplayerPendingInputSeq = (seq + 1) | 0;
+  const sess = activeMultiplayerSession;
   try {
     ws.send(JSON.stringify({
-      type: "match_cmd",
-      cmdId,
+      type: "match_input",
+      playerId: String(sess.playerId || ""),
+      nationId: Number(sess.nationId) | 0,
+      seq,
+      clientTime: Date.now(),
       cmd,
       args
     }));
-    return { ok: true, cmdId };
+    return { ok: true, reason: "", seq };
   } catch {
-    return { ok: false, cmdId: "" };
-  }
-}
-
-function queueMultiplayerCommandPacket(rawPacket) {
-  const src = (rawPacket && typeof rawPacket === "object") ? rawPacket : null;
-  if (!src) return;
-  const seq = Number(src.seq) | 0;
-  if (seq <= 0) return;
-  if (seq < multiplayerNextSeqExpected) return;
-  if (multiplayerPendingPacketsBySeq.has(seq)) return;
-  const rawApplyTick = Number(src.applyTick);
-  let applyTick = (Number.isFinite(rawApplyTick) && rawApplyTick >= 0)
-    ? (rawApplyTick | 0)
-    : -1;
-  if (applyTick < 0) {
-    const startedAt = Math.max(0, Number(activeMultiplayerSession?.startedAt) || 0);
-    const applyAtMs = Math.max(0, Number(src.applyAtMs) || 0);
-    if (startedAt > 0 && applyAtMs > 0) {
-      applyTick = Math.max(0, Math.floor((applyAtMs - startedAt) / Math.max(0.001, SIM_DT_S * 1000)));
-    } else {
-      applyTick = 0;
-    }
-  }
-  const packet = {
-    seq,
-    cmdId: String(src.cmdId || "").trim(),
-    cmd: String(src.cmd || "").trim(),
-    args: Array.isArray(src.args) ? src.args : [],
-    applyTick,
-    applyAtMs: Math.max(0, Number(src.applyAtMs) || 0)
-  };
-  multiplayerPendingPacketsBySeq.set(seq, packet);
-  if (seq > multiplayerHighestSeqSeen) multiplayerHighestSeqSeen = seq;
-}
-
-function drainMultiplayerCommandQueue() {
-  if (!isMultiplayerMatchEnabled()) return;
-  if (!multiplayerWorldSyncWorld) return;
-  const localTick = Math.max(0, Math.floor((Number(multiplayerWorldSyncWorld?.time) || 0) / Math.max(0.0001, SIM_DT_S)));
-  let guard = 0;
-  while (guard < 256) {
-    guard++;
-    const packet = multiplayerPendingPacketsBySeq.get(multiplayerNextSeqExpected);
-    if (!packet) break;
-    if ((Number(packet.applyTick) | 0) > localTick) break;
-    multiplayerPendingPacketsBySeq.delete(multiplayerNextSeqExpected);
-    multiplayerNextSeqExpected++;
-    applyIncomingMultiplayerCommand(packet.cmd, packet.args, packet.cmdId);
-  }
-
-  if (multiplayerPendingPacketsBySeq.size <= 0) return;
-  if (multiplayerPendingPacketsBySeq.has(multiplayerNextSeqExpected)) return;
-
-  let minPendingSeq = Number.POSITIVE_INFINITY;
-  for (const seq of multiplayerPendingPacketsBySeq.keys()) {
-    if (seq < minPendingSeq) minPendingSeq = seq;
-  }
-  if (!Number.isFinite(minPendingSeq) || minPendingSeq <= multiplayerNextSeqExpected) return;
-
-  const ws = multiplayerMatchSocket;
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  const nowMs = Date.now();
-  if (nowMs < multiplayerGapResyncAtMs) return;
-  multiplayerGapResyncAtMs = nowMs + 1200;
-  try {
-    ws.send(JSON.stringify({ type: "lobby_state_request" }));
-  } catch {
-    // Ignore resync request send errors.
+    return { ok: false, reason: "Failed to send multiplayer command.", seq: 0 };
   }
 }
 
@@ -737,33 +502,12 @@ function multiplayerQueuedReturnForMethod(methodName, args) {
   return { ok: true, queued: true };
 }
 
-function multiplayerDisconnectedReturnForMethod(methodName) {
+function multiplayerDisconnectedReturnForMethod(methodName, reason = "") {
+  const msg = String(reason || "").trim() || "Multiplayer link disconnected. Reconnecting...";
   if (methodName === "cancelAllOperations") return 0;
   if (methodName === "cancelOperation") return;
   if (methodName === "setAttackRatio" || methodName === "setMobilization") return;
-  return { ok: false, reason: "Multiplayer link disconnected. Reconnecting..." };
-}
-
-function applyIncomingMultiplayerCommand(cmdRaw, argsRaw, cmdIdRaw = "") {
-  const cmd = String(cmdRaw || "").trim();
-  const cmdId = String(cmdIdRaw || "").trim();
-  if (!cmd) return;
-  if (cmdId && hasSeenMultiplayerCommandId(cmdId)) return;
-  const methodName = MULTIPLAYER_CMD_TO_METHOD[cmd];
-  if (!methodName) return;
-  const original = multiplayerWorldSyncOriginals.get(methodName);
-  if (typeof original !== "function") return;
-  if (cmdId) rememberMultiplayerCommandId(cmdId);
-  multiplayerWorldSyncApplyingRemote = true;
-  try {
-    const args = Array.isArray(argsRaw) ? argsRaw : [];
-    original(...args);
-  } catch (err) {
-    console.warn(`[Multiplayer] Failed to apply remote command '${cmd}'.`, err);
-  } finally {
-    multiplayerWorldSyncApplyingRemote = false;
-  }
-  refreshAllUI();
+  return { ok: false, reason: msg };
 }
 
 function installMultiplayerWorldSync(worldRef) {
@@ -772,46 +516,653 @@ function installMultiplayerWorldSync(worldRef) {
   if (multiplayerWorldSyncWorld === worldRef) return;
   resetMultiplayerWorldSync();
   multiplayerWorldSyncWorld = worldRef;
+
   for (const [methodName, rule] of Object.entries(MULTIPLAYER_WORLD_METHOD_SYNC)) {
     const fn = worldRef[methodName];
     if (typeof fn !== "function") continue;
-    const original = fn.bind(worldRef);
-    multiplayerWorldSyncOriginals.set(methodName, original);
+    multiplayerWorldSyncOriginals.set(methodName, fn.bind(worldRef));
     worldRef[methodName] = (...args) => {
-      if (multiplayerWorldSyncApplyingRemote) {
-        if (methodName === "cancelAllOperations") multiplayerCancelAllDepth++;
-        let out = null;
-        try {
-          out = original(...args);
-        } finally {
-          if (methodName === "cancelAllOperations" && multiplayerCancelAllDepth > 0) {
-            multiplayerCancelAllDepth--;
-          }
-        }
-        return out;
-      }
-      const shouldSync = (typeof rule?.shouldSync === "function")
-        ? !!rule.shouldSync(args)
-        : true;
-      if (!shouldSync) {
-        if (methodName === "cancelAllOperations") multiplayerCancelAllDepth++;
-        let out = null;
-        try {
-          out = original(...args);
-        } finally {
-          if (methodName === "cancelAllOperations" && multiplayerCancelAllDepth > 0) {
-            multiplayerCancelAllDepth--;
-          }
-        }
-        return out;
-      }
-      if (methodName === "cancelOperation" && multiplayerCancelAllDepth > 0) return;
-      const sent = sendMultiplayerMatchCommand(rule.cmd, args);
+      const sent = sendMultiplayerMatchInput(rule.cmd, args);
       if (!sent.ok) {
-        return multiplayerDisconnectedReturnForMethod(methodName);
+        return multiplayerDisconnectedReturnForMethod(methodName, sent.reason);
       }
       return multiplayerQueuedReturnForMethod(methodName, args);
     };
+  }
+}
+
+function cloneMultiplayerPayload(value) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
+}
+
+function decodeOwnerPackedBase64(base64Raw) {
+  const b64 = String(base64Raw || "").trim();
+  if (!b64) return null;
+  let binary = "";
+  try {
+    binary = globalThis.atob(b64);
+  } catch {
+    return null;
+  }
+  const byteLen = binary.length | 0;
+  if (byteLen <= 0) return null;
+  const evenLen = byteLen - (byteLen % 2);
+  const out = new Uint16Array(evenLen >> 1);
+  let oi = 0;
+  for (let i = 0; i < evenLen; i += 2) {
+    const lo = binary.charCodeAt(i) & 0xFF;
+    const hi = binary.charCodeAt(i + 1) & 0xFF;
+    out[oi++] = (lo | (hi << 8)) & 0xFFFF;
+  }
+  return out;
+}
+
+function applyOwnerChangesFromList(worldRef, changedTiles) {
+  if (!worldRef || !Array.isArray(changedTiles) || changedTiles.length <= 0) return 0;
+  const ownerArr = worldRef.owner;
+  const landArr = worldRef.land;
+  if (!ownerArr || !landArr || ownerArr.length !== landArr.length) return 0;
+  let applied = 0;
+  worldRef._authoritativeSyncApplying = true;
+  if (typeof worldRef._beginOwnerBatch === "function") worldRef._beginOwnerBatch();
+  try {
+    for (let i = 0; i < changedTiles.length; i++) {
+      const row = changedTiles[i];
+      const idx = Number(row?.idx) | 0;
+      if (idx < 0 || idx >= ownerArr.length) continue;
+      if (!landArr[idx]) continue;
+      const nextOwner = Math.max(0, Number(row?.owner) | 0);
+      if ((ownerArr[idx] | 0) === nextOwner) continue;
+      if (typeof worldRef._setOwner === "function") {
+        worldRef._setOwner(idx, nextOwner);
+      } else {
+        ownerArr[idx] = nextOwner;
+      }
+      applied++;
+    }
+  } finally {
+    if (typeof worldRef._endOwnerBatch === "function") worldRef._endOwnerBatch();
+    worldRef._authoritativeSyncApplying = false;
+  }
+  return applied;
+}
+
+function applyPackedOwnerSnapshot(worldRef, ownerPackedRaw) {
+  if (!worldRef) return 0;
+  const incoming = decodeOwnerPackedBase64(ownerPackedRaw);
+  if (!incoming) return 0;
+  const ownerArr = worldRef.owner;
+  const landArr = worldRef.land;
+  if (!ownerArr || !landArr || ownerArr.length !== landArr.length) return 0;
+  const n = Math.min(ownerArr.length, incoming.length);
+  let applied = 0;
+  worldRef._authoritativeSyncApplying = true;
+  if (typeof worldRef._beginOwnerBatch === "function") worldRef._beginOwnerBatch();
+  try {
+    for (let idx = 0; idx < n; idx++) {
+      if (!landArr[idx]) continue;
+      const nextOwner = Math.max(0, incoming[idx] | 0);
+      if ((ownerArr[idx] | 0) === nextOwner) continue;
+      if (typeof worldRef._setOwner === "function") {
+        worldRef._setOwner(idx, nextOwner);
+      } else {
+        ownerArr[idx] = nextOwner;
+      }
+      applied++;
+    }
+  } finally {
+    if (typeof worldRef._endOwnerBatch === "function") worldRef._endOwnerBatch();
+    worldRef._authoritativeSyncApplying = false;
+  }
+  return applied;
+}
+function rebuildMultiplayerStructureIndexes(worldRef) {
+  if (!worldRef) return;
+  if (!Array.isArray(worldRef.structures)) worldRef.structures = [];
+  if (!worldRef._structureById || typeof worldRef._structureById.clear !== "function") {
+    worldRef._structureById = new Map();
+  }
+  worldRef._structureById.clear();
+  if (worldRef._structAt && typeof worldRef._structAt.fill === "function") {
+    worldRef._structAt.fill(0);
+  }
+
+  let nextStructId = 1;
+  for (let i = 0; i < worldRef.structures.length; i++) {
+    const st = worldRef.structures[i];
+    if (!st || typeof st !== "object") continue;
+    const sid = Math.max(1, Number(st.id) | 0);
+    st.id = sid;
+    st.owner = Math.max(0, Number(st.owner) | 0);
+    st.x = Number(st.x) | 0;
+    st.y = Number(st.y) | 0;
+    worldRef._structureById.set(sid, st);
+    if (typeof worldRef._markStructureFootprint === "function") {
+      worldRef._markStructureFootprint(sid, st.x | 0, st.y | 0);
+    }
+    if (sid >= nextStructId) nextStructId = sid + 1;
+  }
+  worldRef._nextStructId = nextStructId;
+}
+
+function rebuildMultiplayerStructureCaches(worldRef) {
+  if (!worldRef) return;
+  if (worldRef._cityCount && typeof worldRef._cityCount.fill === "function") worldRef._cityCount.fill(0);
+  if (worldRef._factoryCount && typeof worldRef._factoryCount.fill === "function") worldRef._factoryCount.fill(0);
+  if (worldRef._barracksCount && typeof worldRef._barracksCount.fill === "function") worldRef._barracksCount.fill(0);
+  if (worldRef._portCount && typeof worldRef._portCount.fill === "function") worldRef._portCount.fill(0);
+
+  const totalOwners = Math.max(0, Number(worldRef._nationCount) | 0);
+  if (Array.isArray(worldRef._portsByOwner)) {
+    for (let i = 0; i <= totalOwners; i++) {
+      if (Array.isArray(worldRef._portsByOwner[i])) worldRef._portsByOwner[i].length = 0;
+    }
+  }
+  if (Array.isArray(worldRef._defencePostsByOwner)) {
+    for (let i = 0; i <= totalOwners; i++) {
+      if (Array.isArray(worldRef._defencePostsByOwner[i])) worldRef._defencePostsByOwner[i].length = 0;
+    }
+  }
+
+  const structures = Array.isArray(worldRef.structures) ? worldRef.structures : [];
+  for (let i = 0; i < structures.length; i++) {
+    const st = structures[i];
+    if (!st) continue;
+    const ownerId = Math.max(0, Number(st.owner) | 0);
+    if (ownerId <= 0 || ownerId > totalOwners) continue;
+    const count = Math.max(1, Number(st.count) | 0 || 1);
+    const type = String(st.type || "");
+    if (type === "city" && worldRef._cityCount) worldRef._cityCount[ownerId] += count;
+    else if (type === "factory" && worldRef._factoryCount) worldRef._factoryCount[ownerId] += count;
+    else if (type === "barracks" && worldRef._barracksCount) worldRef._barracksCount[ownerId] += count;
+    else if (type === "port") {
+      if (worldRef._portCount) worldRef._portCount[ownerId] += count;
+      if (Array.isArray(worldRef._portsByOwner?.[ownerId])) worldRef._portsByOwner[ownerId].push(st);
+    } else if (type === "defence_post") {
+      if (Array.isArray(worldRef._defencePostsByOwner?.[ownerId])) worldRef._defencePostsByOwner[ownerId].push(st);
+    }
+  }
+  worldRef._defencePostCacheReady = true;
+}
+
+function rebuildMultiplayerBuildQueues(worldRef) {
+  if (!worldRef) return;
+  if (worldRef._activeSiloBuildIds && typeof worldRef._activeSiloBuildIds.clear === "function") {
+    worldRef._activeSiloBuildIds.clear();
+  }
+  if (worldRef._activeAirbaseBuildIds && typeof worldRef._activeAirbaseBuildIds.clear === "function") {
+    worldRef._activeAirbaseBuildIds.clear();
+  }
+
+  const structures = Array.isArray(worldRef.structures) ? worldRef.structures : [];
+  for (let i = 0; i < structures.length; i++) {
+    const st = structures[i];
+    if (!st || typeof st !== "object") continue;
+    const sid = Math.max(0, Number(st.id) | 0);
+    if (!sid) continue;
+    const type = String(st.type || "");
+    if (type === "missile_silo") {
+      const d = st?.data?.missileSilo;
+      const hasBuild = !!(d && String(d.buildType || "").trim() && (Number(d.buildRemainingS) || 0) > 0.00001);
+      if (hasBuild && worldRef._activeSiloBuildIds) worldRef._activeSiloBuildIds.add(sid);
+    } else if (type === "airbase") {
+      const d = st?.data?.airbase;
+      const hasBuild = !!(d && (Number(d.buildRemainingS) || 0) > 0.00001);
+      if (hasBuild && worldRef._activeAirbaseBuildIds) worldRef._activeAirbaseBuildIds.add(sid);
+    }
+  }
+}
+
+function maxEntityId(list, fallback = 1) {
+  if (!Array.isArray(list) || list.length <= 0) return Math.max(1, fallback | 0);
+  let max = Math.max(0, fallback | 0);
+  for (let i = 0; i < list.length; i++) {
+    const id = Math.max(0, Number(list[i]?.id) | 0);
+    if (id > max) max = id;
+  }
+  return Math.max(1, max + 1);
+}
+
+function applyMultiplayerEntities(worldRef, changedEntities) {
+  if (!worldRef || !changedEntities || typeof changedEntities !== "object") return;
+
+  if (Array.isArray(changedEntities.structures)) {
+    const structures = cloneMultiplayerPayload(changedEntities.structures);
+    worldRef.structures = Array.isArray(structures) ? structures : [];
+    rebuildMultiplayerStructureIndexes(worldRef);
+    rebuildMultiplayerStructureCaches(worldRef);
+    rebuildMultiplayerBuildQueues(worldRef);
+  }
+
+  if (Array.isArray(changedEntities.ships)) {
+    const ships = cloneMultiplayerPayload(changedEntities.ships);
+    worldRef.ships = Array.isArray(ships) ? ships : [];
+    worldRef._nextShipId = maxEntityId(worldRef.ships, worldRef._nextShipId || 1);
+  }
+
+  if (Array.isArray(changedEntities.nukeFlights)) {
+    const flights = cloneMultiplayerPayload(changedEntities.nukeFlights);
+    worldRef.nukeFlights = Array.isArray(flights) ? flights : [];
+    worldRef._nextNukeFlightId = maxEntityId(worldRef.nukeFlights, worldRef._nextNukeFlightId || 1);
+  }
+
+  if (Array.isArray(changedEntities.airborneMissions)) {
+    const missions = cloneMultiplayerPayload(changedEntities.airborneMissions);
+    worldRef.airborneMissions = Array.isArray(missions) ? missions : [];
+    worldRef._nextAirborneMissionId = maxEntityId(worldRef.airborneMissions, worldRef._nextAirborneMissionId || 1);
+  }
+
+  if (Array.isArray(changedEntities.operations)) {
+    const ops = cloneMultiplayerPayload(changedEntities.operations);
+    worldRef.operations = Array.isArray(ops) ? ops : [];
+    worldRef._nextOpId = maxEntityId(worldRef.operations, worldRef._nextOpId || 1);
+  }
+}
+
+function applyMultiplayerNationStats(worldRef, nationStats) {
+  if (!worldRef || !Array.isArray(nationStats)) return;
+  if (!Array.isArray(worldRef.nation)) return;
+
+  for (let i = 0; i < nationStats.length; i++) {
+    const row = nationStats[i];
+    if (!row || typeof row !== "object") continue;
+    const id = Math.max(1, Number(row.id) | 0);
+    if (id >= worldRef.nation.length) continue;
+    const cur = (worldRef.nation[id] && typeof worldRef.nation[id] === "object")
+      ? worldRef.nation[id]
+      : { id };
+    const clone = cloneMultiplayerPayload(row) || {};
+    clone.id = id;
+    worldRef.nation[id] = { ...cur, ...clone };
+  }
+
+  worldRef.player = worldRef.nation[OWNER.PLAYER] || worldRef.player || null;
+}
+
+function applyMultiplayerRelations(worldRef, rel) {
+  if (!worldRef || !rel || typeof rel !== "object") return;
+
+  if (worldRef._atWar && typeof worldRef._atWar.fill === "function") worldRef._atWar.fill(0);
+  if (worldRef._alliedUntil && typeof worldRef._alliedUntil.fill === "function") worldRef._alliedUntil.fill(0);
+  if (worldRef._ceasefireUntil && typeof worldRef._ceasefireUntil.fill === "function") worldRef._ceasefireUntil.fill(0);
+  if (worldRef._pendingUntil && typeof worldRef._pendingUntil.fill === "function") worldRef._pendingUntil.fill(0);
+  if (worldRef._pendingFrom && typeof worldRef._pendingFrom.fill === "function") worldRef._pendingFrom.fill(0);
+  if (worldRef._ceasefirePendingUntil && typeof worldRef._ceasefirePendingUntil.fill === "function") worldRef._ceasefirePendingUntil.fill(0);
+  if (worldRef._ceasefirePendingFrom && typeof worldRef._ceasefirePendingFrom.fill === "function") worldRef._ceasefirePendingFrom.fill(0);
+  if (worldRef._warsByNation && typeof worldRef._warsByNation.fill === "function") worldRef._warsByNation.fill(0);
+  if (worldRef._activeWarPairs && typeof worldRef._activeWarPairs.clear === "function") worldRef._activeWarPairs.clear();
+  if (worldRef._warPairLastSolveAt && typeof worldRef._warPairLastSolveAt.clear === "function") worldRef._warPairLastSolveAt.clear();
+
+  const wars = Array.isArray(rel.wars) ? rel.wars : [];
+  for (let i = 0; i < wars.length; i++) {
+    const row = wars[i];
+    const a = Math.max(1, Number(row?.[0]) | 0);
+    const b = Math.max(1, Number(row?.[1]) | 0);
+    if (a <= 0 || b <= 0 || a === b) continue;
+    if (typeof worldRef._setWar === "function") worldRef._setWar(a, b, true);
+  }
+
+  const alliances = Array.isArray(rel.alliances) ? rel.alliances : [];
+  for (let i = 0; i < alliances.length; i++) {
+    const row = alliances[i];
+    const a = Math.max(1, Number(row?.[0]) | 0);
+    const b = Math.max(1, Number(row?.[1]) | 0);
+    const until = Math.max(0, Number(row?.[2]) || 0);
+    if (a <= 0 || b <= 0 || a === b) continue;
+    if (typeof worldRef._setAlliance === "function") worldRef._setAlliance(a, b, until);
+  }
+
+  const ceasefires = Array.isArray(rel.ceasefires) ? rel.ceasefires : [];
+  for (let i = 0; i < ceasefires.length; i++) {
+    const row = ceasefires[i];
+    const a = Math.max(1, Number(row?.[0]) | 0);
+    const b = Math.max(1, Number(row?.[1]) | 0);
+    const until = Math.max(0, Number(row?.[2]) || 0);
+    if (a <= 0 || b <= 0 || a === b) continue;
+    if (typeof worldRef._setCeasefire === "function") worldRef._setCeasefire(a, b, until);
+  }
+
+  const pendingAlliances = Array.isArray(rel.pendingAlliances) ? rel.pendingAlliances : [];
+  for (let i = 0; i < pendingAlliances.length; i++) {
+    const row = pendingAlliances[i];
+    const a = Math.max(1, Number(row?.[0]) | 0);
+    const b = Math.max(1, Number(row?.[1]) | 0);
+    const from = Math.max(1, Number(row?.[2]) | 0);
+    const until = Math.max(0, Number(row?.[3]) || 0);
+    if (a <= 0 || b <= 0 || a === b) continue;
+    if (typeof worldRef._setPending === "function") worldRef._setPending(a, b, from, until);
+  }
+
+  const pendingCeasefires = Array.isArray(rel.pendingCeasefires) ? rel.pendingCeasefires : [];
+  for (let i = 0; i < pendingCeasefires.length; i++) {
+    const row = pendingCeasefires[i];
+    const a = Math.max(1, Number(row?.[0]) | 0);
+    const b = Math.max(1, Number(row?.[1]) | 0);
+    const from = Math.max(1, Number(row?.[2]) | 0);
+    const until = Math.max(0, Number(row?.[3]) || 0);
+    if (a <= 0 || b <= 0 || a === b) continue;
+    if (typeof worldRef._setCeasefirePending === "function") worldRef._setCeasefirePending(a, b, from, until);
+  }
+}
+
+function applyMultiplayerEvents(worldRef, eventsRaw) {
+  if (!worldRef) return;
+  const events = Array.isArray(eventsRaw) ? (cloneMultiplayerPayload(eventsRaw) || []) : [];
+  worldRef.globalEvents = Array.isArray(events) ? events : [];
+  worldRef.events = Array.isArray(events) ? events.slice() : [];
+}
+
+function applyMultiplayerWorldMeta(worldRef, packet) {
+  if (!worldRef) return;
+  const meta = (packet?.worldMeta && typeof packet.worldMeta === "object") ? packet.worldMeta : {};
+  const tick = Math.max(0, Number(packet?.tick) | 0);
+  const t = Number(meta.time);
+  if (Number.isFinite(t) && t >= 0) worldRef.time = t;
+  const ownerVersion = Number(meta.ownerVersion);
+  if (Number.isFinite(ownerVersion) && ownerVersion >= 0) worldRef.ownerVersion = Math.max(0, ownerVersion | 0);
+  worldRef.gameOver = cloneMultiplayerPayload(meta.gameOver) || null;
+  worldRef.matchOutcome = cloneMultiplayerPayload(meta.matchOutcome) || null;
+  worldRef.focusOpId = Math.max(0, Number(meta.focusOpId) | 0);
+  worldRef._simTick = tick;
+
+  const spawnRaw = (meta.spawnPhase && typeof meta.spawnPhase === "object")
+    ? (cloneMultiplayerPayload(meta.spawnPhase) || null)
+    : null;
+  if (!spawnRaw) {
+    worldRef._spawnPhase = null;
+    return;
+  }
+
+  if (Array.isArray(spawnRaw.pickedIds)) {
+    const picked = new Uint8Array((worldRef._nationCount | 0) + 1);
+    for (let i = 0; i < spawnRaw.pickedIds.length; i++) {
+      const id = Math.max(0, Number(spawnRaw.pickedIds[i]) | 0);
+      if (id > 0 && id < picked.length) picked[id] = 1;
+    }
+    spawnRaw.picked = picked;
+    spawnRaw.pickedCount = spawnRaw.pickedIds.length | 0;
+  }
+  worldRef._spawnPhase = spawnRaw;
+}
+
+function flushMultiplayerPixelWrites(worldRef) {
+  if (!worldRef || typeof worldRef._flushQueuedPixelWrites !== "function") return;
+  for (let i = 0; i < 8; i++) {
+    worldRef._flushQueuedPixelWrites();
+    if (!Array.isArray(worldRef._pixelWriteList) || worldRef._pixelWriteList.length <= 0) break;
+  }
+}
+function multiplayerHashMixString(state, textRaw) {
+  const text = String(textRaw || "");
+  let h = state >>> 0;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i) & 0xFF;
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+
+function multiplayerHashMixNumber(state, value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return multiplayerHashMixString(state, "NaN");
+  return multiplayerHashMixString(state, String(Math.round(n)));
+}
+
+function computeMultiplayerStateHashFromWorld(worldRef, tickRaw = 0) {
+  if (!worldRef || typeof worldRef !== "object") return "";
+  let h = 2166136261 >>> 0;
+  const tick = Math.max(0, Number(tickRaw) | 0);
+  h = multiplayerHashMixNumber(h, tick);
+  h = multiplayerHashMixNumber(h, worldRef.ownerVersion | 0);
+  h = multiplayerHashMixNumber(h, Math.round((Number(worldRef.time) || 0) * 1000));
+  h = multiplayerHashMixNumber(h, worldRef.focusOpId | 0);
+
+  const nationCount = Math.max(1, Number(worldRef._nationCount) | 0);
+  for (let id = 1; id <= nationCount; id++) {
+    const n = worldRef.nation?.[id] || null;
+    h = multiplayerHashMixNumber(h, id);
+    h = multiplayerHashMixNumber(h, n?.alive ? 1 : 0);
+    h = multiplayerHashMixNumber(h, n?.collapsed ? 1 : 0);
+    h = multiplayerHashMixNumber(h, Math.floor(Number(n?.gold) || 0));
+    h = multiplayerHashMixNumber(h, Math.floor(Number(n?.infantry) || 0));
+    h = multiplayerHashMixNumber(h, Math.floor(Number(n?.population) || 0));
+    h = multiplayerHashMixNumber(h, Math.floor(Number(worldRef.landOwnedCount?.[id]) || 0));
+    h = multiplayerHashMixNumber(h, Math.round((Number(n?.attackRatio) || 0) * 1000));
+    h = multiplayerHashMixNumber(h, Math.round((Number(n?.mobilization) || 0) * 1000));
+  }
+
+  const now = Number(worldRef.time) || 0;
+  if (typeof worldRef._pair === "function") {
+    for (let a = 1; a <= nationCount; a++) {
+      for (let b = a + 1; b <= nationCount; b++) {
+        const p = worldRef._pair(a, b) | 0;
+        if ((worldRef._atWar?.[p] | 0) === 1) {
+          h = multiplayerHashMixString(h, "w");
+          h = multiplayerHashMixNumber(h, a);
+          h = multiplayerHashMixNumber(h, b);
+        }
+        const allyUntil = Number(worldRef._alliedUntil?.[p]) || 0;
+        if (allyUntil > now) {
+          h = multiplayerHashMixString(h, "a");
+          h = multiplayerHashMixNumber(h, a);
+          h = multiplayerHashMixNumber(h, b);
+          h = multiplayerHashMixNumber(h, Math.round(allyUntil * 10));
+        }
+        const ceaseUntil = Number(worldRef._ceasefireUntil?.[p]) || 0;
+        if (ceaseUntil > now) {
+          h = multiplayerHashMixString(h, "c");
+          h = multiplayerHashMixNumber(h, a);
+          h = multiplayerHashMixNumber(h, b);
+          h = multiplayerHashMixNumber(h, Math.round(ceaseUntil * 10));
+        }
+        const pendingUntil = Number(worldRef._pendingUntil?.[p]) || 0;
+        if (pendingUntil > now) {
+          h = multiplayerHashMixString(h, "p");
+          h = multiplayerHashMixNumber(h, a);
+          h = multiplayerHashMixNumber(h, b);
+          h = multiplayerHashMixNumber(h, Number(worldRef._pendingFrom?.[p]) | 0);
+          h = multiplayerHashMixNumber(h, Math.round(pendingUntil * 10));
+        }
+        const ceasePendingUntil = Number(worldRef._ceasefirePendingUntil?.[p]) || 0;
+        if (ceasePendingUntil > now) {
+          h = multiplayerHashMixString(h, "cp");
+          h = multiplayerHashMixNumber(h, a);
+          h = multiplayerHashMixNumber(h, b);
+          h = multiplayerHashMixNumber(h, Number(worldRef._ceasefirePendingFrom?.[p]) | 0);
+          h = multiplayerHashMixNumber(h, Math.round(ceasePendingUntil * 10));
+        }
+      }
+    }
+  }
+
+  const mixEntityList = (prefix, list, ownerKeys = []) => {
+    const rows = Array.isArray(list) ? list : [];
+    h = multiplayerHashMixString(h, prefix);
+    h = multiplayerHashMixNumber(h, rows.length);
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      h = multiplayerHashMixNumber(h, Number(row.id) | 0);
+      h = multiplayerHashMixString(h, String(row.type || row.kind || ""));
+      for (let k = 0; k < ownerKeys.length; k++) {
+        h = multiplayerHashMixNumber(h, Number(row[ownerKeys[k]]) | 0);
+      }
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.x) || 0) * 100));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.y) || 0) * 100));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.px) || 0) * 100));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.py) || 0) * 100));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.ageS) || 0) * 100));
+    }
+  };
+
+  mixEntityList("st", worldRef.structures, ["owner"]);
+  mixEntityList("sh", worldRef.ships, ["owner", "missionDefender"]);
+  mixEntityList("nf", worldRef.nukeFlights, ["owner", "launchTargetOwner"]);
+  mixEntityList("am", worldRef.airborneMissions, ["owner"]);
+  mixEntityList("op", worldRef.operations, ["attacker", "defender"]);
+
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+function requestMultiplayerFullSync(reasonRaw = "") {
+  const ws = multiplayerMatchSocket;
+  if (!isMultiplayerMatchEnabled() || !ws || ws.readyState !== WebSocket.OPEN) return false;
+  const now = Date.now();
+  if (now < multiplayerLastFullSyncRequestAtMs) return false;
+  multiplayerLastFullSyncRequestAtMs = now + MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS;
+  const reason = String(reasonRaw || "manual").trim() || "manual";
+  let localHash = "";
+  try {
+    localHash = computeMultiplayerStateHashFromWorld(multiplayerWorldSyncWorld, multiplayerLastAppliedTick);
+  } catch {
+    localHash = "";
+  }
+  try {
+    ws.send(JSON.stringify({
+      type: "full_sync_request",
+      reason,
+      clientTick: Math.max(0, multiplayerLastAppliedTick | 0),
+      clientHash: localHash
+    }));
+    multiplayerAwaitingFullSync = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function maybeHandleMultiplayerStateHashMismatch(packet) {
+  const expected = String(packet?.stateHash || "").trim();
+  if (!expected) return;
+  const actual = computeMultiplayerStateHashFromWorld(multiplayerWorldSyncWorld, Number(packet?.tick) | 0);
+  if (!actual || actual === expected) return;
+  const now = Date.now();
+  if (now < multiplayerLastHashMismatchAtMs) return;
+  multiplayerLastHashMismatchAtMs = now + MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS;
+  requestMultiplayerFullSync("hash_mismatch");
+}
+
+function applyMultiplayerSnapshotPacket(packet, isFullSync = false) {
+  const worldRef = multiplayerWorldSyncWorld;
+  if (!worldRef || !packet || typeof packet !== "object") return false;
+  const tick = Math.max(0, Number(packet.tick) | 0);
+
+  if (isFullSync) {
+    if (packet.ownerPacked) {
+      applyPackedOwnerSnapshot(worldRef, packet.ownerPacked);
+    } else if (Array.isArray(packet.changedTiles)) {
+      applyOwnerChangesFromList(worldRef, packet.changedTiles);
+    }
+  } else if (Array.isArray(packet.changedTiles) && packet.changedTiles.length > 0) {
+    applyOwnerChangesFromList(worldRef, packet.changedTiles);
+  }
+
+  if (packet.changedEntities && typeof packet.changedEntities === "object") {
+    applyMultiplayerEntities(worldRef, packet.changedEntities);
+  }
+  if (Array.isArray(packet.nationStats)) {
+    applyMultiplayerNationStats(worldRef, packet.nationStats);
+  }
+  if (packet.relations && typeof packet.relations === "object") {
+    applyMultiplayerRelations(worldRef, packet.relations);
+  }
+  if (Array.isArray(packet.events)) {
+    applyMultiplayerEvents(worldRef, packet.events);
+  }
+  applyMultiplayerWorldMeta(worldRef, packet);
+
+  if (Array.isArray(packet.leaderboard)) {
+    worldRef._serverLeaderboard = cloneMultiplayerPayload(packet.leaderboard) || [];
+  }
+
+  flushMultiplayerPixelWrites(worldRef);
+  worldRef.dirty = true;
+
+  multiplayerLastAppliedTick = Math.max(multiplayerLastAppliedTick, tick);
+  multiplayerLatestServerTick = Math.max(multiplayerLatestServerTick, tick);
+  multiplayerLastSnapshotAtMs = Date.now();
+  multiplayerAwaitingFullSync = false;
+
+  if (activeMultiplayerSession) {
+    activeMultiplayerSession.serverTick = Math.max(Number(activeMultiplayerSession.serverTick) || 0, tick);
+    const startedAt = Math.max(0, Number(packet?.worldMeta?.startedAt) || 0);
+    if (startedAt > 0) activeMultiplayerSession.startedAt = startedAt;
+  }
+
+  maybeHandleMultiplayerStateHashMismatch(packet);
+  refreshAllUI();
+  return true;
+}
+
+function queueMultiplayerSnapshotPacket(packet) {
+  if (!packet || typeof packet !== "object") return;
+  const tick = Math.max(0, Number(packet.tick) | 0);
+  if (tick <= 0) return;
+  if (tick <= multiplayerLastAppliedTick) return;
+  if (multiplayerSnapshotBuffer.has(tick)) return;
+  const cloned = cloneMultiplayerPayload(packet);
+  if (!cloned) return;
+  multiplayerSnapshotBuffer.set(tick, cloned);
+  multiplayerLatestServerTick = Math.max(multiplayerLatestServerTick, tick);
+  multiplayerLastSnapshotAtMs = Date.now();
+
+  if (multiplayerSnapshotBuffer.size > 240) {
+    const sorted = Array.from(multiplayerSnapshotBuffer.keys()).sort((a, b) => a - b);
+    while (sorted.length > 220) {
+      const oldTick = sorted.shift();
+      multiplayerSnapshotBuffer.delete(oldTick);
+    }
+  }
+}
+
+function drainMultiplayerSnapshotBuffer(force = false) {
+  if (!isMultiplayerMatchEnabled()) return;
+  if (!multiplayerWorldSyncWorld) return;
+
+  const now = Date.now();
+  if (multiplayerLatestServerTick <= 0) {
+    if (now - multiplayerLastSnapshotAtMs > MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS) {
+      requestMultiplayerFullSync("no_snapshot");
+    }
+    return;
+  }
+
+  const targetTick = force
+    ? multiplayerLatestServerTick
+    : Math.max(0, multiplayerLatestServerTick - MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS);
+
+  let progressed = false;
+  let guard = 0;
+  while (guard < 256) {
+    guard++;
+    const nextTick = (multiplayerLastAppliedTick | 0) + 1;
+    if (nextTick > targetTick) break;
+    const packet = multiplayerSnapshotBuffer.get(nextTick);
+    if (!packet) break;
+    multiplayerSnapshotBuffer.delete(nextTick);
+    applyMultiplayerSnapshotPacket(packet, false);
+    progressed = true;
+  }
+
+  if (!progressed) {
+    const expectedTick = (multiplayerLastAppliedTick | 0) + 1;
+    if (expectedTick <= targetTick && (now - multiplayerLastSnapshotAtMs) > MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS) {
+      requestMultiplayerFullSync("gap_or_stale");
+    }
+  }
+}
+
+function handleMultiplayerCommandAck(msg) {
+  const ackSeq = Math.max(0, Number(msg?.ackSeq) | 0);
+  if (ackSeq > 0) {
+    multiplayerLastAckSeq = Math.max(multiplayerLastAckSeq, ackSeq);
+  }
+  const tick = Math.max(0, Number(msg?.serverTickProcessed) | 0);
+  if (activeMultiplayerSession && tick > 0) {
+    activeMultiplayerSession.serverTick = Math.max(Number(activeMultiplayerSession.serverTick) || 0, tick);
   }
 }
 
@@ -834,6 +1185,7 @@ function connectMultiplayerMatchSocket() {
     } catch {
       // Ignore ping send errors.
     }
+    requestMultiplayerFullSync("on_open");
     if (hud && typeof hud.setOpMessage === "function") {
       hud.setOpMessage("Multiplayer link connected.");
     }
@@ -847,6 +1199,7 @@ function connectMultiplayerMatchSocket() {
       return;
     }
     const type = String(msg?.type || "");
+
     if (type === "pong") {
       const ct = Number(msg?.clientTime) || 0;
       const st = Number(msg?.serverTime) || 0;
@@ -859,13 +1212,20 @@ function connectMultiplayerMatchSocket() {
       }
       return;
     }
+
     if (type === "hello") {
       const serverTime = Number(msg?.serverTime) || 0;
       if (serverTime > 0) {
         multiplayerServerOffsetMs = serverTime - Date.now();
       }
-      const start = msg?.lobby?.start;
-      const startedAt = Math.max(0, Number(start?.startedAt) || 0);
+      const viewer = (msg?.viewer && typeof msg.viewer === "object") ? msg.viewer : null;
+      if (activeMultiplayerSession && viewer) {
+        const pid = String(viewer.playerId || "").trim();
+        const nid = Math.max(0, Number(viewer.nationId) | 0);
+        if (pid) activeMultiplayerSession.playerId = pid;
+        if (nid > 0) activeMultiplayerSession.nationId = nid;
+      }
+      const startedAt = Math.max(0, Number(msg?.lobby?.start?.startedAt) || 0);
       if (startedAt > 0 && activeMultiplayerSession) {
         activeMultiplayerSession.startedAt = startedAt;
       }
@@ -873,55 +1233,62 @@ function connectMultiplayerMatchSocket() {
       if (activeMultiplayerSession && helloTick > 0) {
         activeMultiplayerSession.serverTick = Math.max(Number(activeMultiplayerSession.serverTick) || 0, helloTick);
       }
-      const history = Array.isArray(msg?.match?.commands) ? msg.match.commands : [];
-      if (history.length > 0) {
-        let minSeq = Number.POSITIVE_INFINITY;
-        for (let i = 0; i < history.length; i++) {
-          const s = Number(history[i]?.seq) | 0;
-          if (s > 0 && s < minSeq) minSeq = s;
-        }
-        if (multiplayerNextSeqExpected <= 1 && Number.isFinite(minSeq) && minSeq > 0) {
-          multiplayerNextSeqExpected = Math.max(1, minSeq);
-        }
-      } else {
-        const serverSeq = Number(msg?.match?.seq) | 0;
-        if (serverSeq > 0) {
-          multiplayerNextSeqExpected = Math.max(multiplayerNextSeqExpected, serverSeq + 1);
-        }
-      }
-      for (let i = 0; i < history.length; i++) {
-        const row = history[i];
-        queueMultiplayerCommandPacket(row);
-      }
-      drainMultiplayerCommandQueue();
+      requestMultiplayerFullSync("hello");
       return;
     }
+
     if (type === "lobby_update" || type === "started") {
       const serverTime = Number(msg?.serverTime) || 0;
       if (serverTime > 0) {
         multiplayerServerOffsetMs = serverTime - Date.now();
       }
-      const start = msg?.lobby?.start;
-      const startedAt = Math.max(0, Number(start?.startedAt) || 0);
+      const startedAt = Math.max(0, Number(msg?.lobby?.start?.startedAt) || 0);
       if (startedAt > 0 && activeMultiplayerSession) {
         activeMultiplayerSession.startedAt = startedAt;
       }
-      return;
-    }
-    if (type === "match_tick") {
-      const serverTime = Number(msg?.serverTime) || 0;
-      if (serverTime > 0) {
-        multiplayerServerOffsetMs = serverTime - Date.now();
-      }
-      const tick = Math.max(0, Number(msg?.tick) || 0);
-      if (activeMultiplayerSession && tick > 0) {
-        activeMultiplayerSession.serverTick = Math.max(Number(activeMultiplayerSession.serverTick) || 0, tick);
+      const viewer = (msg?.viewer && typeof msg.viewer === "object") ? msg.viewer : null;
+      if (activeMultiplayerSession && viewer) {
+        const pid = String(viewer.playerId || "").trim();
+        const nid = Math.max(0, Number(viewer.nationId) | 0);
+        if (pid) activeMultiplayerSession.playerId = pid;
+        if (nid > 0) activeMultiplayerSession.nationId = nid;
       }
       return;
     }
-    if (type === "match_cmd") {
-      queueMultiplayerCommandPacket(msg);
-      drainMultiplayerCommandQueue();
+
+    if (type === "cmd_ack") {
+      handleMultiplayerCommandAck(msg);
+      return;
+    }
+
+    if (type === "cmd_reject") {
+      const reason = String(msg?.reason || "Command rejected.").trim();
+      if (hud && typeof hud.setOpMessage === "function" && reason) {
+        hud.setOpMessage(reason);
+      }
+      return;
+    }
+
+    if (type === "snapshot_delta") {
+      queueMultiplayerSnapshotPacket(msg);
+      drainMultiplayerSnapshotBuffer(false);
+      return;
+    }
+
+    if (type === "full_sync") {
+      resetMultiplayerSnapshotState();
+      const tick = Math.max(0, Number(msg?.tick) | 0);
+      multiplayerLastAppliedTick = Math.max(0, tick);
+      multiplayerLatestServerTick = Math.max(0, tick);
+      applyMultiplayerSnapshotPacket(msg, true);
+      return;
+    }
+
+    if (type === "error") {
+      const reason = String(msg?.reason || "").trim();
+      if (reason && hud && typeof hud.setOpMessage === "function") {
+        hud.setOpMessage(reason);
+      }
     }
   };
 
@@ -2294,6 +2661,8 @@ function createMainMenuController(options = null) {
   let lobbySocketConnected = false;
   let lobbyPingTimer = 0;
   let lobbyRttMs = 0;
+  let multiplayerViewerPlayerId = "";
+  let multiplayerViewerNationId = 0;
 
   const hasMultiplayerApi = () => !!MULTIPLAYER_API_BASE;
 
@@ -2317,6 +2686,14 @@ function createMainMenuController(options = null) {
     if (msg.includes("invalid lobby code")) return true;
     if (status === 400 && msg.includes("request failed")) return true;
     return false;
+  };
+
+  const applyViewerIdentity = (viewerRaw) => {
+    const viewer = (viewerRaw && typeof viewerRaw === "object") ? viewerRaw : null;
+    const pid = String(viewer?.playerId || "").trim();
+    const nid = Math.max(0, Number(viewer?.nationId) | 0);
+    multiplayerViewerPlayerId = pid;
+    multiplayerViewerNationId = nid;
   };
 
   const toLobbyModel = (rawLobby, opts = null) => {
@@ -2569,13 +2946,14 @@ function createMainMenuController(options = null) {
       if (type !== "hello" && type !== "lobby_update" && type !== "started") return;
 
       const viewer = (msg?.viewer && typeof msg.viewer === "object") ? msg.viewer : null;
+      applyViewerIdentity(viewer);
       activeMultiplayerLobby = toLobbyModel(msg?.lobby, {
         host: !!viewer?.isHost
       });
       multiplayerLastKnownStart = !!activeMultiplayerLobby?.started;
       refreshMultiplayerUI();
       if (activeMultiplayerLobby?.started) {
-        launchStartedLobbyMatch(activeMultiplayerLobby, String(viewer?.name || "") || playerNameFromInput());
+        launchStartedLobbyMatch(activeMultiplayerLobby, String(viewer?.name || "") || playerNameFromInput(), viewer);
       }
     };
 
@@ -2599,8 +2977,10 @@ function createMainMenuController(options = null) {
     multiplayerPollInFlight = true;
     try {
       const payload = await fetchLobbyStatePayload(activeMultiplayerLobby.code, multiplayerSessionId);
+      const viewer = payload?.viewer && typeof payload.viewer === "object" ? payload.viewer : null;
+      applyViewerIdentity(viewer);
       activeMultiplayerLobby = toLobbyModel(payload?.lobby, {
-        host: !!payload?.viewer?.isHost
+        host: !!viewer?.isHost
       });
       if (activeMultiplayerLobby.started && !multiplayerLastKnownStart && !quiet) {
         setStatus(activeMultiplayerLobby.host
@@ -2610,15 +2990,16 @@ function createMainMenuController(options = null) {
       multiplayerLastKnownStart = !!activeMultiplayerLobby.started;
       refreshMultiplayerUI();
       if (activeMultiplayerLobby.started) {
-        const viewer = payload?.viewer && typeof payload.viewer === "object" ? payload.viewer : null;
         const viewerName = String(viewer?.name || "") || playerNameFromInput();
-        launchStartedLobbyMatch(activeMultiplayerLobby, viewerName);
+        launchStartedLobbyMatch(activeMultiplayerLobby, viewerName, viewer);
       }
     } catch (err) {
       if (isTerminalLobbyStateError(err)) {
         stopLobbyPolling();
         closeLobbySocket();
         multiplayerSessionId = "";
+        multiplayerViewerPlayerId = "";
+        multiplayerViewerNationId = 0;
         activeMultiplayerLobby = null;
         multiplayerAutoStartTriggered = false;
         playMenuMode = "singleplayer";
@@ -2642,9 +3023,10 @@ function createMainMenuController(options = null) {
     }, 2500);
   };
 
-  const launchStartedLobbyMatch = (lobby, viewerName) => {
+  const launchStartedLobbyMatch = (lobby, viewerName, viewerRaw = null) => {
     if (!lobby || !lobby.started || multiplayerAutoStartTriggered) return;
     if (!onStartRequested) return;
+    applyViewerIdentity(viewerRaw);
     const startSeed = Number(lobby?.start?.seed) || 0;
     const matchCfg = sanitizeMatchConfig(lobby?.matchConfig || activeMatchConfig);
     const startWorldSpec = sanitizeMultiplayerWorldSpec(lobby?.start?.worldSpec);
@@ -2661,6 +3043,8 @@ function createMainMenuController(options = null) {
         sessionId: String(multiplayerSessionId || "").trim(),
         startedAt: Number(lobby?.start?.startedAt) || 0,
         serverTick: 0,
+        playerId: String(multiplayerViewerPlayerId || "").trim(),
+        nationId: Math.max(0, Number(multiplayerViewerNationId) | 0),
         isHost: !!lobby.host,
         worldSpec: startWorldSpec
       }
@@ -3707,6 +4091,7 @@ function createMainMenuController(options = null) {
           setStatus("Create failed: invalid server response.");
           return;
         }
+        applyViewerIdentity(payload?.viewer);
         multiplayerSessionId = sessionId;
         playMenuMode = "multiplayer_host";
         activeMultiplayerLobby = toLobbyModel(payload.lobby, { host: true });
@@ -3770,6 +4155,7 @@ function createMainMenuController(options = null) {
           setStatus("Join failed: invalid server response.");
           return;
         }
+        applyViewerIdentity(payload?.viewer);
         if (joinCodeInput) joinCodeInput.value = code;
         multiplayerSessionId = sessionId;
         activeMultiplayerLobby = toLobbyModel(payload.lobby, { host: false });
@@ -3813,6 +4199,8 @@ function createMainMenuController(options = null) {
       stopLobbyPolling();
       closeLobbySocket();
       multiplayerSessionId = "";
+      multiplayerViewerPlayerId = "";
+      multiplayerViewerNationId = 0;
       activeMultiplayerLobby = null;
       multiplayerAutoStartTriggered = false;
       refreshMultiplayerUI();
@@ -4610,6 +4998,10 @@ function boot() {
     }
 
     if (e.key === "x" || e.key === "X") {
+      if (isMultiplayerMatchEnabled()) {
+        hud.setOpMessage("Experimental toggles are disabled in multiplayer.");
+        return;
+      }
       const on = world.setExperimentalAttackCollision(!world.getExperimentalAttackCollision());
       hud.setOpMessage(`Experimental attack collision: ${on ? "ON" : "OFF"}.`);
       refreshAllUI();
@@ -4622,6 +5014,10 @@ function boot() {
     }
 
     if (e.key === "r" || e.key === "R") {
+      if (isMultiplayerMatchEnabled()) {
+        hud.setOpMessage("Regeneration is disabled in multiplayer.");
+        return;
+      }
       seed = (seed + 1337) >>> 0;
       world.regenerate(seed, { mapMode: activeMapMode, earthData });
       applyMatchStartModifiers(world, activeMatchConfig, loadMainMenuPlayerName());
@@ -4699,29 +5095,13 @@ function boot() {
     const perfFrameStart = performance.now();
     const frameDt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    drainMultiplayerCommandQueue();
-    const multiplayerClockActive = isMultiplayerMatchEnabled() && (Number(activeMultiplayerSession?.startedAt) || 0) > 0;
-    if (!paused) {
-      if (multiplayerClockActive) {
-        const serverTick = Math.max(0, Number(activeMultiplayerSession?.serverTick) || 0);
-        let targetTicks = 0;
-        if (serverTick > 0) {
-          targetTicks = serverTick;
-        } else {
-          const startedAt = Math.max(0, Number(activeMultiplayerSession?.startedAt) || 0);
-          const syncedNowMs = Date.now() + (Number(multiplayerServerOffsetMs) || 0);
-          const elapsedS = Math.max(0, (syncedNowMs - startedAt) / 1000);
-          targetTicks = Math.max(0, Math.floor(elapsedS / FIXED));
-        }
-        const currentTicks = Math.max(0, Math.floor((Number(world.time) || 0) / FIXED));
-        const behindTicks = Math.max(0, targetTicks - currentTicks);
-        simTickAcc = Math.min(MAX_ACCUMULATED_TICKS * 6, behindTicks);
-      } else {
-        // Cap backlog so one slow frame does not create a long catch-up spiral.
-        simTickAcc = Math.min(MAX_ACCUMULATED_TICKS, simTickAcc + (frameDt / FIXED));
-      }
-    } else {
+    drainMultiplayerSnapshotBuffer(false);
+    const multiplayerClockActive = isMultiplayerMatchEnabled();
+    if (paused || multiplayerClockActive) {
       simTickAcc = 0;
+    } else {
+      // Cap backlog so one slow frame does not create a long catch-up spiral.
+      simTickAcc = Math.min(MAX_ACCUMULATED_TICKS, simTickAcc + (frameDt / FIXED));
     }
 
     // Critical: if layout finalized after boot, this will correct backing store
@@ -4730,11 +5110,10 @@ function boot() {
 
     let simSteps = 0;
     let simMs = 0;
-    const maxSimStepsThisFrame = multiplayerClockActive ? (MAX_SIM_STEPS_PER_FRAME * 3) : MAX_SIM_STEPS_PER_FRAME;
-    if (!paused) {
+    const maxSimStepsThisFrame = MAX_SIM_STEPS_PER_FRAME;
+    if (!paused && !multiplayerClockActive) {
       const simStart = performance.now();
       while (simTickAcc >= 1 && simSteps < maxSimStepsThisFrame) {
-        drainMultiplayerCommandQueue();
         world.tick();
         simTickAcc -= 1;
         simSteps++;
@@ -4742,22 +5121,24 @@ function boot() {
       simMs = performance.now() - simStart;
       if (simSteps >= maxSimStepsThisFrame && simTickAcc >= 1) {
         // Keep a short pending queue under sustained load to avoid visible time-jumps.
-        simTickAcc = Math.min(simTickAcc, multiplayerClockActive ? 2 : 1);
+        simTickAcc = Math.min(simTickAcc, 1);
       }
     }
-    applyLiveMatchModifiers(frameDt);
+    if (!multiplayerClockActive) {
+      applyLiveMatchModifiers(frameDt);
+    }
 
-    if (debugAllyRequestPending && world.time >= 1) {
+    if (!multiplayerClockActive && debugAllyRequestPending && world.time >= 1) {
       if (tryForceTestAllyRequest()) debugAllyRequestPending = false;
     }
-    if (debugCeasefireRequestPending && world.time >= 2) {
+    if (!multiplayerClockActive && debugCeasefireRequestPending && world.time >= 2) {
       if (tryForceTestCeasefireRequest()) debugCeasefireRequestPending = false;
     }
-    if (debugMatchOutcomeTestPending !== "off" && world.time >= 0.5) {
+    if (!multiplayerClockActive && debugMatchOutcomeTestPending !== "off" && world.time >= 0.5) {
       runMatchOutcomeTest(debugMatchOutcomeTestPending);
       debugMatchOutcomeTestPending = "off";
     }
-    if (DEBUG_ABM_TEST_DEFAULT.enabled && world.time >= debugAbmNextSpawnAt) {
+    if (!multiplayerClockActive && DEBUG_ABM_TEST_DEFAULT.enabled && world.time >= debugAbmNextSpawnAt) {
       const attackerId = pickDebugAbmAttacker(DEBUG_ABM_TEST_DEFAULT.attackerNationId);
       if (typeof world.spawnDebugIncomingWarheadAtPlayer === "function") {
         world.spawnDebugIncomingWarheadAtPlayer(DEBUG_ABM_TEST_DEFAULT.warheadType, attackerId);

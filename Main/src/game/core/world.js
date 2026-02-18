@@ -2993,9 +2993,9 @@ placeStructure(type, ownerId, x, y) {
 
   // Neutral expansion from player selection.
   // If the selection does not touch the border, we may launch a Transport to establish a beachhead (Sect 3).
-  startNeutral(indices) {
+  startNeutral(indices, attackerId = OWNER.PLAYER) {
     if (this.gameOver) return { ok: false, reason: "Game over." };
-    const attacker = OWNER.PLAYER;
+    const attacker = attackerId | 0;
 
     const nat = this.nation[attacker];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid attacker." };

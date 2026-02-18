@@ -732,6 +732,7 @@ export function installBorders(World) {
       const oldOwner = this.owner[idx] | 0;
       const nOwner = newOwner | 0;
       if (oldOwner === nOwner) return;
+      const syncApplying = !!this._authoritativeSyncApplying;
 
       if (nOwner > 0 && !this.nation[nOwner]?.alive) return;
 
@@ -813,35 +814,37 @@ export function installBorders(World) {
       if (!this._suspendOwnerVersionBump) {
         if (!inBatch) this._pushSpeckleCandidates(idx);
       }
-      const sid = this._structAt[idx] | 0;
-      if (sid) {
-        const st = this._structureById.get(sid);
-        if (st) {
-          // Footprint tiles map to the same structure id; only the anchor tile triggers capture/destruction.
-          const w = this.w;
-          const tx = idx % w;
-          const ty = (idx / w) | 0;
-          if (((st.x | 0) === tx) && ((st.y | 0) === ty)) {
-            if (st.type === "capital") {
-              const capOwner = st.owner | 0;
-              if (capOwner !== nOwner && capOwner > 0) {
-                this._onCapitalCaptured(capOwner, nOwner, sid);
-              }
-            } else if ((st.owner | 0) !== nOwner) {
-              // Non-capital structures transfer ownership on capture.
-              const oldStructOwner = st.owner | 0;
-              st.owner = nOwner;
-              if (typeof this._onStructureOwnerChanged === "function") {
-                this._onStructureOwnerChanged(st, oldStructOwner, nOwner);
+      if (!syncApplying) {
+        const sid = this._structAt[idx] | 0;
+        if (sid) {
+          const st = this._structureById.get(sid);
+          if (st) {
+            // Footprint tiles map to the same structure id; only the anchor tile triggers capture/destruction.
+            const w = this.w;
+            const tx = idx % w;
+            const ty = (idx / w) | 0;
+            if (((st.x | 0) === tx) && ((st.y | 0) === ty)) {
+              if (st.type === "capital") {
+                const capOwner = st.owner | 0;
+                if (capOwner !== nOwner && capOwner > 0) {
+                  this._onCapitalCaptured(capOwner, nOwner, sid);
+                }
+              } else if ((st.owner | 0) !== nOwner) {
+                // Non-capital structures transfer ownership on capture.
+                const oldStructOwner = st.owner | 0;
+                st.owner = nOwner;
+                if (typeof this._onStructureOwnerChanged === "function") {
+                  this._onStructureOwnerChanged(st, oldStructOwner, nOwner);
+                }
               }
             }
           }
         }
-      }
 
-      // Elimination: no remaining land tiles.
-      if (oldOwner > 0 && this.nation[oldOwner]?.alive && (this.landOwnedCount[oldOwner] | 0) <= 0) {
-        this._eliminateNation(oldOwner, nOwner, idx);
+        // Elimination: no remaining land tiles.
+        if (oldOwner > 0 && this.nation[oldOwner]?.alive && (this.landOwnedCount[oldOwner] | 0) <= 0) {
+          this._eliminateNation(oldOwner, nOwner, idx);
+        }
       }
 
       this.dirty = true;

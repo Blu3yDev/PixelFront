@@ -16,7 +16,7 @@ services:
       - key: LOBBY_IDLE_TTL_MS
         value: 21600000
       - key: MATCH_SNAPSHOT_INTERVAL_MS
-        value: 66
+        value: 40
       - key: MATCH_MAX_STEPS_PER_PUMP
         value: 8
       - key: MATCH_PUMP_INTERVAL_MS
@@ -24,12 +24,12 @@ services:
       - key: MATCH_MAX_BACKLOG_MS
         value: 250
       - key: MATCH_MAX_WORLD_WIDTH
-        value: 1600
+        value: 1280
       - key: MATCH_MAX_WORLD_HEIGHT
-        value: 900
+        value: 720
       - key: MATCH_MAX_WORLD_TILES
-        value: 700000
+        value: 360000
       - key: MATCH_MAX_AI_COUNT
-        value: 16
+        value: 10
       - key: WS_DEBUG_LOGS
         value: 0

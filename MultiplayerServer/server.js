@@ -1,5 +1,8 @@
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { loadEarthDataNode } from "./earthDataNode.js";
 
@@ -21,9 +24,11 @@ const MAP_MODE_WORLD = "earth";
 const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
+const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 let activeSimDtS = DEFAULT_SIM_DT_S;
 let runtimeModulesPromise = null;
+let runtimeModulesSrcDir = "";
 
 const lobbiesByCode = new Map(); // code -> lobby
 const playerIndex = new Map(); // sessionId -> code
@@ -137,11 +142,81 @@ function stringifyWire(value) {
   }
 }
 
+function uniquePaths(paths) {
+  const out = [];
+  const seen = new Set();
+  for (let i = 0; i < paths.length; i++) {
+    const raw = String(paths[i] || "").trim();
+    if (!raw) continue;
+    const resolved = path.resolve(raw);
+    const key = resolved.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(resolved);
+  }
+  return out;
+}
+
+function candidateMainSrcDirs() {
+  const envMainSrc = uniquePaths([
+    process.env.PIXELFRONT_MAIN_SRC_DIR,
+    process.env.PF_MAIN_SRC_DIR
+  ]);
+
+  const envRoots = uniquePaths([
+    process.env.PIXELFRONT_MAIN_ROOT,
+    process.env.PF_MAIN_ROOT
+  ]);
+
+  const roots = uniquePaths([
+    ...envRoots,
+    THIS_DIR,
+    process.cwd(),
+    path.resolve(THIS_DIR, ".."),
+    path.resolve(process.cwd(), "..")
+  ]);
+
+  const dirs = [...envMainSrc];
+  for (let i = 0; i < roots.length; i++) {
+    const root = roots[i];
+    dirs.push(path.join(root, "Main", "src"));
+    dirs.push(path.join(root, "src"));
+  }
+  return uniquePaths(dirs);
+}
+
+function resolveRuntimeModulePaths() {
+  const mainSrcDirs = candidateMainSrcDirs();
+  const tried = [];
+
+  for (let i = 0; i < mainSrcDirs.length; i++) {
+    const srcDir = mainSrcDirs[i];
+    const worldPath = path.join(srcDir, "game", "core", "world.js");
+    const cfgPath = path.join(srcDir, "game", "config.js");
+    tried.push(`${worldPath} | ${cfgPath}`);
+    if (existsSync(worldPath) && existsSync(cfgPath)) {
+      return { worldPath, cfgPath, srcDir };
+    }
+  }
+
+  const hint = [
+    "Failed to locate shared game runtime modules.",
+    "Set PIXELFRONT_MAIN_SRC_DIR=/app/Main/src (or PF_MAIN_SRC_DIR) if your deploy layout is custom.",
+    `Tried: ${tried.join(" ; ")}`
+  ].join(" ");
+  throw new Error(hint);
+}
+
 async function loadRuntimeModules() {
   if (runtimeModulesPromise) return runtimeModulesPromise;
   runtimeModulesPromise = (async () => {
-    const worldMod = await import("../Main/src/game/core/world.js");
-    const cfgMod = await import("../Main/src/game/config.js");
+    const { worldPath, cfgPath, srcDir } = resolveRuntimeModulePaths();
+    if (!runtimeModulesSrcDir) {
+      runtimeModulesSrcDir = srcDir;
+      console.log(`[runtime-init] main-src=${runtimeModulesSrcDir}`);
+    }
+    const worldMod = await import(pathToFileURL(worldPath).href);
+    const cfgMod = await import(pathToFileURL(cfgPath).href);
     const WorldCtor = worldMod?.World;
     if (typeof WorldCtor !== "function") {
       throw new Error("Main world module is missing 'World' export.");
@@ -153,7 +228,10 @@ async function loadRuntimeModules() {
       MAP_MODE_WORLD: String(cfgMod?.MAP_MODE?.WORLD_MAP || MAP_MODE_WORLD),
       MAP_MODE_GENERATOR: String(cfgMod?.MAP_MODE?.GENERATOR || MAP_MODE_GENERATOR)
     };
-  })();
+  })().catch((err) => {
+    runtimeModulesPromise = null;
+    throw err;
+  });
   return runtimeModulesPromise;
 }
 
@@ -494,18 +572,32 @@ async function ensureLobbyRuntime(lobby) {
 
     const mods = await loadRuntimeModules();
     lobby.matchWorldSpec = worldSpec;
-    const mapMode = resolveMatchMapMode(worldSpec, lobby.matchConfig);
-    const earthData = (mapMode === MAP_MODE_WORLD) ? await loadEarthDataNode() : null;
+    const requestedMapMode = resolveMatchMapMode(worldSpec, lobby.matchConfig);
+    let effectiveMapMode = requestedMapMode;
+    let earthData = null;
+    if (effectiveMapMode === MAP_MODE_WORLD) {
+      try {
+        earthData = await loadEarthDataNode();
+      } catch (err) {
+        const msg = String(err?.message || err || "unknown earth-data failure");
+        console.warn(`[runtime-init] lobby=${String(lobby?.code || "")} earth-mode-fallback=${msg}`);
+        effectiveMapMode = MAP_MODE_GENERATOR;
+      }
+    }
     const world = new mods.World(
       worldSpec.width,
       worldSpec.height,
       (Number(lobby.matchSeed) >>> 0) || 1,
       {
-        mapMode,
+        mapMode: effectiveMapMode,
         earthData,
         aiCount: Math.max(1, Number(worldSpec.aiCount) || 1)
       }
     );
+
+    if (effectiveMapMode !== requestedMapMode && lobby.matchWorldSpec && typeof lobby.matchWorldSpec === "object") {
+      lobby.matchWorldSpec = { ...lobby.matchWorldSpec, mapMode: effectiveMapMode };
+    }
 
     const runtime = {
       world,
@@ -535,6 +627,12 @@ function kickRuntimeInit(lobby, reason = "") {
     const msg = String(err?.message || err || "unknown runtime init failure");
     console.error(`[runtime-init] lobby=${String(lobby?.code || "")} reason=${String(reason || "n/a")} error=${msg}`);
   });
+}
+
+function runtimeInitClientReason(err) {
+  const raw = String(err?.message || err || "unknown runtime init failure").trim();
+  const capped = raw.slice(0, 280);
+  return `Authoritative world failed to initialize on server: ${capped}`;
 }
 
 function getRuntimeAssignment(lobby, sessionId) {
@@ -1268,12 +1366,12 @@ function attachSocketToLobby(lobby, sessionId, ws) {
       if (lobby.started && !runtime) {
         try {
           runtime = await ensureLobbyRuntime(lobby);
-        } catch {
+        } catch (err) {
           runtime = null;
           wsSend(ws, {
             type: "error",
             serverTime: nowMs(),
-            reason: "Authoritative world failed to initialize on server."
+            reason: runtimeInitClientReason(err)
           });
         }
       }
@@ -1299,12 +1397,12 @@ function attachSocketToLobby(lobby, sessionId, ws) {
       if (!runtime) {
         try {
           runtime = await ensureLobbyRuntime(lobby);
-        } catch {
+        } catch (err) {
           runtime = null;
           wsSend(ws, {
             type: "error",
             serverTime: nowMs(),
-            reason: "Authoritative world failed to initialize on server."
+            reason: runtimeInitClientReason(err)
           });
         }
       }

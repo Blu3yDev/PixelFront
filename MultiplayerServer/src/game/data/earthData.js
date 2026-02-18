@@ -1,76 +1,11 @@
-import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import koppenRaw from "../../EarthMap/Koeppen-Geiger-ASCII.txt?raw";
+import earthMaskUrl from "../../EarthMap/earth_mask3.bmp?url";
 
 const GRID_W = 720;
 const GRID_H = 360;
 const GRID_STEP_DEG = 0.5;
 
-const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-
 let cachedPromise = null;
-let earthAssetDirLogged = "";
-
-function uniquePaths(paths) {
-  const out = [];
-  const seen = new Set();
-  for (let i = 0; i < paths.length; i++) {
-    const raw = String(paths[i] || "").trim();
-    if (!raw) continue;
-    const resolved = path.resolve(raw);
-    const key = resolved.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(resolved);
-  }
-  return out;
-}
-
-function resolveEarthAssetPaths() {
-  const envDir = uniquePaths([
-    process.env.PIXELFRONT_EARTHMAP_DIR,
-    process.env.PF_EARTHMAP_DIR
-  ]);
-  const envMainRoot = uniquePaths([
-    process.env.PIXELFRONT_MAIN_ROOT,
-    process.env.PF_MAIN_ROOT
-  ]);
-
-  const roots = uniquePaths([
-    ...envMainRoot,
-    THIS_DIR,
-    process.cwd(),
-    path.resolve(THIS_DIR, ".."),
-    path.resolve(process.cwd(), "..")
-  ]);
-
-  const dirs = uniquePaths([
-    ...envDir,
-    ...roots.map((r) => path.join(r, "Main", "src", "EarthMap")),
-    ...roots.map((r) => path.join(r, "src", "EarthMap")),
-    ...roots.map((r) => path.join(r, "EarthMap"))
-  ]);
-
-  const tried = [];
-  for (let i = 0; i < dirs.length; i++) {
-    const dir = dirs[i];
-    const koppenPath = path.join(dir, "Koeppen-Geiger-ASCII.txt");
-    const earthMaskPath = path.join(dir, "earth_mask3.bmp");
-    tried.push(`${koppenPath} | ${earthMaskPath}`);
-    if (existsSync(koppenPath) && existsSync(earthMaskPath)) {
-      return { koppenPath, earthMaskPath };
-    }
-  }
-
-  throw new Error(
-    [
-      "Failed to locate EarthMap assets.",
-      "Set PIXELFRONT_EARTHMAP_DIR=/app/Main/src/EarthMap (or PF_EARTHMAP_DIR) if your deploy layout is custom.",
-      `Tried: ${tried.join(" ; ")}`
-    ].join(" ")
-  );
-}
 
 const clampInt = (value, min, max) => {
   const n = value | 0;
@@ -110,10 +45,11 @@ function parseKoppenAscii(raw) {
     const lat = Number(parts[0]);
     const lon = Number(parts[1]);
     const code = String(parts[2] || "").trim();
+
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || !code) continue;
 
     const gx = Math.floor((lon + 180) / GRID_STEP_DEG);
-    const gy = Math.floor((90 - lat) / GRID_STEP_DEG);
+    const gy = Math.floor((90 - lat) / GRID_STEP_DEG); // north-up
     if (gx < 0 || gy < 0 || gx >= GRID_W || gy >= GRID_H) continue;
 
     let id = classToId.get(code);
@@ -128,13 +64,29 @@ function parseKoppenAscii(raw) {
     rowHasData[gy] = 1;
   }
 
-  return { classIdGrid, classCodes, rowHasData };
+  let minDataRow = GRID_H;
+  let maxDataRow = -1;
+  for (let y = 0; y < GRID_H; y++) {
+    if (!rowHasData[y]) continue;
+    if (y < minDataRow) minDataRow = y;
+    if (y > maxDataRow) maxDataRow = y;
+  }
+  if (maxDataRow < 0) {
+    minDataRow = 0;
+    maxDataRow = -1;
+  }
+
+  return { classIdGrid, classCodes, rowHasData, minDataRow, maxDataRow };
 }
 
 function parseMaskBmpToGrid(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
-  if (bytes.length < 64) throw new Error("Earth mask BMP is too small.");
-  if (bytes[0] !== 0x42 || bytes[1] !== 0x4d) throw new Error("Earth mask is not a BMP file.");
+  if (bytes.length < 64) {
+    throw new Error("Earth mask BMP is too small.");
+  }
+  if (bytes[0] !== 0x42 || bytes[1] !== 0x4d) {
+    throw new Error("Earth mask is not a BMP file.");
+  }
 
   const pixelOffset = readU32LE(bytes, 10);
   const dibSize = readU32LE(bytes, 14);
@@ -143,7 +95,9 @@ function parseMaskBmpToGrid(arrayBuffer) {
   const bpp = readU16LE(bytes, 28);
   const compression = readU32LE(bytes, 30);
 
-  if (width <= 0 || heightRaw === 0) throw new Error("Earth mask BMP has invalid dimensions.");
+  if (width <= 0 || heightRaw === 0) {
+    throw new Error("Earth mask BMP has invalid dimensions.");
+  }
   if (bpp !== 8 || compression !== 0) {
     throw new Error(`Earth mask BMP must be uncompressed 8bpp (got bpp=${bpp}, compression=${compression}).`);
   }
@@ -151,6 +105,7 @@ function parseMaskBmpToGrid(arrayBuffer) {
   const height = Math.abs(heightRaw);
   const topDown = heightRaw < 0;
   const stride = (((bpp * width) + 31) >> 5) << 2;
+
   if (pixelOffset + (stride * height) > bytes.length) {
     throw new Error("Earth mask BMP pixel data is truncated.");
   }
@@ -192,7 +147,9 @@ function parseMaskBmpToGrid(arrayBuffer) {
     }
   }
 
-  if (maxX < minX || maxY < minY) throw new Error("Earth mask BMP has no visible land pixels.");
+  if (maxX < minX || maxY < minY) {
+    throw new Error("Earth mask BMP has no visible land pixels.");
+  }
 
   const bboxW = maxX - minX + 1;
   const bboxH = maxY - minY + 1;
@@ -203,6 +160,7 @@ function parseMaskBmpToGrid(arrayBuffer) {
     const srcY = topDown ? sy : (height - 1 - sy);
     const row = pixelOffset + srcY * stride;
     const base = gy * GRID_W;
+
     for (let gx = 0; gx < GRID_W; gx++) {
       const sx = clampInt(minX + (((gx + 0.5) * bboxW / GRID_W) | 0), minX, maxX);
       const idx = bytes[row + sx];
@@ -210,7 +168,11 @@ function parseMaskBmpToGrid(arrayBuffer) {
     }
   }
 
-  return { landGrid };
+  return {
+    landGrid,
+    bbox: { minX, minY, maxX, maxY, width: bboxW, height: bboxH },
+    source: { width, height, topDown }
+  };
 }
 
 function flipGridY(src, w, h) {
@@ -241,13 +203,15 @@ function scoreMaskAgainstKoppen(maskLandGrid, classIdGrid, rowHasData) {
     }
   }
 
-  return tp - (fp * 1.25) - (fn * 0.8);
+  // Penalize false-positive land a bit more to avoid sea -> land mistakes.
+  return tp - (fp * 1.25) - (fn * 0.80);
 }
 
 function alignMaskToKoppen(maskLandGrid, classIdGrid, rowHasData) {
   const scoreNormal = scoreMaskAgainstKoppen(maskLandGrid, classIdGrid, rowHasData);
   const flipped = flipGridY(maskLandGrid, GRID_W, GRID_H);
   const scoreFlipped = scoreMaskAgainstKoppen(flipped, classIdGrid, rowHasData);
+
   if (scoreFlipped > scoreNormal) {
     return { landGrid: flipped, flippedY: true };
   }
@@ -255,47 +219,54 @@ function alignMaskToKoppen(maskLandGrid, classIdGrid, rowHasData) {
 }
 
 function mergeLand(maskLandGrid, classIdGrid, rowHasData) {
-  const out = new Uint8Array(maskLandGrid.length);
+  const n = maskLandGrid.length;
+  const out = new Uint8Array(n);
   for (let y = 0; y < GRID_H; y++) {
     const row = y * GRID_W;
     const classAuthoritative = !!rowHasData[y];
     for (let x = 0; x < GRID_W; x++) {
       const i = row + x;
-      out[i] = classAuthoritative
-        ? ((classIdGrid[i] | 0) > 0 ? 1 : 0)
-        : ((maskLandGrid[i] | 0) > 0 ? 1 : 0);
+      if (classAuthoritative) {
+        // Where Koeppen has data, treat it as authoritative for land vs ocean.
+        out[i] = (classIdGrid[i] | 0) > 0 ? 1 : 0;
+      } else {
+        // Polar fallback where Koeppen has no samples.
+        out[i] = (maskLandGrid[i] | 0) > 0 ? 1 : 0;
+      }
     }
   }
   return out;
 }
 
-export async function loadEarthDataNode() {
+export async function loadEarthData() {
   if (cachedPromise) return cachedPromise;
+
   cachedPromise = (async () => {
-    const { koppenPath, earthMaskPath } = resolveEarthAssetPaths();
-    const assetDir = path.dirname(koppenPath);
-    if (!earthAssetDirLogged) {
-      earthAssetDirLogged = assetDir;
-      console.log(`[runtime-init] earth-assets=${earthAssetDirLogged}`);
+    const response = await fetch(earthMaskUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to load Earth mask BMP (${response.status}).`);
     }
-    const [koppenRaw, maskBuffer] = await Promise.all([
-      readFile(koppenPath, "utf8"),
-      readFile(earthMaskPath)
-    ]);
-    const mask = parseMaskBmpToGrid(maskBuffer.buffer.slice(maskBuffer.byteOffset, maskBuffer.byteOffset + maskBuffer.byteLength));
+
+    const maskBuffer = await response.arrayBuffer();
+    const mask = parseMaskBmpToGrid(maskBuffer);
     const koppen = parseKoppenAscii(koppenRaw);
     const alignedMask = alignMaskToKoppen(mask.landGrid, koppen.classIdGrid, koppen.rowHasData);
     const landGrid = mergeLand(alignedMask.landGrid, koppen.classIdGrid, koppen.rowHasData);
+
     return {
       gridW: GRID_W,
       gridH: GRID_H,
       landGrid,
       classIdGrid: koppen.classIdGrid,
-      classCodes: koppen.classCodes
+      classCodes: koppen.classCodes,
+      rowHasData: koppen.rowHasData,
+      minDataRow: koppen.minDataRow,
+      maxDataRow: koppen.maxDataRow,
+      maskMeta: mask.bbox,
+      maskSource: mask.source,
+      maskFlippedY: alignedMask.flippedY
     };
-  })().catch((err) => {
-    cachedPromise = null;
-    throw err;
-  });
+  })();
+
   return cachedPromise;
 }

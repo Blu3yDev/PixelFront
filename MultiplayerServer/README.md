@@ -42,15 +42,18 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 - `CORS_ORIGIN` (default `*`)
 - `MAX_PLAYERS_PER_LOBBY` (default `8`)
 - `LOBBY_IDLE_TTL_MS` (default `21600000`, 6 hours)
-- `MATCH_SNAPSHOT_INTERVAL_MS` (default `66`, snapshot cadence in ms)
+- `MATCH_SNAPSHOT_INTERVAL_MS` (default `40`, snapshot cadence in ms)
 - `MATCH_MAX_STEPS_PER_PUMP` (default `8`, max sim steps per server pump)
 - `MATCH_PUMP_INTERVAL_MS` (default `16`, runtime pump interval in ms)
 - `MATCH_MAX_BACKLOG_MS` (default `250`, max queued sim time under load)
-- `MATCH_MAX_WORLD_WIDTH` (default `1600`)
-- `MATCH_MAX_WORLD_HEIGHT` (default `900`)
-- `MATCH_MAX_WORLD_TILES` (default `700000`)
-- `MATCH_MAX_AI_COUNT` (default `16`)
+- `MATCH_MAX_WORLD_WIDTH` (default `1280`)
+- `MATCH_MAX_WORLD_HEIGHT` (default `720`)
+- `MATCH_MAX_WORLD_TILES` (default `360000`)
+- `MATCH_MAX_AI_COUNT` (default `10`)
 - `WS_DEBUG_LOGS` (default `0`, set `1` for temporary websocket reject diagnostics)
+- `PIXELFRONT_MAIN_SRC_DIR` (optional explicit path to `Main/src`; alias `PF_MAIN_SRC_DIR`)
+- `PIXELFRONT_MAIN_ROOT` (optional explicit repo root containing `Main`; alias `PF_MAIN_ROOT`)
+- `PIXELFRONT_EARTHMAP_DIR` (optional explicit path to `Main/src/EarthMap`; alias `PF_EARTHMAP_DIR`)
 
 Note: the server also applies dynamic per-lobby safety caps based on human player count
 to avoid heavy AI/world specs causing lag spikes on smaller deployments.
@@ -60,6 +63,24 @@ to avoid heavy AI/world specs causing lag spikes on smaller deployments.
 You can deploy this folder directly as a Render Web Service, or use `render.yaml`.
 Runtime should be **Node**, not Python.
 
+## Railway path notes
+
+If your service runs from `/app/server.js`, the server first tries local `src` runtime files, then `Main/src` candidates.
+
+The repo now includes a vendored runtime fallback in `MultiplayerServer/src`:
+- `MultiplayerServer/src/game` (authoritative World runtime)
+- `MultiplayerServer/src/EarthMap` (Earth assets)
+
+So deploying only `MultiplayerServer` works out of the box.
+
+Set these Railway env vars when needed:
+- `PIXELFRONT_MAIN_SRC_DIR=/app/Main/src`
+- `PIXELFRONT_EARTHMAP_DIR=/app/Main/src/EarthMap`
+
+If your deploy does not include `/app/Main`, deploy from the repository root (so both `Main` and `MultiplayerServer` are present) and run:
+- Build command: `npm install --prefix MultiplayerServer`
+- Start command: `node MultiplayerServer/server.js`
+
 ## Full setup checklist (Render + Vercel)
 
 1. Deploy `MultiplayerServer` to Render as a Web Service.
@@ -68,14 +89,14 @@ Runtime should be **Node**, not Python.
    - `CORS_ORIGIN=https://YOURDOMAIN.com,https://www.YOURDOMAIN.com`
    - `MAX_PLAYERS_PER_LOBBY=8`
    - `LOBBY_IDLE_TTL_MS=21600000`
-   - `MATCH_SNAPSHOT_INTERVAL_MS=66`
+   - `MATCH_SNAPSHOT_INTERVAL_MS=40`
    - `MATCH_MAX_STEPS_PER_PUMP=8`
    - `MATCH_PUMP_INTERVAL_MS=16`
    - `MATCH_MAX_BACKLOG_MS=250`
-   - `MATCH_MAX_WORLD_WIDTH=1600`
-   - `MATCH_MAX_WORLD_HEIGHT=900`
-   - `MATCH_MAX_WORLD_TILES=700000`
-   - `MATCH_MAX_AI_COUNT=16`
+   - `MATCH_MAX_WORLD_WIDTH=1280`
+   - `MATCH_MAX_WORLD_HEIGHT=720`
+   - `MATCH_MAX_WORLD_TILES=360000`
+   - `MATCH_MAX_AI_COUNT=10`
 4. In Vercel project env vars (Production + Preview):
    - `VITE_MULTIPLAYER_API_URL=https://pixelfront-multiplayer.onrender.com`
 5. Redeploy Vercel after setting env vars.

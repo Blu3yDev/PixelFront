@@ -7,7 +7,7 @@ const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
 const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 60 * 6));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
-const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(40, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 66));
+const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(30, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 50));
 const MATCH_MAX_STEPS_PER_PUMP = Math.max(2, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 8));
 const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERVAL_MS || 16));
 const MATCH_MAX_BACKLOG_MS = Math.max(100, Number(process.env.MATCH_MAX_BACKLOG_MS || 250));
@@ -1139,7 +1139,8 @@ function applyAuthoritativeCommand(world, cmdRaw, argsRaw) {
   if (typeof fn !== "function") return { ok: false, reason: "Command method unavailable." };
   const args = Array.isArray(argsRaw) ? argsRaw : [];
   try {
-    const out = fn(...args);
+    // Important: world methods rely on `this` for internal state (e.g. spawn phase).
+    const out = fn.call(world, ...args);
     if (out && typeof out === "object" && Object.prototype.hasOwnProperty.call(out, "ok")) return out;
     return { ok: true, reason: "" };
   } catch (err) {
@@ -1212,6 +1213,14 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
   }
 
   wsSend(ws, { type: "cmd_ack", serverTime: nowMs(), ackSeq: input.seq | 0, serverTickProcessed: runtime.simTick | 0 });
+
+  // Push an authoritative delta immediately after accepted input to reduce visible input latency.
+  try {
+    runtime.lastSnapshotAtMs = nowMs();
+    broadcastSnapshotDelta(lobby, runtime);
+  } catch {
+    // Keep command success path resilient; periodic snapshots continue.
+  }
 }
 
 function attachSocketToLobby(lobby, sessionId, ws) {

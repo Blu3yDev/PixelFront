@@ -510,7 +510,7 @@ let multiplayerSessionProbeInFlight = false;
 let multiplayerSessionTerminated = false;
 let multiplayerHasAuthoritativeSync = false;
 
-const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 1;
+const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 4500;
 const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 1200;
 const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 1200;

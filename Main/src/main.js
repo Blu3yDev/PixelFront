@@ -456,6 +456,7 @@ let multiplayerLastFullSyncRequestAtMs = 0;
 let multiplayerLastHashMismatchAtMs = 0;
 let multiplayerConnectFailureStreak = 0;
 let multiplayerSessionProbeInFlight = false;
+let multiplayerSessionTerminated = false;
 
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 2;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 4500;
@@ -561,6 +562,7 @@ function setActiveMultiplayerSession(raw) {
   multiplayerServerOffsetMs = 0;
   multiplayerConnectFailureStreak = 0;
   multiplayerSessionProbeInFlight = false;
+  multiplayerSessionTerminated = false;
   multiplayerPendingInputSeq = 1;
   multiplayerLastAckSeq = 0;
   resetMultiplayerSnapshotState();
@@ -1350,7 +1352,7 @@ async function probeActiveMultiplayerSessionState() {
 }
 
 function scheduleMultiplayerMatchReconnect(delayMs = 1500) {
-  if (!isMultiplayerMatchEnabled()) return;
+  if (!isMultiplayerMatchEnabled() || multiplayerSessionTerminated) return;
   if (multiplayerMatchReconnectTimer) clearTimeout(multiplayerMatchReconnectTimer);
   multiplayerMatchReconnectTimer = setTimeout(() => {
     multiplayerMatchReconnectTimer = 0;
@@ -1360,6 +1362,7 @@ function scheduleMultiplayerMatchReconnect(delayMs = 1500) {
 
 function connectMultiplayerMatchSocket() {
   if (!isMultiplayerMatchEnabled()) return;
+  if (multiplayerSessionTerminated) return;
   if (typeof WebSocket === "undefined") return;
   const url = buildMultiplayerWsUrl(activeMultiplayerSession.code, activeMultiplayerSession.sessionId);
   if (!url) return;
@@ -1373,6 +1376,7 @@ function connectMultiplayerMatchSocket() {
     multiplayerMatchConnected = true;
     multiplayerConnectFailureStreak = 0;
     multiplayerSessionProbeInFlight = false;
+    multiplayerSessionTerminated = false;
     try {
       const t = Date.now();
       ws.send(JSON.stringify({ type: "ping", clientTime: t }));
@@ -1504,10 +1508,14 @@ function connectMultiplayerMatchSocket() {
         if (!isMultiplayerMatchEnabled()) return;
         if (probe?.terminal && !probe?.valid) {
           const reason = String(probe.reason || "Multiplayer lobby is no longer available on the server.").trim();
-          if (hud && typeof hud.setOpMessage === "function") {
-            hud.setOpMessage(`${reason} Open Multiplayer and create/join a new lobby.`);
+          multiplayerSessionTerminated = true;
+          if (multiplayerMatchReconnectTimer) {
+            clearTimeout(multiplayerMatchReconnectTimer);
+            multiplayerMatchReconnectTimer = 0;
           }
-          setActiveMultiplayerSession(null);
+          if (hud && typeof hud.setOpMessage === "function") {
+            hud.setOpMessage(`${reason} This authoritative match is closed. Rejoin from the menu.`);
+          }
           return;
         }
         scheduleMultiplayerMatchReconnect(1500);
@@ -3241,29 +3249,60 @@ function createMainMenuController(options = null) {
     }, 2500);
   };
 
-  const launchStartedLobbyMatch = (lobby, viewerName, viewerRaw = null) => {
+  const launchStartedLobbyMatch = async (lobby, viewerName, viewerRaw = null) => {
     if (!lobby || !lobby.started || multiplayerAutoStartTriggered) return;
     if (!onStartRequested) return;
     applyViewerIdentity(viewerRaw);
-    const startSeed = Number(lobby?.start?.seed) || 0;
-    const matchCfg = sanitizeMatchConfig(lobby?.matchConfig || activeMatchConfig);
-    const startWorldSpec = sanitizeMultiplayerWorldSpec(lobby?.start?.worldSpec);
     multiplayerAutoStartTriggered = true;
+
+    if (!hasMultiplayerApi() || !multiplayerSessionId) {
+      multiplayerAutoStartTriggered = false;
+      setStatus("Multiplayer API not configured. Cannot launch authoritative match.");
+      return;
+    }
+
+    let authoritativeLobby = lobby;
+    let authoritativeViewer = viewerRaw;
+    try {
+      const payload = await fetchLobbyStatePayload(lobby.code, multiplayerSessionId);
+      authoritativeViewer = payload?.viewer && typeof payload.viewer === "object" ? payload.viewer : viewerRaw;
+      applyViewerIdentity(authoritativeViewer);
+      authoritativeLobby = toLobbyModel(payload?.lobby, {
+        host: !!authoritativeViewer?.isHost
+      });
+      activeMultiplayerLobby = authoritativeLobby;
+      refreshMultiplayerUI();
+    } catch (err) {
+      multiplayerAutoStartTriggered = false;
+      setStatus(err?.message || "Failed to verify lobby state before launch.");
+      return;
+    }
+
+    if (!authoritativeLobby?.started) {
+      multiplayerAutoStartTriggered = false;
+      setStatus("Lobby is not started yet.");
+      return;
+    }
+
+    const startSeed = Number(authoritativeLobby?.start?.seed) || 0;
+    const matchCfg = sanitizeMatchConfig(authoritativeLobby?.matchConfig || activeMatchConfig);
+    const startWorldSpec = sanitizeMultiplayerWorldSpec(authoritativeLobby?.start?.worldSpec);
+
     stopLobbyPolling();
     closeLobbySocket();
     onStartRequested({
       matchConfig: matchCfg,
-      playerName: resolvePlayerDisplayName(viewerName || playerNameFromInput()),
+      playerName: resolvePlayerDisplayName(String(authoritativeViewer?.name || "") || viewerName || playerNameFromInput()),
       seed: startSeed,
       worldSpec: startWorldSpec,
       multiplayer: {
-        code: String(lobby.code || "").trim().toUpperCase(),
+        code: String(authoritativeLobby.code || "").trim().toUpperCase(),
         sessionId: String(multiplayerSessionId || "").trim(),
-        startedAt: Number(lobby?.start?.startedAt) || 0,
+        startedAt: Number(authoritativeLobby?.start?.startedAt) || 0,
         serverTick: 0,
         playerId: String(multiplayerViewerPlayerId || "").trim(),
         nationId: Math.max(0, Number(multiplayerViewerNationId) | 0),
-        isHost: !!lobby.host,
+        isHost: !!authoritativeLobby.host,
         worldSpec: startWorldSpec
       }
     });
@@ -8164,36 +8203,67 @@ function createLeaderboardOverlay() {
 function updateLeaderboard(lb, world) {
   const MAX_VISIBLE_LEADERBOARD_ROWS = 8;
   const rows = [];
-  const totalLand = Math.max(1, world.totalLand | 0);
+  const serverRows = (
+    isMultiplayerMatchEnabled() &&
+    Array.isArray(world?._serverLeaderboard) &&
+    world._serverLeaderboard.length > 0
+  ) ? world._serverLeaderboard : null;
 
-  for (let id = 1; id < world.nation.length; id++) {
-    const n = world.nation[id];
-    if (!n) continue;
-
-    // Keep collapsed visible and keep player visible even if eliminated.
-    if (!n.alive && id !== OWNER.PLAYER) continue;
-
-    // landOwnedCount tracks land tiles only (never ocean/water).
-    const ownedLand = Math.max(0, world.landOwnedCount[id] | 0);
-    const ownedLandPct = (ownedLand / totalLand) * 100;
-    const gold = Math.max(0, Math.floor(Number(n.gold) || 0));
-
-    rows.push({
-      id,
-      name: n.name || (id === OWNER.PLAYER ? "You" : `AI ${id - 1}`),
-      land: ownedLand,
-      landPct: ownedLandPct,
-      gold,
-      color: n.color || null
+  if (serverRows) {
+    let landTotal = 0;
+    for (let i = 0; i < serverRows.length; i++) {
+      landTotal += Math.max(0, Number(serverRows[i]?.land) | 0);
+    }
+    const totalLand = Math.max(1, landTotal | 0);
+    for (let i = 0; i < serverRows.length; i++) {
+      const row = serverRows[i] || {};
+      const id = Math.max(1, Number(row.id) | 0);
+      const land = Math.max(0, Number(row.land) | 0);
+      rows.push({
+        id,
+        name: String(row.name || (id === OWNER.PLAYER ? "You" : `Nation ${id}`)),
+        land,
+        landPct: (land / totalLand) * 100,
+        gold: Math.max(0, Math.floor(Number(row.gold) || 0)),
+        color: (row.color && typeof row.color === "object") ? row.color : null,
+        rank: Math.max(1, Number(row.rank) | 0)
+      });
+    }
+    rows.sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return a.id - b.id;
     });
-  }
+  } else {
+    const totalLand = Math.max(1, world.totalLand | 0);
+    for (let id = 1; id < world.nation.length; id++) {
+      const n = world.nation[id];
+      if (!n) continue;
 
-  rows.sort((a, b) => {
-    if (b.land !== a.land) return b.land - a.land;
-    if (b.gold !== a.gold) return b.gold - a.gold;
-    return a.name.localeCompare(b.name);
-  });
-  for (let i = 0; i < rows.length; i++) rows[i].rank = i + 1;
+      // Keep collapsed visible and keep player visible even if eliminated.
+      if (!n.alive && id !== OWNER.PLAYER) continue;
+
+      // landOwnedCount tracks land tiles only (never ocean/water).
+      const ownedLand = Math.max(0, world.landOwnedCount[id] | 0);
+      const ownedLandPct = (ownedLand / totalLand) * 100;
+      const gold = Math.max(0, Math.floor(Number(n.gold) || 0));
+
+      rows.push({
+        id,
+        name: n.name || (id === OWNER.PLAYER ? "You" : `AI ${id - 1}`),
+        land: ownedLand,
+        landPct: ownedLandPct,
+        gold,
+        color: n.color || null
+      });
+    }
+
+    rows.sort((a, b) => {
+      if (b.land !== a.land) return b.land - a.land;
+      if (b.gold !== a.gold) return b.gold - a.gold;
+      return a.name.localeCompare(b.name);
+    });
+    for (let i = 0; i < rows.length; i++) rows[i].rank = i + 1;
+  }
 
   const makeRow = (r, extraClass = "") => {
     const row = document.createElement("div");

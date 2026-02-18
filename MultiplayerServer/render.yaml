@@ -13,7 +13,11 @@ services:
         sync: false
       - key: MAX_PLAYERS_PER_LOBBY
         value: 8
-      - key: MATCH_CMD_LEAD_MS
-        value: 90
-      - key: MATCH_TICK_BROADCAST_MS
-        value: 250
+      - key: LOBBY_IDLE_TTL_MS
+        value: 21600000
+      - key: MATCH_SNAPSHOT_INTERVAL_MS
+        value: 100
+      - key: MATCH_MAX_STEPS_PER_PUMP
+        value: 160
+      - key: WS_DEBUG_LOGS
+        value: 0

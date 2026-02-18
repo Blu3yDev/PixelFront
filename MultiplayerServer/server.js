@@ -9,6 +9,7 @@ const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 6
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
 const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(40, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 100));
 const MATCH_MAX_STEPS_PER_PUMP = Math.max(30, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 160));
+const WS_DEBUG_LOGS = /^(1|true|yes|on)$/i.test(String(process.env.WS_DEBUG_LOGS || "").trim());
 
 const MAP_MODE_WORLD = "earth";
 const MAP_MODE_GENERATOR = "generator";
@@ -283,6 +284,15 @@ function touchLobby(lobby) {
 function wsSend(ws, payload) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify(payload));
+}
+
+function wsDebug(text, extra = null) {
+  if (!WS_DEBUG_LOGS) return;
+  if (extra == null) {
+    console.log(`[ws] ${String(text || "")}`);
+  } else {
+    console.log(`[ws] ${String(text || "")}`, extra);
+  }
 }
 
 function mapCanonicalToLocalNationId(canonicalIdRaw, assignedNationIdRaw) {
@@ -1438,6 +1448,7 @@ server.on("upgrade", (req, socket, head) => {
   try {
     const u = new URL(req.url || "/", "http://localhost");
     if (u.pathname !== "/ws") {
+      wsDebug("reject: non-ws path", { path: u.pathname || "" });
       socket.destroy();
       return;
     }
@@ -1445,6 +1456,7 @@ server.on("upgrade", (req, socket, head) => {
     const sessionId = String(u.searchParams.get("sessionId") || "").trim();
     const requestedCode = String(u.searchParams.get("code") || "").trim().toUpperCase();
     if (!sessionId) {
+      wsDebug("reject: missing sessionId", { requestedCode });
       socket.destroy();
       return;
     }
@@ -1452,18 +1464,21 @@ server.on("upgrade", (req, socket, head) => {
     const indexCode = String(playerIndex.get(sessionId) || "").trim().toUpperCase();
     const code = requestedCode || indexCode;
     if (!code) {
+      wsDebug("reject: missing code", { sessionId });
       socket.destroy();
       return;
     }
 
     const lobby = lobbiesByCode.get(code);
     if (!lobby) {
+      wsDebug("reject: lobby not found", { code, sessionId });
       socket.destroy();
       return;
     }
 
     const player = lobby.players.find((p) => p.sessionId === sessionId);
     if (!player) {
+      wsDebug("reject: session not in lobby", { code, sessionId });
       socket.destroy();
       return;
     }
@@ -1472,6 +1487,7 @@ server.on("upgrade", (req, socket, head) => {
       wss.emit("connection", ws, req, { code, sessionId });
     });
   } catch {
+    wsDebug("reject: upgrade exception");
     socket.destroy();
   }
 });
@@ -1481,12 +1497,14 @@ wss.on("connection", (ws, _req, ctx) => {
   const code = String(ctx?.code || "").trim().toUpperCase();
   const lobby = lobbiesByCode.get(code);
   if (!lobby) {
+    wsDebug("post-upgrade close: lobby not found", { code, sessionId });
     try { ws.close(); } catch {}
     return;
   }
 
   const player = lobby.players.find((p) => p.sessionId === sessionId);
   if (!player) {
+    wsDebug("post-upgrade close: session not in lobby", { code, sessionId });
     try { ws.close(); } catch {}
     return;
   }

@@ -7,8 +7,9 @@ This service powers:
 - Start lobby (host only)
 - Leave lobby
 - Realtime lobby updates (`/ws`)
-- Realtime in-match command relay (`match_cmd`)
-- Authoritative server simulation tick (server runs the world)
+- Authoritative in-match simulation (server runs the world)
+- Authoritative snapshots (`snapshot_delta`) + resync (`full_sync`)
+- Authoritative command validation + ack/reject (`cmd_ack` / `cmd_reject`)
 
 It uses in-memory storage for now (good for prototyping, not production persistence).
 
@@ -29,7 +30,7 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 - `POST /api/lobbies/leave`
 - `WS /ws?code=...&sessionId=...`
   - Lobby realtime events (`hello`, `lobby_update`, `started`, `pong`)
-  - In-match command relay (`match_cmd`)
+  - In-match authoritative events (`snapshot_delta`, `full_sync`, `cmd_ack`, `cmd_reject`)
 - Legacy compatibility:
   - `GET /api/lobbies/:code?sessionId=...`
   - `POST /api/lobbies/:code/start`
@@ -41,8 +42,8 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 - `CORS_ORIGIN` (default `*`)
 - `MAX_PLAYERS_PER_LOBBY` (default `8`)
 - `LOBBY_IDLE_TTL_MS` (default `21600000`, 6 hours)
-- `MATCH_CMD_LEAD_MS` (default `90`, server-side command scheduling buffer)
-- `MATCH_TICK_BROADCAST_MS` (default `250`, authoritative tick update cadence)
+- `MATCH_SNAPSHOT_INTERVAL_MS` (default `100`, snapshot cadence in ms)
+- `MATCH_MAX_STEPS_PER_PUMP` (default `160`, max sim steps per server pump)
 
 ## Render deploy
 
@@ -55,7 +56,10 @@ Runtime should be **Node**, not Python.
 2. Wait for service URL, e.g. `https://pixelfront-multiplayer.onrender.com`.
 3. In Render env vars:
    - `CORS_ORIGIN=https://YOURDOMAIN.com,https://www.YOURDOMAIN.com`
-   - (optional) `MAX_PLAYERS_PER_LOBBY=8`
+   - `MAX_PLAYERS_PER_LOBBY=8`
+   - `LOBBY_IDLE_TTL_MS=21600000`
+   - `MATCH_SNAPSHOT_INTERVAL_MS=100`
+   - `MATCH_MAX_STEPS_PER_PUMP=160`
 4. In Vercel project env vars (Production + Preview):
    - `VITE_MULTIPLAYER_API_URL=https://pixelfront-multiplayer.onrender.com`
 5. Redeploy Vercel after setting env vars.
@@ -75,7 +79,7 @@ Runtime should be **Node**, not Python.
   - Free Render instances may cold start (10-20s) on first request.
 
 - If browser says `No 'Access-Control-Allow-Origin' header`:
-  - Most often the backend crashed or did not redeploy successfully.
+  - Most often the backend was unavailable (`5xx`) or restarting, not a frontend bug.
   - Check Render logs first; if service is not listening, CORS headers will not be returned.
   - Confirm `CORS_ORIGIN` is exactly `https://pixelfront-official.vercel.app` (protocol required, no trailing slash).
   - Redeploy Render after env changes.

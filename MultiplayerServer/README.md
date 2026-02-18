@@ -42,14 +42,20 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 - `CORS_ORIGIN` (default `*`)
 - `MAX_PLAYERS_PER_LOBBY` (default `8`)
 - `LOBBY_IDLE_TTL_MS` (default `21600000`, 6 hours)
-- `MATCH_SNAPSHOT_INTERVAL_MS` (default `40`, snapshot cadence in ms)
+- `MATCH_SNAPSHOT_INTERVAL_MS` (default `60`, snapshot cadence in ms)
+- `MATCH_SNAPSHOT_FORCE_INTERVAL_MS` (default `240`, max delay before a snapshot is forced while backlogged)
+- `MATCH_STATE_HASH_EVERY_TICKS` (default `24`, include `stateHash` every N sim ticks)
+- `MATCH_SNAPSHOT_STATS_INTERVAL_MS` (default `220`, nation stats/leaderboard cadence on deltas)
+- `MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS` (default `320`, diplomacy relations cadence on deltas)
+- `MATCH_SNAPSHOT_EVENTS_INTERVAL_MS` (default `550`, global events cadence on deltas)
+- `MATCH_LAG_WARN_INTERVAL_MS` (default `5000`, server lag warning throttle)
 - `MATCH_MAX_STEPS_PER_PUMP` (default `8`, max sim steps per server pump)
 - `MATCH_PUMP_INTERVAL_MS` (default `16`, runtime pump interval in ms)
 - `MATCH_MAX_BACKLOG_MS` (default `250`, max queued sim time under load)
-- `MATCH_MAX_WORLD_WIDTH` (default `1280`)
-- `MATCH_MAX_WORLD_HEIGHT` (default `720`)
-- `MATCH_MAX_WORLD_TILES` (default `360000`)
-- `MATCH_MAX_AI_COUNT` (default `10`)
+- `MATCH_MAX_WORLD_WIDTH` (default `960`)
+- `MATCH_MAX_WORLD_HEIGHT` (default `540`)
+- `MATCH_MAX_WORLD_TILES` (default `220000`)
+- `MATCH_MAX_AI_COUNT` (default `6`)
 - `WS_DEBUG_LOGS` (default `0`, set `1` for temporary websocket reject diagnostics)
 - `PIXELFRONT_MAIN_SRC_DIR` (optional explicit path to `Main/src`; alias `PF_MAIN_SRC_DIR`)
 - `PIXELFRONT_MAIN_ROOT` (optional explicit repo root containing `Main`; alias `PF_MAIN_ROOT`)
@@ -89,14 +95,20 @@ If your deploy does not include `/app/Main`, deploy from the repository root (so
    - `CORS_ORIGIN=https://YOURDOMAIN.com,https://www.YOURDOMAIN.com`
    - `MAX_PLAYERS_PER_LOBBY=8`
    - `LOBBY_IDLE_TTL_MS=21600000`
-   - `MATCH_SNAPSHOT_INTERVAL_MS=40`
+   - `MATCH_SNAPSHOT_INTERVAL_MS=60`
+   - `MATCH_SNAPSHOT_FORCE_INTERVAL_MS=240`
+   - `MATCH_STATE_HASH_EVERY_TICKS=24`
+   - `MATCH_SNAPSHOT_STATS_INTERVAL_MS=220`
+   - `MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS=320`
+   - `MATCH_SNAPSHOT_EVENTS_INTERVAL_MS=550`
+   - `MATCH_LAG_WARN_INTERVAL_MS=5000`
    - `MATCH_MAX_STEPS_PER_PUMP=8`
    - `MATCH_PUMP_INTERVAL_MS=16`
    - `MATCH_MAX_BACKLOG_MS=250`
-   - `MATCH_MAX_WORLD_WIDTH=1280`
-   - `MATCH_MAX_WORLD_HEIGHT=720`
-   - `MATCH_MAX_WORLD_TILES=360000`
-   - `MATCH_MAX_AI_COUNT=10`
+   - `MATCH_MAX_WORLD_WIDTH=960`
+   - `MATCH_MAX_WORLD_HEIGHT=540`
+   - `MATCH_MAX_WORLD_TILES=220000`
+   - `MATCH_MAX_AI_COUNT=6`
 4. In Vercel project env vars (Production + Preview):
    - `VITE_MULTIPLAYER_API_URL=https://pixelfront-multiplayer.onrender.com`
 5. Redeploy Vercel after setting env vars.

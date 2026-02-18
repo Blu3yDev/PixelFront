@@ -19,8 +19,8 @@ import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
 
 // PF_BUILD: v11 2026-02-18
-window.__PF_BUILD = "v11";
-console.info("[PixelFront] BUILD v1.5 Beta loaded (v11)");
+window.__PF_BUILD = "v12";
+console.info("[PixelFront] BUILD v1.5 Beta loaded (v12)");
 document.title = "PixelFront | Beta";
 
 const canvas = document.getElementById("game");
@@ -181,10 +181,10 @@ if (MULTIPLAYER_API_BASE) {
 const MULTIPLAYER_WORLD_LIMITS = Object.freeze({
   minWidth: 480,
   minHeight: 240,
-  maxWidth: 1280,
-  maxHeight: 720,
-  maxTiles: 360_000,
-  maxAiCount: 10
+  maxWidth: 960,
+  maxHeight: 540,
+  maxTiles: 220_000,
+  maxAiCount: 6
 });
 
 function normalizeApiBase(rawValue) {

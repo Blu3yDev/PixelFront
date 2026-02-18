@@ -10,22 +10,28 @@ const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
 const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 60 * 6));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
-const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(30, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 40));
+const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(40, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 60));
 const MATCH_MAX_STEPS_PER_PUMP = Math.max(2, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 8));
 const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERVAL_MS || 16));
 const MATCH_MAX_BACKLOG_MS = Math.max(100, Number(process.env.MATCH_MAX_BACKLOG_MS || 250));
+const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(160, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 240));
+const MATCH_STATE_HASH_EVERY_TICKS = Math.max(4, Number(process.env.MATCH_STATE_HASH_EVERY_TICKS || 24));
+const MATCH_LAG_WARN_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_LAG_WARN_INTERVAL_MS || 5000));
+const MATCH_SNAPSHOT_STATS_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_SNAPSHOT_STATS_INTERVAL_MS || 220));
+const MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS = Math.max(180, Number(process.env.MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS || 320));
+const MATCH_SNAPSHOT_EVENTS_INTERVAL_MS = Math.max(300, Number(process.env.MATCH_SNAPSHOT_EVENTS_INTERVAL_MS || 550));
 const WS_DEBUG_LOGS = /^(1|true|yes|on)$/i.test(String(process.env.WS_DEBUG_LOGS || "").trim());
-const MATCH_MAX_WORLD_WIDTH = Math.max(480, Number(process.env.MATCH_MAX_WORLD_WIDTH || 1280));
-const MATCH_MAX_WORLD_HEIGHT = Math.max(240, Number(process.env.MATCH_MAX_WORLD_HEIGHT || 720));
-const MATCH_MAX_WORLD_TILES = Math.max(120000, Number(process.env.MATCH_MAX_WORLD_TILES || 360_000));
-const MATCH_MAX_AI_COUNT = Math.max(2, Number(process.env.MATCH_MAX_AI_COUNT || 10));
+const MATCH_MAX_WORLD_WIDTH = Math.max(480, Number(process.env.MATCH_MAX_WORLD_WIDTH || 960));
+const MATCH_MAX_WORLD_HEIGHT = Math.max(240, Number(process.env.MATCH_MAX_WORLD_HEIGHT || 540));
+const MATCH_MAX_WORLD_TILES = Math.max(120000, Number(process.env.MATCH_MAX_WORLD_TILES || 220_000));
+const MATCH_MAX_AI_COUNT = Math.max(2, Number(process.env.MATCH_MAX_AI_COUNT || 6));
 
 const MAP_MODE_WORLD = "earth";
 const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-18-authoritative-runtime-v2");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-18-authoritative-runtime-v3");
 
 let activeSimDtS = DEFAULT_SIM_DT_S;
 let runtimeModulesPromise = null;
@@ -460,11 +466,11 @@ function applyLobbyWorldPerfCaps(specRaw, lobby) {
   const playerCount = Math.max(1, Number(lobby?.players?.length) | 0);
   const minAi = Math.max(1, playerCount - 1);
 
-  // Keep multiplayer responsive by scaling AI pressure with human player count.
-  const dynamicMaxAi = Math.max(minAi, Math.min(MATCH_MAX_AI_COUNT, (playerCount * 2) + 6));
+  // Keep multiplayer responsive on smaller hosts by capping AI and tile count more aggressively.
+  const dynamicMaxAi = Math.max(minAi, Math.min(MATCH_MAX_AI_COUNT, playerCount + 2));
   const dynamicMaxTiles = Math.max(
-    220_000,
-    Math.min(MATCH_MAX_WORLD_TILES, 220_000 + (playerCount * 120_000))
+    140_000,
+    Math.min(MATCH_MAX_WORLD_TILES, 140_000 + (playerCount * 50_000))
   );
 
   let width = Math.max(minW, Math.min(MATCH_MAX_WORLD_WIDTH, Number(spec.width) | 0));
@@ -503,9 +509,9 @@ function resolveWorldSpecForLobby(lobby) {
     }, lobby);
   }
   return applyLobbyWorldPerfCaps({
-    width: Number(cfg?.worldWidth) || 1280,
-    height: Number(cfg?.worldHeight) || 640,
-    aiCount: Math.max(minAi, Number(cfg?.aiCount) || 10),
+    width: Number(cfg?.worldWidth) || 960,
+    height: Number(cfg?.worldHeight) || 480,
+    aiCount: Math.max(minAi, Number(cfg?.aiCount) || 4),
     mapMode
   }, lobby);
 }
@@ -606,6 +612,10 @@ async function ensureLobbyRuntime(lobby) {
       simAccMs: 0,
       lastPumpAtMs: nowMs(),
       lastSnapshotAtMs: 0,
+      lastLagWarnAtMs: 0,
+      lastStatsSnapshotAtMs: 0,
+      lastRelationsSnapshotAtMs: 0,
+      lastEventsSnapshotAtMs: 0,
       lastEntityHashes: Object.create(null),
       assignmentsBySession: new Map(),
       nationToSession: new Map()
@@ -1069,18 +1079,26 @@ function computeStateHashForWorld(world, tickRaw, assignedNationIdRaw) {
 
 function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
   const world = runtime.world;
+  const now = nowMs();
+  const includeStats = fullSync || ((now - (Number(runtime.lastStatsSnapshotAtMs) || 0)) >= MATCH_SNAPSHOT_STATS_INTERVAL_MS);
+  const includeRelations = fullSync || ((now - (Number(runtime.lastRelationsSnapshotAtMs) || 0)) >= MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS);
+  const includeEvents = fullSync || ((now - (Number(runtime.lastEventsSnapshotAtMs) || 0)) >= MATCH_SNAPSHOT_EVENTS_INTERVAL_MS);
   const packet = {
     type: fullSync ? "full_sync" : "snapshot_delta",
-    serverTime: nowMs(),
+    serverTime: now,
     code: lobby.code,
     tick: runtime.simTick | 0,
     worldMeta: serializeWorldMeta(lobby, runtime),
     changedEntities: serializeEntitiesDelta(world, runtime, fullSync),
-    nationStats: serializeNationStats(world),
-    leaderboard: serializeLeaderboard(world),
-    relations: serializeRelations(world),
-    events: serializeEvents(world)
+    nationStats: includeStats ? serializeNationStats(world) : undefined,
+    leaderboard: includeStats ? serializeLeaderboard(world) : undefined,
+    relations: includeRelations ? serializeRelations(world) : undefined,
+    events: includeEvents ? serializeEvents(world) : undefined
   };
+
+  if (includeStats) runtime.lastStatsSnapshotAtMs = now;
+  if (includeRelations) runtime.lastRelationsSnapshotAtMs = now;
+  if (includeEvents) runtime.lastEventsSnapshotAtMs = now;
 
   if (fullSync) {
     packet.ownerPacked = encodeOwnerPackedBase64(world.owner);
@@ -1124,13 +1142,16 @@ function broadcastSnapshotDelta(lobby, runtime) {
     broadcastFullSync(lobby, runtime, "owner_overflow");
     return;
   }
+  const includeStateHash = ((runtime.simTick | 0) % MATCH_STATE_HASH_EVERY_TICKS) === 0;
 
   for (const [sessionId, ws] of lobby.sockets.entries()) {
     const assignment = runtime.assignmentsBySession.get(sessionId);
     if (!assignment) continue;
     const mapped = remapSnapshotForSession(base, assignment.nationId);
     mapped.type = "snapshot_delta";
-    mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
+    if (includeStateHash) {
+      mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
+    }
     wsSend(ws, mapped);
   }
 }
@@ -1158,9 +1179,26 @@ function flushRuntimeTick(lobby, runtime, now) {
     runtime.simAccMs = stepMs * 2;
   }
 
+  if (runtime.simAccMs > (stepMs * 1.4)) {
+    const lastWarn = Number(runtime.lastLagWarnAtMs) || 0;
+    if ((now - lastWarn) >= MATCH_LAG_WARN_INTERVAL_MS) {
+      runtime.lastLagWarnAtMs = now;
+      const world = runtime.world;
+      const area = Math.max(0, (Number(world?.W) | 0) * (Number(world?.H) | 0));
+      const aiCount = Math.max(0, Number(world?._ai?.length || 0) - 1);
+      console.warn(
+        `[runtime-lag] lobby=${String(lobby?.code || "")} backlogMs=${Math.round(runtime.simAccMs)} stepMs=${Math.round(stepMs)} area=${area} ai=${aiCount}`
+      );
+    }
+  }
+
   if ((now - (Number(runtime.lastSnapshotAtMs) || 0)) >= MATCH_SNAPSHOT_INTERVAL_MS) {
-    runtime.lastSnapshotAtMs = now;
-    broadcastSnapshotDelta(lobby, runtime);
+    const behind = runtime.simAccMs > (stepMs * 1.25);
+    const forceDue = (now - (Number(runtime.lastSnapshotAtMs) || 0)) >= MATCH_SNAPSHOT_FORCE_INTERVAL_MS;
+    if (!behind || forceDue) {
+      runtime.lastSnapshotAtMs = now;
+      broadcastSnapshotDelta(lobby, runtime);
+    }
   }
 }
 
@@ -1326,8 +1364,12 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
 
   // Push an authoritative delta immediately after accepted input to reduce visible input latency.
   try {
-    runtime.lastSnapshotAtMs = nowMs();
-    broadcastSnapshotDelta(lobby, runtime);
+    const stepMs = simDtMs();
+    const backlogMs = Math.max(0, Number(runtime.simAccMs) || 0);
+    if (backlogMs <= (stepMs * 1.5)) {
+      runtime.lastSnapshotAtMs = nowMs();
+      broadcastSnapshotDelta(lobby, runtime);
+    }
   } catch {
     // Keep command success path resilient; periodic snapshots continue.
   }

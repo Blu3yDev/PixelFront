@@ -329,6 +329,114 @@ let warBgm = null;
 let activeBgmMode = "none";
 let bgmUnlockArmed = false;
 
+function getMenuBgmVolume01() {
+  const fallbackPct = Math.round(DEFAULT_MENU_BGM_VOLUME * 100);
+  const pct = clampPct(clientSettings?.menuMusicVolume, fallbackPct);
+  return Math.max(0, Math.min(1, pct / 100));
+}
+
+function getWarBgmVolume01() {
+  const fallbackPct = Math.round(DEFAULT_WAR_BGM_VOLUME * 100);
+  const pct = clampPct(clientSettings?.warMusicVolume, fallbackPct);
+  return Math.max(0, Math.min(1, pct / 100));
+}
+
+function stopBgmTrack(track) {
+  if (!track) return;
+  try { track.pause(); } catch {}
+}
+
+function playBgmTrack(track) {
+  if (!track) return;
+  try {
+    const p = track.play();
+    if (p && typeof p.catch === "function") {
+      p.catch(() => {
+        armBgmUnlock();
+      });
+    }
+  } catch {
+    armBgmUnlock();
+  }
+}
+
+function removeBgmUnlockHandlers() {
+  if (!bgmUnlockArmed) return;
+  bgmUnlockArmed = false;
+  try { window.removeEventListener("pointerdown", tryUnlockBgmPlayback, true); } catch {}
+  try { window.removeEventListener("keydown", tryUnlockBgmPlayback, true); } catch {}
+  try { window.removeEventListener("touchstart", tryUnlockBgmPlayback, true); } catch {}
+}
+
+function armBgmUnlock() {
+  if (bgmUnlockArmed) return;
+  bgmUnlockArmed = true;
+  try { window.addEventListener("pointerdown", tryUnlockBgmPlayback, true); } catch {}
+  try { window.addEventListener("keydown", tryUnlockBgmPlayback, true); } catch {}
+  try { window.addEventListener("touchstart", tryUnlockBgmPlayback, true); } catch {}
+}
+
+function tryUnlockBgmPlayback() {
+  if (!menuBgm || !warBgm) return;
+  if (activeBgmMode === "menu") {
+    applyBgmVolumes();
+    playBgmTrack(menuBgm);
+    stopBgmTrack(warBgm);
+    removeBgmUnlockHandlers();
+    return;
+  }
+  if (activeBgmMode === "war") {
+    applyBgmVolumes();
+    playBgmTrack(warBgm);
+    stopBgmTrack(menuBgm);
+    removeBgmUnlockHandlers();
+    return;
+  }
+  removeBgmUnlockHandlers();
+}
+
+function ensureBgmAudio() {
+  if (typeof Audio !== "function") return false;
+  if (!menuBgm) {
+    menuBgm = new Audio(menuSoundUrl);
+    menuBgm.loop = true;
+    menuBgm.preload = "auto";
+  }
+  if (!warBgm) {
+    warBgm = new Audio(warSoundUrl);
+    warBgm.loop = true;
+    warBgm.preload = "auto";
+  }
+  return true;
+}
+
+function applyBgmVolumes() {
+  if (!ensureBgmAudio()) return;
+  menuBgm.volume = getMenuBgmVolume01();
+  warBgm.volume = getWarBgmVolume01();
+}
+
+function setBgmMode(nextModeRaw) {
+  const nextMode = String(nextModeRaw || "none").toLowerCase();
+  activeBgmMode = (nextMode === "menu" || nextMode === "war") ? nextMode : "none";
+  if (!ensureBgmAudio()) return;
+  applyBgmVolumes();
+
+  if (activeBgmMode === "menu") {
+    stopBgmTrack(warBgm);
+    playBgmTrack(menuBgm);
+    return;
+  }
+  if (activeBgmMode === "war") {
+    stopBgmTrack(menuBgm);
+    playBgmTrack(warBgm);
+    return;
+  }
+
+  stopBgmTrack(menuBgm);
+  stopBgmTrack(warBgm);
+}
+
 let activeMultiplayerSession = null;
 let multiplayerMatchSocket = null;
 let multiplayerMatchConnected = false;
@@ -346,6 +454,8 @@ let multiplayerAwaitingFullSync = false;
 let multiplayerLastSnapshotAtMs = 0;
 let multiplayerLastFullSyncRequestAtMs = 0;
 let multiplayerLastHashMismatchAtMs = 0;
+let multiplayerConnectFailureStreak = 0;
+let multiplayerSessionProbeInFlight = false;
 
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 2;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 4500;
@@ -400,6 +510,17 @@ function normalizeMultiplayerSession(raw) {
 }
 
 function resetMultiplayerWorldSync() {
+  const worldRef = multiplayerWorldSyncWorld;
+  if (worldRef && multiplayerWorldSyncOriginals && multiplayerWorldSyncOriginals.size > 0) {
+    for (const [methodName, originalFn] of multiplayerWorldSyncOriginals.entries()) {
+      if (!methodName || typeof originalFn !== "function") continue;
+      try {
+        worldRef[methodName] = originalFn;
+      } catch {
+        // Ignore restoration failures and continue cleanup.
+      }
+    }
+  }
   multiplayerWorldSyncWorld = null;
   multiplayerWorldSyncOriginals = new Map();
 }
@@ -438,6 +559,8 @@ function setActiveMultiplayerSession(raw) {
   activeMultiplayerSession = next;
   multiplayerMatchRttMs = 0;
   multiplayerServerOffsetMs = 0;
+  multiplayerConnectFailureStreak = 0;
+  multiplayerSessionProbeInFlight = false;
   multiplayerPendingInputSeq = 1;
   multiplayerLastAckSeq = 0;
   resetMultiplayerSnapshotState();
@@ -1166,6 +1289,75 @@ function handleMultiplayerCommandAck(msg) {
   }
 }
 
+function isTerminalMultiplayerSessionErrorMessage(msgRaw) {
+  const msg = String(msgRaw || "").trim().toLowerCase();
+  if (!msg) return false;
+  if (msg.includes("lobby not found")) return true;
+  if (msg.includes("session is not part of this lobby")) return true;
+  if (msg.includes("missing sessionid")) return true;
+  if (msg.includes("invalid lobby code")) return true;
+  return false;
+}
+
+async function probeActiveMultiplayerSessionState() {
+  if (!isMultiplayerMatchEnabled()) return { checked: false, valid: false, terminal: false, reason: "" };
+  if (!MULTIPLAYER_API_BASE || typeof fetch !== "function") {
+    return { checked: false, valid: true, terminal: false, reason: "" };
+  }
+
+  const sess = activeMultiplayerSession;
+  const payload = {
+    code: String(sess?.code || "").trim().toUpperCase(),
+    sessionId: String(sess?.sessionId || "").trim()
+  };
+  if (!payload.code || !payload.sessionId) {
+    return { checked: false, valid: false, terminal: true, reason: "Missing lobby identity." };
+  }
+
+  const ctrl = (typeof AbortController === "function") ? new AbortController() : null;
+  const timeoutId = setTimeout(() => {
+    try { ctrl?.abort(); } catch {}
+  }, 8000);
+
+  let res = null;
+  try {
+    res = await fetch(`${MULTIPLAYER_API_BASE}/api/lobbies/state`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: ctrl?.signal
+    });
+  } catch {
+    clearTimeout(timeoutId);
+    return { checked: false, valid: true, terminal: false, reason: "" };
+  }
+  clearTimeout(timeoutId);
+
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+
+  if (res.ok && (data == null || data.ok !== false)) {
+    return { checked: true, valid: true, terminal: false, reason: "" };
+  }
+
+  const reason = String(data?.error || data?.message || `Request failed (${Number(res.status) || 0}).`).trim();
+  const terminal = (Number(res.status) === 404) || isTerminalMultiplayerSessionErrorMessage(reason);
+  return { checked: true, valid: !terminal, terminal, reason };
+}
+
+function scheduleMultiplayerMatchReconnect(delayMs = 1500) {
+  if (!isMultiplayerMatchEnabled()) return;
+  if (multiplayerMatchReconnectTimer) clearTimeout(multiplayerMatchReconnectTimer);
+  multiplayerMatchReconnectTimer = setTimeout(() => {
+    multiplayerMatchReconnectTimer = 0;
+    connectMultiplayerMatchSocket();
+  }, Math.max(250, Number(delayMs) || 1500));
+}
+
 function connectMultiplayerMatchSocket() {
   if (!isMultiplayerMatchEnabled()) return;
   if (typeof WebSocket === "undefined") return;
@@ -1179,6 +1371,8 @@ function connectMultiplayerMatchSocket() {
 
   ws.onopen = () => {
     multiplayerMatchConnected = true;
+    multiplayerConnectFailureStreak = 0;
+    multiplayerSessionProbeInFlight = false;
     try {
       const t = Date.now();
       ws.send(JSON.stringify({ type: "ping", clientTime: t }));
@@ -1296,11 +1490,35 @@ function connectMultiplayerMatchSocket() {
     multiplayerMatchConnected = false;
     multiplayerMatchSocket = null;
     if (!isMultiplayerMatchEnabled()) return;
-    if (multiplayerMatchReconnectTimer) clearTimeout(multiplayerMatchReconnectTimer);
-    multiplayerMatchReconnectTimer = setTimeout(() => {
-      multiplayerMatchReconnectTimer = 0;
-      connectMultiplayerMatchSocket();
-    }, 1500);
+    multiplayerConnectFailureStreak = Math.max(1, (multiplayerConnectFailureStreak | 0) + 1);
+
+    // Probe stale-session conditions only after repeated failures.
+    if ((multiplayerConnectFailureStreak | 0) < 2 || multiplayerSessionProbeInFlight) {
+      scheduleMultiplayerMatchReconnect(1500);
+      return;
+    }
+
+    multiplayerSessionProbeInFlight = true;
+    void probeActiveMultiplayerSessionState()
+      .then((probe) => {
+        if (!isMultiplayerMatchEnabled()) return;
+        if (probe?.terminal && !probe?.valid) {
+          const reason = String(probe.reason || "Multiplayer lobby is no longer available on the server.").trim();
+          if (hud && typeof hud.setOpMessage === "function") {
+            hud.setOpMessage(`${reason} Open Multiplayer and create/join a new lobby.`);
+          }
+          setActiveMultiplayerSession(null);
+          return;
+        }
+        scheduleMultiplayerMatchReconnect(1500);
+      })
+      .catch(() => {
+        if (!isMultiplayerMatchEnabled()) return;
+        scheduleMultiplayerMatchReconnect(2000);
+      })
+      .finally(() => {
+        multiplayerSessionProbeInFlight = false;
+      });
   };
 
   ws.onerror = () => {

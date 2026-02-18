@@ -2713,8 +2713,8 @@ World.prototype._initNations = function() {
       const remainText = `${Math.ceil(remainS)}s`;
       const playerPicked = !!phase.picked[OWNER.PLAYER];
       const label = playerPicked
-        ? `Spawn Selection ${picked}/${total} • ${remainText}`
-        : `Pick Your Spawn ${picked}/${total} • ${remainText}`;
+        ? `Spawn Selection ${picked}/${total} - ${remainText}`
+        : `Pick Your Spawn ${picked}/${total} - ${remainText}`;
 
       return {
         active: true,

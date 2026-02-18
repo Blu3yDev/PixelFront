@@ -3336,7 +3336,13 @@ function createMainMenuController(options = null) {
     if (multiplayerHealthCheckInFlight) return { ok: true };
     multiplayerHealthCheckInFlight = true;
     try {
-      await multiplayerFetch("/health", { method: "GET", timeoutMs: 10000, retries: 2 });
+      const health = await multiplayerFetch("/health", { method: "GET", timeoutMs: 10000, retries: 2 });
+      const apiBase = getMultiplayerApiBase();
+      const build = String(health?.build || "").trim();
+      const runtimeSrc = String(health?.runtimeMainSrc || "").trim();
+      console.log(
+        `[Multiplayer] health ok api=${apiBase || "(none)"} build=${build || "(unknown)"} runtimeSrc=${runtimeSrc || "(n/a)"}`
+      );
       multiplayerHealthOk = true;
       multiplayerHealthCheckedAtMs = Date.now();
       return { ok: true };

@@ -25,6 +25,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-18-authoritative-runtime-v2");
 
 let activeSimDtS = DEFAULT_SIM_DT_S;
 let runtimeModulesPromise = null;
@@ -1470,7 +1471,12 @@ const server = createServer(async (req, res) => {
     const path = u.pathname;
 
     if (req.method === "GET" && path === "/health") {
-      writeJson(res, 200, { ok: true, uptimeS: Math.round(process.uptime()) });
+      writeJson(res, 200, {
+        ok: true,
+        uptimeS: Math.round(process.uptime()),
+        build: SERVER_BUILD_ID,
+        runtimeMainSrc: runtimeModulesSrcDir || ""
+      });
       return;
     }
 
@@ -1683,6 +1689,7 @@ const server = createServer(async (req, res) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
+console.log(`[multiplayer-server] build=${SERVER_BUILD_ID}`);
 
 server.on("upgrade", (req, socket, head) => {
   try {

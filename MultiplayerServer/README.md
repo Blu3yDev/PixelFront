@@ -110,6 +110,11 @@ If your deploy does not include `/app/Main`, deploy from the repository root (so
   - Confirm it is set in the same Vercel project/environment you're deploying.
   - Trigger a fresh deployment (env vars are build-time for Vite).
 
+- If Railway still logs old module import paths:
+  - Your deployment is running stale code.
+  - Check `GET /health`; it now returns `build` and `runtimeMainSrc`.
+  - Startup logs should include `[multiplayer-server] build=...` and then `[runtime-init] main-src=...`.
+
 - If Create/Join fails with network error:
   - Verify Render service is online (`GET /health`).
   - Verify `CORS_ORIGIN` includes your exact site origin.

@@ -3340,6 +3340,15 @@ function createMainMenuController(options = null) {
       const apiBase = String(MULTIPLAYER_API_BASE || "").trim();
       const build = String(health?.build || "").trim();
       const runtimeSrc = String(health?.runtimeMainSrc || "").trim();
+      if (!build) {
+        console.warn(`[Multiplayer] backend missing build metadata at ${apiBase || "(unknown URL)"}; deploy is stale.`);
+        multiplayerHealthOk = false;
+        multiplayerHealthCheckedAtMs = Date.now();
+        return {
+          ok: false,
+          reason: `Multiplayer backend is outdated at ${apiBase || "(unknown URL)"}. Redeploy Railway from latest server code.`
+        };
+      }
       console.log(
         `[Multiplayer] health ok api=${apiBase || "(none)"} build=${build || "(unknown)"} runtimeSrc=${runtimeSrc || "(n/a)"}`
       );

@@ -585,6 +585,7 @@ function normalizeMultiplayerSession(raw) {
     code,
     sessionId,
     startedAt,
+    serverTick: Math.max(0, Number(raw.serverTick) || 0),
     isHost,
     worldSpec: sanitizeMultiplayerWorldSpec(raw.worldSpec)
   };
@@ -663,11 +664,25 @@ function queueMultiplayerCommandPacket(rawPacket) {
   if (seq <= 0) return;
   if (seq < multiplayerNextSeqExpected) return;
   if (multiplayerPendingPacketsBySeq.has(seq)) return;
+  const rawApplyTick = Number(src.applyTick);
+  let applyTick = (Number.isFinite(rawApplyTick) && rawApplyTick >= 0)
+    ? (rawApplyTick | 0)
+    : -1;
+  if (applyTick < 0) {
+    const startedAt = Math.max(0, Number(activeMultiplayerSession?.startedAt) || 0);
+    const applyAtMs = Math.max(0, Number(src.applyAtMs) || 0);
+    if (startedAt > 0 && applyAtMs > 0) {
+      applyTick = Math.max(0, Math.floor((applyAtMs - startedAt) / Math.max(0.001, SIM_DT_S * 1000)));
+    } else {
+      applyTick = 0;
+    }
+  }
   const packet = {
     seq,
     cmdId: String(src.cmdId || "").trim(),
     cmd: String(src.cmd || "").trim(),
     args: Array.isArray(src.args) ? src.args : [],
+    applyTick,
     applyAtMs: Math.max(0, Number(src.applyAtMs) || 0)
   };
   multiplayerPendingPacketsBySeq.set(seq, packet);
@@ -677,13 +692,13 @@ function queueMultiplayerCommandPacket(rawPacket) {
 function drainMultiplayerCommandQueue() {
   if (!isMultiplayerMatchEnabled()) return;
   if (!multiplayerWorldSyncWorld) return;
-  const nowServerMs = Date.now() + (Number(multiplayerServerOffsetMs) || 0);
+  const localTick = Math.max(0, Math.floor((Number(multiplayerWorldSyncWorld?.time) || 0) / Math.max(0.0001, SIM_DT_S)));
   let guard = 0;
   while (guard < 256) {
     guard++;
     const packet = multiplayerPendingPacketsBySeq.get(multiplayerNextSeqExpected);
     if (!packet) break;
-    if ((Number(packet.applyAtMs) || 0) > (nowServerMs + 1)) break;
+    if ((Number(packet.applyTick) | 0) > localTick) break;
     multiplayerPendingPacketsBySeq.delete(multiplayerNextSeqExpected);
     multiplayerNextSeqExpected++;
     applyIncomingMultiplayerCommand(packet.cmd, packet.args, packet.cmdId);
@@ -854,6 +869,10 @@ function connectMultiplayerMatchSocket() {
       if (startedAt > 0 && activeMultiplayerSession) {
         activeMultiplayerSession.startedAt = startedAt;
       }
+      const helloTick = Math.max(0, Number(msg?.match?.tick) || 0);
+      if (activeMultiplayerSession && helloTick > 0) {
+        activeMultiplayerSession.serverTick = Math.max(Number(activeMultiplayerSession.serverTick) || 0, helloTick);
+      }
       const history = Array.isArray(msg?.match?.commands) ? msg.match.commands : [];
       if (history.length > 0) {
         let minSeq = Number.POSITIVE_INFINITY;
@@ -886,6 +905,17 @@ function connectMultiplayerMatchSocket() {
       const startedAt = Math.max(0, Number(start?.startedAt) || 0);
       if (startedAt > 0 && activeMultiplayerSession) {
         activeMultiplayerSession.startedAt = startedAt;
+      }
+      return;
+    }
+    if (type === "match_tick") {
+      const serverTime = Number(msg?.serverTime) || 0;
+      if (serverTime > 0) {
+        multiplayerServerOffsetMs = serverTime - Date.now();
+      }
+      const tick = Math.max(0, Number(msg?.tick) || 0);
+      if (activeMultiplayerSession && tick > 0) {
+        activeMultiplayerSession.serverTick = Math.max(Number(activeMultiplayerSession.serverTick) || 0, tick);
       }
       return;
     }
@@ -2604,6 +2634,7 @@ function createMainMenuController(options = null) {
         code: String(lobby.code || "").trim().toUpperCase(),
         sessionId: String(multiplayerSessionId || "").trim(),
         startedAt: Number(lobby?.start?.startedAt) || 0,
+        serverTick: 0,
         isHost: !!lobby.host,
         worldSpec: startWorldSpec
       }
@@ -4646,10 +4677,16 @@ function boot() {
     const multiplayerClockActive = isMultiplayerMatchEnabled() && (Number(activeMultiplayerSession?.startedAt) || 0) > 0;
     if (!paused) {
       if (multiplayerClockActive) {
-        const startedAt = Math.max(0, Number(activeMultiplayerSession?.startedAt) || 0);
-        const syncedNowMs = Date.now() + (Number(multiplayerServerOffsetMs) || 0);
-        const elapsedS = Math.max(0, (syncedNowMs - startedAt) / 1000);
-        const targetTicks = Math.max(0, Math.floor(elapsedS / FIXED));
+        const serverTick = Math.max(0, Number(activeMultiplayerSession?.serverTick) || 0);
+        let targetTicks = 0;
+        if (serverTick > 0) {
+          targetTicks = serverTick;
+        } else {
+          const startedAt = Math.max(0, Number(activeMultiplayerSession?.startedAt) || 0);
+          const syncedNowMs = Date.now() + (Number(multiplayerServerOffsetMs) || 0);
+          const elapsedS = Math.max(0, (syncedNowMs - startedAt) / 1000);
+          targetTicks = Math.max(0, Math.floor(elapsedS / FIXED));
+        }
         const currentTicks = Math.max(0, Math.floor((Number(world.time) || 0) / FIXED));
         const behindTicks = Math.max(0, targetTicks - currentTicks);
         simTickAcc = Math.min(MAX_ACCUMULATED_TICKS * 6, behindTicks);
@@ -4671,6 +4708,7 @@ function boot() {
     if (!paused) {
       const simStart = performance.now();
       while (simTickAcc >= 1 && simSteps < maxSimStepsThisFrame) {
+        drainMultiplayerCommandQueue();
         world.tick();
         simTickAcc -= 1;
         simSteps++;

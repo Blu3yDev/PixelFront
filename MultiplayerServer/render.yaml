@@ -13,3 +13,7 @@ services:
         sync: false
       - key: MAX_PLAYERS_PER_LOBBY
         value: 8
+      - key: MATCH_CMD_LEAD_MS
+        value: 90
+      - key: MATCH_TICK_BROADCAST_MS
+        value: 250

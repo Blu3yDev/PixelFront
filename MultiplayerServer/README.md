@@ -8,6 +8,7 @@ This service powers:
 - Leave lobby
 - Realtime lobby updates (`/ws`)
 - Realtime in-match command relay (`match_cmd`)
+- Authoritative server simulation tick (server runs the world)
 
 It uses in-memory storage for now (good for prototyping, not production persistence).
 
@@ -41,6 +42,7 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 - `MAX_PLAYERS_PER_LOBBY` (default `8`)
 - `LOBBY_IDLE_TTL_MS` (default `21600000`, 6 hours)
 - `MATCH_CMD_LEAD_MS` (default `90`, server-side command scheduling buffer)
+- `MATCH_TICK_BROADCAST_MS` (default `250`, authoritative tick update cadence)
 
 ## Render deploy
 

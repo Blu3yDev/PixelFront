@@ -1,12 +1,17 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
+import { World } from "../Main/src/game/core/world.js";
+import { MAP_MODE, SIM_DT_S } from "../Main/src/game/config.js";
+import { loadEarthDataNode } from "./earthDataNode.js";
 
 const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
 const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 60 * 6));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
 const MATCH_CMD_LEAD_MS = Math.max(10, Number(process.env.MATCH_CMD_LEAD_MS || 90));
+const MATCH_TICK_BROADCAST_MS = Math.max(50, Number(process.env.MATCH_TICK_BROADCAST_MS || 250));
+const SIM_DT_MS = Math.max(1, Number(SIM_DT_S) * 1000);
 
 const lobbiesByCode = new Map(); // code -> lobby
 const playerIndex = new Map(); // sessionId -> code
@@ -146,8 +151,11 @@ function lobbyView(lobby) {
 }
 
 function lobbyMatchView(lobby, includeCommands = false) {
+  const rt = lobby?.runtime || null;
   const view = {
-    seq: Number(lobby?.matchSeq) || 0
+    seq: Number(lobby?.matchSeq) || 0,
+    tick: Number(rt?.simTick) || 0,
+    serverTime: nowMs()
   };
   if (includeCommands) {
     const rows = Array.isArray(lobby?.matchHistory) ? lobby.matchHistory : [];
@@ -171,6 +179,107 @@ function sanitizeMatchCommand(raw) {
     }
   }
   return { cmdId, cmd, args };
+}
+
+const SERVER_MATCH_COMMAND_METHODS = Object.freeze({
+  set_attack_ratio: "setAttackRatio",
+  set_mobilization: "setMobilization",
+  start_neutral: "startNeutral",
+  start_war_focus: "startWarFocus",
+  cancel_all_operations: "cancelAllOperations",
+  cancel_operation: "cancelOperation",
+  donate: "donate",
+  declare_war: "declareWar",
+  send_warship: "sendWarship",
+  request_ceasefire: "requestCeasefire",
+  request_alliance: "requestAlliance",
+  respond_ceasefire_request: "respondCeasefireRequest",
+  respond_alliance_request: "respondAllianceRequest",
+  cancel_ship: "cancelShip",
+  start_missile_silo_build: "startMissileSiloBuild",
+  start_airbase_transport_build: "startAirbaseTransportBuild",
+  start_burst_expand: "startBurstExpand",
+  start_burst_attack: "startBurstAttack",
+  pick_spawn: "pickSpawn",
+  launch_missile_warhead: "launchMissileWarhead",
+  launch_airbase_transport: "launchAirbaseTransport",
+  place_structure: "placeStructure"
+});
+
+function applyAuthoritativeCommand(world, packet) {
+  if (!world || !packet) return { ok: false, reason: "World unavailable." };
+  const cmd = String(packet.cmd || "").trim();
+  const methodName = SERVER_MATCH_COMMAND_METHODS[cmd];
+  if (!methodName) return { ok: false, reason: "Unsupported command." };
+  const fn = world[methodName];
+  if (typeof fn !== "function") return { ok: false, reason: "Command method unavailable." };
+  const args = Array.isArray(packet.args) ? packet.args : [];
+  try {
+    const res = fn(...args);
+    if (res && typeof res === "object" && Object.prototype.hasOwnProperty.call(res, "ok")) {
+      return res;
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err?.message || "Command failed." };
+  }
+}
+
+function resolveMatchMapMode(worldSpec, matchConfig) {
+  const specMode = String(worldSpec?.mapMode || "").trim().toLowerCase();
+  if (specMode === MAP_MODE.WORLD_MAP || specMode === "world_map" || specMode === "world-map") {
+    return MAP_MODE.WORLD_MAP;
+  }
+  const cfgMode = String(matchConfig?.mapMode || "").trim().toLowerCase();
+  if (cfgMode === MAP_MODE.WORLD_MAP || cfgMode === "world_map" || cfgMode === "world-map") {
+    return MAP_MODE.WORLD_MAP;
+  }
+  return MAP_MODE.GENERATOR;
+}
+
+function resolveWorldSpecForLobby(lobby) {
+  const fromLobby = sanitizeWorldSpec(lobby?.matchWorldSpec);
+  if (fromLobby) return fromLobby;
+  const cfg = sanitizeMatchConfig(lobby?.matchConfig) || {};
+  const mapMode = resolveMatchMapMode(null, cfg);
+  return sanitizeWorldSpec({
+    width: Number(cfg?.worldWidth) || 1280,
+    height: Number(cfg?.worldHeight) || 640,
+    aiCount: Number(cfg?.aiCount) || 10,
+    mapMode
+  });
+}
+
+async function ensureLobbyRuntime(lobby) {
+  if (!lobby || !lobby.started) return null;
+  if (lobby.runtime && lobby.runtime.world) return lobby.runtime;
+
+  const worldSpec = resolveWorldSpecForLobby(lobby);
+  if (!worldSpec) throw new Error("Lobby world spec is missing.");
+  lobby.matchWorldSpec = worldSpec;
+  const mapMode = resolveMatchMapMode(worldSpec, lobby.matchConfig);
+  const earthData = (mapMode === MAP_MODE.WORLD_MAP)
+    ? await loadEarthDataNode()
+    : null;
+  const world = new World(
+    worldSpec.width,
+    worldSpec.height,
+    (Number(lobby.matchSeed) >>> 0) || 1,
+    {
+      mapMode,
+      earthData,
+      aiCount: Math.max(1, Number(worldSpec.aiCount) || 1)
+    }
+  );
+
+  lobby.runtime = {
+    world,
+    simTick: 0,
+    commandQueue: [],
+    lastBroadcastMs: 0,
+    lastApplyTick: -1
+  };
+  return lobby.runtime;
 }
 
 function getLobbyByCodeOrThrow(codeRaw) {
@@ -235,7 +344,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
     ws.isAlive = true;
   });
 
-  ws.on("message", (raw) => {
+  ws.on("message", async (raw) => {
     let msg = null;
     try {
       msg = JSON.parse(String(raw || ""));
@@ -268,6 +377,18 @@ function attachSocketToLobby(lobby, sessionId, ws) {
       if (!player || !lobby.started) return;
       const cmd = sanitizeMatchCommand(msg);
       if (!cmd) return;
+      let runtime = null;
+      try {
+        runtime = await ensureLobbyRuntime(lobby);
+      } catch {
+        return;
+      }
+      if (!runtime) return;
+      const leadTicks = Math.max(1, Math.ceil(MATCH_CMD_LEAD_MS / Math.max(1, SIM_DT_MS)));
+      const nextApplyTickBase = (runtime.simTick | 0) + leadTicks;
+      const prevApplyTick = Math.max(-1, Number(runtime.lastApplyTick) || -1);
+      const applyTick = Math.max(nextApplyTickBase, prevApplyTick + 1);
+      runtime.lastApplyTick = applyTick;
       lobby.matchSeq = ((lobby.matchSeq | 0) + 1) | 0;
       touchLobby(lobby);
       const packet = {
@@ -275,19 +396,17 @@ function attachSocketToLobby(lobby, sessionId, ws) {
         serverTime: nowMs(),
         code: lobby.code,
         seq: lobby.matchSeq,
-        applyAtMs: 0,
+        applyTick,
+        applyAtMs: lobby.startedAt + Math.floor(applyTick * SIM_DT_MS),
         fromSessionId: sessionId,
         cmdId: cmd.cmdId,
         cmd: cmd.cmd,
         args: cmd.args
       };
-      const baseApplyAt = packet.serverTime + MATCH_CMD_LEAD_MS;
-      const prevApplyAt = Math.max(0, Number(lobby.lastMatchApplyAtMs) || 0);
-      packet.applyAtMs = Math.max(baseApplyAt, prevApplyAt + 1);
-      lobby.lastMatchApplyAtMs = packet.applyAtMs;
       lobby.matchHistory.push({
         seq: packet.seq,
         serverTime: packet.serverTime,
+        applyTick: packet.applyTick,
         applyAtMs: packet.applyAtMs,
         fromSessionId: packet.fromSessionId,
         cmdId: packet.cmdId,
@@ -297,6 +416,14 @@ function attachSocketToLobby(lobby, sessionId, ws) {
       if (lobby.matchHistory.length > 20000) {
         lobby.matchHistory.splice(0, lobby.matchHistory.length - 20000);
       }
+      runtime.commandQueue.push({
+        seq: packet.seq,
+        applyTick: packet.applyTick,
+        cmdId: packet.cmdId,
+        cmd: packet.cmd,
+        args: packet.args,
+        fromSessionId: packet.fromSessionId
+      });
       for (const peer of lobby.sockets.values()) {
         wsSend(peer, packet);
       }
@@ -324,6 +451,50 @@ function cleanupIdleLobbies() {
       }
     }
     lobbiesByCode.delete(code);
+  }
+}
+
+function flushRuntimeCommands(lobby, runtime) {
+  if (!runtime || !runtime.world) return;
+  while (runtime.commandQueue.length > 0) {
+    const next = runtime.commandQueue[0];
+    const applyTick = Number(next?.applyTick) | 0;
+    if (applyTick > (runtime.simTick | 0)) break;
+    runtime.commandQueue.shift();
+    applyAuthoritativeCommand(runtime.world, next);
+  }
+}
+
+function stepLobbyRuntime(lobby, now) {
+  const runtime = lobby?.runtime;
+  if (!runtime || !runtime.world || !lobby.started) return;
+
+  const elapsedMs = Math.max(0, now - Number(lobby.startedAt || 0));
+  const targetTick = Math.max(0, Math.floor(elapsedMs / Math.max(1, SIM_DT_MS)));
+  const maxSteps = 120;
+  let steps = 0;
+  while ((runtime.simTick | 0) < targetTick && steps < maxSteps) {
+    flushRuntimeCommands(lobby, runtime);
+    runtime.world.tick();
+    runtime.simTick = (runtime.simTick | 0) + 1;
+    steps++;
+  }
+  flushRuntimeCommands(lobby, runtime);
+
+  const last = Number(runtime.lastBroadcastMs) || 0;
+  if ((now - last) >= MATCH_TICK_BROADCAST_MS) {
+    runtime.lastBroadcastMs = now;
+    const payload = {
+      type: "match_tick",
+      serverTime: now,
+      code: lobby.code,
+      tick: runtime.simTick | 0,
+      worldTime: Number(runtime.world.time) || 0,
+      seq: Number(lobby.matchSeq) || 0
+    };
+    for (const ws of lobby.sockets.values()) {
+      wsSend(ws, payload);
+    }
   }
 }
 
@@ -366,7 +537,8 @@ const server = createServer(async (req, res) => {
         hostSessionId: sessionId,
         players: [{ sessionId, name: playerName, joinedAt: t }],
         matchConfig,
-        sockets: new Map()
+        sockets: new Map(),
+        runtime: null
       };
       lobbiesByCode.set(code, lobby);
       playerIndex.set(sessionId, code);
@@ -433,6 +605,7 @@ const server = createServer(async (req, res) => {
         lobby.startedAt = nowMs();
         lobby.lastMatchApplyAtMs = lobby.startedAt;
         lobby.started = true;
+        await ensureLobbyRuntime(lobby);
         touchLobby(lobby);
         broadcastLobby(lobby, "started");
       }
@@ -495,6 +668,7 @@ const server = createServer(async (req, res) => {
         lobby.startedAt = nowMs();
         lobby.lastMatchApplyAtMs = lobby.startedAt;
         lobby.started = true;
+        await ensureLobbyRuntime(lobby);
         touchLobby(lobby);
         broadcastLobby(lobby, "started");
       }
@@ -606,6 +780,13 @@ setInterval(() => {
     }
   }
 }, 30000).unref();
+
+setInterval(() => {
+  const now = nowMs();
+  for (const lobby of lobbiesByCode.values()) {
+    stepLobbyRuntime(lobby, now);
+  }
+}, 25).unref();
 
 setInterval(cleanupIdleLobbies, 60000).unref();
 

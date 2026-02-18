@@ -42,13 +42,18 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 - `CORS_ORIGIN` (default `*`)
 - `MAX_PLAYERS_PER_LOBBY` (default `8`)
 - `LOBBY_IDLE_TTL_MS` (default `21600000`, 6 hours)
-- `MATCH_SNAPSHOT_INTERVAL_MS` (default `100`, snapshot cadence in ms)
-- `MATCH_MAX_STEPS_PER_PUMP` (default `160`, max sim steps per server pump)
+- `MATCH_SNAPSHOT_INTERVAL_MS` (default `66`, snapshot cadence in ms)
+- `MATCH_MAX_STEPS_PER_PUMP` (default `8`, max sim steps per server pump)
+- `MATCH_PUMP_INTERVAL_MS` (default `16`, runtime pump interval in ms)
+- `MATCH_MAX_BACKLOG_MS` (default `250`, max queued sim time under load)
 - `MATCH_MAX_WORLD_WIDTH` (default `1600`)
 - `MATCH_MAX_WORLD_HEIGHT` (default `900`)
 - `MATCH_MAX_WORLD_TILES` (default `700000`)
 - `MATCH_MAX_AI_COUNT` (default `16`)
 - `WS_DEBUG_LOGS` (default `0`, set `1` for temporary websocket reject diagnostics)
+
+Note: the server also applies dynamic per-lobby safety caps based on human player count
+to avoid heavy AI/world specs causing lag spikes on smaller deployments.
 
 ## Render deploy
 
@@ -63,8 +68,10 @@ Runtime should be **Node**, not Python.
    - `CORS_ORIGIN=https://YOURDOMAIN.com,https://www.YOURDOMAIN.com`
    - `MAX_PLAYERS_PER_LOBBY=8`
    - `LOBBY_IDLE_TTL_MS=21600000`
-   - `MATCH_SNAPSHOT_INTERVAL_MS=100`
-   - `MATCH_MAX_STEPS_PER_PUMP=160`
+   - `MATCH_SNAPSHOT_INTERVAL_MS=66`
+   - `MATCH_MAX_STEPS_PER_PUMP=8`
+   - `MATCH_PUMP_INTERVAL_MS=16`
+   - `MATCH_MAX_BACKLOG_MS=250`
    - `MATCH_MAX_WORLD_WIDTH=1600`
    - `MATCH_MAX_WORLD_HEIGHT=900`
    - `MATCH_MAX_WORLD_TILES=700000`

@@ -7,8 +7,10 @@ const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
 const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 60 * 6));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
-const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(40, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 100));
-const MATCH_MAX_STEPS_PER_PUMP = Math.max(30, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 160));
+const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(40, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 66));
+const MATCH_MAX_STEPS_PER_PUMP = Math.max(2, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 8));
+const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERVAL_MS || 16));
+const MATCH_MAX_BACKLOG_MS = Math.max(100, Number(process.env.MATCH_MAX_BACKLOG_MS || 250));
 const WS_DEBUG_LOGS = /^(1|true|yes|on)$/i.test(String(process.env.WS_DEBUG_LOGS || "").trim());
 const MATCH_MAX_WORLD_WIDTH = Math.max(480, Number(process.env.MATCH_MAX_WORLD_WIDTH || 1600));
 const MATCH_MAX_WORLD_HEIGHT = Math.max(240, Number(process.env.MATCH_MAX_WORLD_HEIGHT || 900));
@@ -370,25 +372,63 @@ function resolveMatchMapMode(worldSpec, matchConfig) {
   return MAP_MODE_GENERATOR;
 }
 
+function applyLobbyWorldPerfCaps(specRaw, lobby) {
+  const spec = sanitizeWorldSpec(specRaw);
+  if (!spec) return null;
+
+  const minW = 480;
+  const minH = 240;
+  const playerCount = Math.max(1, Number(lobby?.players?.length) | 0);
+  const minAi = Math.max(1, playerCount - 1);
+
+  // Keep multiplayer responsive by scaling AI pressure with human player count.
+  const dynamicMaxAi = Math.max(minAi, Math.min(MATCH_MAX_AI_COUNT, (playerCount * 2) + 6));
+  const dynamicMaxTiles = Math.max(
+    220_000,
+    Math.min(MATCH_MAX_WORLD_TILES, 220_000 + (playerCount * 120_000))
+  );
+
+  let width = Math.max(minW, Math.min(MATCH_MAX_WORLD_WIDTH, Number(spec.width) | 0));
+  let height = Math.max(minH, Math.min(MATCH_MAX_WORLD_HEIGHT, Number(spec.height) | 0));
+  const area = Math.max(1, width * height);
+  if (area > dynamicMaxTiles) {
+    const scale = Math.sqrt(dynamicMaxTiles / area);
+    width = Math.max(minW, Math.min(MATCH_MAX_WORLD_WIDTH, Math.floor(width * scale)));
+    height = Math.max(minH, Math.min(MATCH_MAX_WORLD_HEIGHT, Math.floor(height * scale)));
+    while ((width * height) > dynamicMaxTiles && (width > minW || height > minH)) {
+      if (width >= height && width > minW) width--;
+      else if (height > minH) height--;
+      else break;
+    }
+  }
+
+  return {
+    width,
+    height,
+    aiCount: Math.max(minAi, Math.min(dynamicMaxAi, Number(spec.aiCount) | 0)),
+    mapMode: String(spec.mapMode || MAP_MODE_GENERATOR)
+  };
+}
+
 function resolveWorldSpecForLobby(lobby) {
   const fromLobby = sanitizeWorldSpec(lobby?.matchWorldSpec);
   const cfg = sanitizeMatchConfig(lobby?.matchConfig) || {};
   const mapMode = resolveMatchMapMode(fromLobby, cfg);
   const minAi = Math.max(1, Math.max(1, lobby?.players?.length || 1) - 1);
   if (fromLobby) {
-    return {
+    return applyLobbyWorldPerfCaps({
       width: fromLobby.width,
       height: fromLobby.height,
       aiCount: Math.max(minAi, Number(fromLobby.aiCount) || minAi),
       mapMode
-    };
+    }, lobby);
   }
-  return sanitizeWorldSpec({
+  return applyLobbyWorldPerfCaps({
     width: Number(cfg?.worldWidth) || 1280,
     height: Number(cfg?.worldHeight) || 640,
     aiCount: Math.max(minAi, Number(cfg?.aiCount) || 10),
     mapMode
-  });
+  }, lobby);
 }
 
 function getLobbyByCodeOrThrow(codeRaw) {
@@ -470,6 +510,8 @@ async function ensureLobbyRuntime(lobby) {
     const runtime = {
       world,
       simTick: 0,
+      simAccMs: 0,
+      lastPumpAtMs: nowMs(),
       lastSnapshotAtMs: 0,
       lastEntityHashes: Object.create(null),
       assignmentsBySession: new Map(),
@@ -995,14 +1037,28 @@ function broadcastSnapshotDelta(lobby, runtime) {
 }
 
 function flushRuntimeTick(lobby, runtime, now) {
-  const elapsedMs = Math.max(0, now - Number(lobby.startedAt || 0));
-  const targetTick = Math.max(0, Math.floor(elapsedMs / simDtMs()));
+  const stepMs = simDtMs();
+  const lastPumpAt = Number(runtime.lastPumpAtMs) || now;
+  const deltaRawMs = Math.max(0, now - lastPumpAt);
+  runtime.lastPumpAtMs = now;
+
+  const addMs = Math.min(MATCH_MAX_BACKLOG_MS, deltaRawMs);
+  runtime.simAccMs = Math.max(0, Number(runtime.simAccMs) || 0) + addMs;
+  if (runtime.simAccMs > MATCH_MAX_BACKLOG_MS) runtime.simAccMs = MATCH_MAX_BACKLOG_MS;
+
   let steps = 0;
-  while ((runtime.simTick | 0) < targetTick && steps < MATCH_MAX_STEPS_PER_PUMP) {
+  while (runtime.simAccMs >= stepMs && steps < MATCH_MAX_STEPS_PER_PUMP) {
     runtime.world.tick();
     runtime.simTick = (runtime.simTick | 0) + 1;
+    runtime.simAccMs -= stepMs;
     steps++;
   }
+
+  // Keep responsiveness under overload: drop excess backlog rather than blocking the event loop.
+  if (steps >= MATCH_MAX_STEPS_PER_PUMP && runtime.simAccMs > (stepMs * 2)) {
+    runtime.simAccMs = stepMs * 2;
+  }
+
   if ((now - (Number(runtime.lastSnapshotAtMs) || 0)) >= MATCH_SNAPSHOT_INTERVAL_MS) {
     runtime.lastSnapshotAtMs = now;
     broadcastSnapshotDelta(lobby, runtime);
@@ -1361,7 +1417,7 @@ const server = createServer(async (req, res) => {
         const cfg = sanitizeMatchConfig(body?.matchConfig);
         if (cfg) lobby.matchConfig = cfg;
         const worldSpec = sanitizeWorldSpec(body?.worldSpec);
-        if (worldSpec) lobby.matchWorldSpec = worldSpec;
+        if (worldSpec) lobby.matchWorldSpec = applyLobbyWorldPerfCaps(worldSpec, lobby);
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
         lobby.started = true;
@@ -1430,7 +1486,7 @@ const server = createServer(async (req, res) => {
         const cfg = sanitizeMatchConfig(body?.matchConfig);
         if (cfg) lobby.matchConfig = cfg;
         const worldSpec = sanitizeWorldSpec(body?.worldSpec);
-        if (worldSpec) lobby.matchWorldSpec = worldSpec;
+        if (worldSpec) lobby.matchWorldSpec = applyLobbyWorldPerfCaps(worldSpec, lobby);
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
         lobby.started = true;
@@ -1588,7 +1644,7 @@ setInterval(() => {
   for (const lobby of lobbiesByCode.values()) {
     stepLobbyRuntime(lobby, now);
   }
-}, 25).unref();
+}, MATCH_PUMP_INTERVAL_MS).unref();
 
 setInterval(cleanupIdleLobbies, 60000).unref();
 

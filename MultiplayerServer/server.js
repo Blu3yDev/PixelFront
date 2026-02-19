@@ -42,7 +42,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-19-authoritative-runtime-v8");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-19-authoritative-runtime-v9");
 
 let activeSimDtS = DEFAULT_SIM_DT_S;
 let runtimeModulesPromise = null;
@@ -580,64 +580,24 @@ function resolveMatchMapMode(worldSpec, matchConfig) {
   return MAP_MODE_GENERATOR;
 }
 
-function applyLobbyWorldPerfCaps(specRaw, lobby) {
-  const spec = sanitizeWorldSpec(specRaw);
-  if (!spec) return null;
-
-  const minW = 480;
-  const minH = 240;
-  const playerCount = Math.max(1, Number(lobby?.players?.length) | 0);
-  const minAi = Math.max(1, playerCount - 1);
-
-  // Keep multiplayer responsive on smaller hosts by capping AI and tile count more aggressively.
-  // Keep AI pressure closer to human lobby size for fairer PvP pacing.
-  const dynamicMaxAi = Math.max(minAi, Math.min(MATCH_MAX_AI_COUNT, playerCount + 1));
-  const dynamicMaxTiles = Math.max(
-    140_000,
-    Math.min(MATCH_MAX_WORLD_TILES, 140_000 + (playerCount * 50_000))
-  );
-
-  let width = Math.max(minW, Math.min(MATCH_MAX_WORLD_WIDTH, Number(spec.width) | 0));
-  let height = Math.max(minH, Math.min(MATCH_MAX_WORLD_HEIGHT, Number(spec.height) | 0));
-  const area = Math.max(1, width * height);
-  if (area > dynamicMaxTiles) {
-    const scale = Math.sqrt(dynamicMaxTiles / area);
-    width = Math.max(minW, Math.min(MATCH_MAX_WORLD_WIDTH, Math.floor(width * scale)));
-    height = Math.max(minH, Math.min(MATCH_MAX_WORLD_HEIGHT, Math.floor(height * scale)));
-    while ((width * height) > dynamicMaxTiles && (width > minW || height > minH)) {
-      if (width >= height && width > minW) width--;
-      else if (height > minH) height--;
-      else break;
-    }
-  }
-
-  return {
-    width,
-    height,
-    aiCount: Math.max(minAi, Math.min(dynamicMaxAi, Number(spec.aiCount) | 0)),
-    mapMode: String(spec.mapMode || MAP_MODE_GENERATOR)
-  };
-}
-
 function resolveWorldSpecForLobby(lobby) {
   const fromLobby = sanitizeWorldSpec(lobby?.matchWorldSpec);
   const cfg = sanitizeMatchConfig(lobby?.matchConfig) || {};
   const mapMode = resolveMatchMapMode(fromLobby, cfg);
-  const minAi = Math.max(1, Math.max(1, lobby?.players?.length || 1) - 1);
   if (fromLobby) {
-    return applyLobbyWorldPerfCaps({
+    return sanitizeWorldSpec({
       width: fromLobby.width,
       height: fromLobby.height,
-      aiCount: Math.max(minAi, Number(fromLobby.aiCount) || minAi),
+      aiCount: Math.max(1, Number(fromLobby.aiCount) || 1),
       mapMode
-    }, lobby);
+    });
   }
-  return applyLobbyWorldPerfCaps({
+  return sanitizeWorldSpec({
     width: Number(cfg?.worldWidth) || 960,
     height: Number(cfg?.worldHeight) || 480,
-    aiCount: Math.max(minAi, Number(cfg?.aiCount) || 4),
+    aiCount: Math.max(1, Number(cfg?.aiCount) || 4),
     mapMode
-  }, lobby);
+  });
 }
 
 function getLobbyByCodeOrThrow(codeRaw) {
@@ -665,7 +625,9 @@ function ensureRuntimeAssignments(lobby, runtime) {
 
   const nationCount = Math.max(1, Number(runtime.world._nationCount) | 0);
   if ((lobby.players?.length || 0) > nationCount) {
-    throw new Error(`World has ${nationCount} nations but ${lobby.players.length} players joined.`);
+    const configuredAi = Math.max(1, Number(lobby?.matchWorldSpec?.aiCount) | 0);
+    const requiredAi = Math.max(1, (Number(lobby?.players?.length) | 0) - 1);
+    throw new Error(`Configured AI count (${configuredAi}) is too low for ${lobby.players.length} players. Set aiCount >= ${requiredAi} in lobby settings.`);
   }
 
   for (let i = 0; i < lobby.players.length; i++) {
@@ -1851,7 +1813,7 @@ const server = createServer(async (req, res) => {
         const cfg = sanitizeMatchConfig(body?.matchConfig);
         if (cfg) lobby.matchConfig = cfg;
         const worldSpec = sanitizeWorldSpec(body?.worldSpec);
-        if (worldSpec) lobby.matchWorldSpec = applyLobbyWorldPerfCaps(worldSpec, lobby);
+        if (worldSpec) lobby.matchWorldSpec = worldSpec;
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
         lobby.started = true;
@@ -1921,7 +1883,7 @@ const server = createServer(async (req, res) => {
         const cfg = sanitizeMatchConfig(body?.matchConfig);
         if (cfg) lobby.matchConfig = cfg;
         const worldSpec = sanitizeWorldSpec(body?.worldSpec);
-        if (worldSpec) lobby.matchWorldSpec = applyLobbyWorldPerfCaps(worldSpec, lobby);
+        if (worldSpec) lobby.matchWorldSpec = worldSpec;
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
         lobby.started = true;

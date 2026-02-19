@@ -18,9 +18,9 @@ import {
 import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
 
-// PF_BUILD: v13 2026-02-19
-window.__PF_BUILD = "v13";
-console.info("[PixelFront] BUILD v1.5 Beta loaded (v13)");
+// PF_BUILD: v15 2026-02-19
+window.__PF_BUILD = "v15";
+console.info("[PixelFront] BUILD v1.5 Beta loaded (v15)");
 document.title = "PixelFront | Beta";
 
 const canvas = document.getElementById("game");
@@ -1411,18 +1411,26 @@ function drainMultiplayerSnapshotBuffer(force = false) {
   let guard = 0;
   while (guard < 256) {
     guard++;
-    const nextTick = (multiplayerLastAppliedTick | 0) + 1;
-    if (nextTick > targetTick) break;
+    let nextTick = -1;
+    for (const tick of multiplayerSnapshotBuffer.keys()) {
+      const t = Math.max(0, Number(tick) | 0);
+      if (t <= (multiplayerLastAppliedTick | 0)) continue;
+      if (t > targetTick) continue;
+      if (nextTick <= 0 || t < nextTick) nextTick = t;
+    }
+    if (nextTick <= 0) break;
     const packet = multiplayerSnapshotBuffer.get(nextTick);
-    if (!packet) break;
+    if (!packet) {
+      multiplayerSnapshotBuffer.delete(nextTick);
+      continue;
+    }
     multiplayerSnapshotBuffer.delete(nextTick);
     applyMultiplayerSnapshotPacket(packet, false);
     progressed = true;
   }
 
   if (!progressed) {
-    const expectedTick = (multiplayerLastAppliedTick | 0) + 1;
-    if (expectedTick <= targetTick && (now - multiplayerLastSnapshotAtMs) > MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS) {
+    if ((multiplayerLatestServerTick | 0) > (multiplayerLastAppliedTick | 0) && (now - multiplayerLastSnapshotAtMs) > MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS) {
       setMultiplayerHudStatus("Server delayed... attempting resync.");
       requestMultiplayerFullSync("gap_or_stale");
     }

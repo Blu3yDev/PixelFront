@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -10,12 +10,21 @@ const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
 const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 60 * 6));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
-const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(40, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 60));
+const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(60, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 140));
 const MATCH_MAX_STEPS_PER_PUMP = Math.max(2, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 8));
 const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERVAL_MS || 16));
 const MATCH_MAX_BACKLOG_MS = Math.max(100, Number(process.env.MATCH_MAX_BACKLOG_MS || 250));
 const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(160, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 240));
 const MATCH_STATE_HASH_EVERY_TICKS = Math.max(4, Number(process.env.MATCH_STATE_HASH_EVERY_TICKS || 24));
+const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 9000));
+const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(100, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 500));
+const MATCH_BACKPRESSURE_SOFT_BYTES = Math.max(64 * 1024, Number(process.env.MATCH_BACKPRESSURE_SOFT_BYTES || (512 * 1024)));
+const MATCH_BACKPRESSURE_HARD_BYTES = Math.max(MATCH_BACKPRESSURE_SOFT_BYTES, Number(process.env.MATCH_BACKPRESSURE_HARD_BYTES || (2 * 1024 * 1024)));
+const MATCH_BACKPRESSURE_DISCONNECT_MS = Math.max(1000, Number(process.env.MATCH_BACKPRESSURE_DISCONNECT_MS || 8000));
+const MATCH_BACKPRESSURE_HEARTBEAT_MS = Math.max(200, Number(process.env.MATCH_BACKPRESSURE_HEARTBEAT_MS || 1500));
+const MATCH_NET_STATS_LOG_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_NET_STATS_LOG_INTERVAL_MS || 10000));
+const MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS = Math.max(2000, Number(process.env.MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS || 12000));
+const MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS = Math.max(MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS, Number(process.env.MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS || 20000));
 const MATCH_LAG_WARN_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_LAG_WARN_INTERVAL_MS || 5000));
 const MATCH_SNAPSHOT_STATS_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_SNAPSHOT_STATS_INTERVAL_MS || 220));
 const MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS = Math.max(180, Number(process.env.MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS || 320));
@@ -31,7 +40,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-18-authoritative-runtime-v3");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-18-authoritative-runtime-v4");
 
 let activeSimDtS = DEFAULT_SIM_DT_S;
 let runtimeModulesPromise = null;
@@ -119,10 +128,6 @@ function simDtMs() {
 
 function nowMs() {
   return Date.now();
-}
-
-function sha1(text) {
-  return createHash("sha1").update(String(text || "")).digest("hex");
 }
 
 function cloneWire(value) {
@@ -390,6 +395,118 @@ function wsSend(ws, payload) {
   ws.send(JSON.stringify(payload));
 }
 
+function createRuntimeNetStats() {
+  return {
+    droppedSnapshots: 0,
+    skippedDueToBackpressure: 0,
+    sentSnapshots: 0,
+    sentSnapshotBytes: 0,
+    avgSnapshotBytes: 0,
+    maxBufferedAmountSeen: 0,
+    lastLogAtMs: 0
+  };
+}
+
+function ensureRuntimeNetStats(runtime) {
+  if (!runtime || typeof runtime !== "object") return createRuntimeNetStats();
+  if (!runtime.netStats || typeof runtime.netStats !== "object") {
+    runtime.netStats = createRuntimeNetStats();
+  }
+  return runtime.netStats;
+}
+
+function socketBufferedAmount(ws) {
+  return Math.max(0, Number(ws?.bufferedAmount) || 0);
+}
+
+function maybeGuardSnapshotBackpressure(lobby, runtime, sessionId, ws, now) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return { skip: true, disconnected: false, buffered: 0 };
+  const stats = ensureRuntimeNetStats(runtime);
+  const buffered = socketBufferedAmount(ws);
+  if (buffered > stats.maxBufferedAmountSeen) stats.maxBufferedAmountSeen = buffered;
+
+  ws._maxBufferedAmountSeen = Math.max(0, Number(ws._maxBufferedAmountSeen) || 0, buffered);
+
+  if (buffered < MATCH_BACKPRESSURE_SOFT_BYTES) {
+    ws._backpressureSinceMs = 0;
+    return { skip: false, disconnected: false, buffered };
+  }
+
+  if (!(Number(ws._backpressureSinceMs) > 0)) ws._backpressureSinceMs = now;
+
+  stats.skippedDueToBackpressure++;
+  stats.droppedSnapshots++;
+
+  if ((now - (Number(ws._lastBackpressurePingAtMs) || 0)) >= MATCH_BACKPRESSURE_HEARTBEAT_MS) {
+    ws._lastBackpressurePingAtMs = now;
+    try {
+      ws.send(JSON.stringify({ type: "pong", serverTime: now, backpressure: true }));
+    } catch {
+      // Ignore heartbeat failures for overloaded sockets.
+    }
+  }
+
+  const heldMs = now - (Number(ws._backpressureSinceMs) || now);
+  const shouldDisconnect = buffered >= MATCH_BACKPRESSURE_HARD_BYTES && heldMs >= MATCH_BACKPRESSURE_DISCONNECT_MS;
+  if (shouldDisconnect) {
+    wsDebug("disconnect: ws backpressure", {
+      code: String(lobby?.code || ""),
+      sessionId: String(sessionId || ""),
+      buffered,
+      heldMs
+    });
+    closeLobbySocket(lobby, sessionId);
+    return { skip: true, disconnected: true, buffered };
+  }
+
+  return { skip: true, disconnected: false, buffered };
+}
+
+function noteSnapshotSent(runtime, byteLen, bufferedAmount) {
+  const stats = ensureRuntimeNetStats(runtime);
+  const bytes = Math.max(0, Number(byteLen) || 0);
+  stats.sentSnapshots = (stats.sentSnapshots | 0) + 1;
+  stats.sentSnapshotBytes = Math.max(0, Number(stats.sentSnapshotBytes) || 0) + bytes;
+  const sent = Math.max(1, stats.sentSnapshots | 0);
+  stats.avgSnapshotBytes = Math.round(stats.sentSnapshotBytes / sent);
+  const buffered = Math.max(0, Number(bufferedAmount) || 0);
+  if (buffered > stats.maxBufferedAmountSeen) stats.maxBufferedAmountSeen = buffered;
+}
+
+function sendSnapshotPayload(lobby, runtime, sessionId, ws, payload) {
+  const now = nowMs();
+  const guard = maybeGuardSnapshotBackpressure(lobby, runtime, sessionId, ws, now);
+  if (guard.skip) {
+    return { sent: false, backpressured: guard.buffered >= MATCH_BACKPRESSURE_SOFT_BYTES, disconnected: !!guard.disconnected };
+  }
+
+  let text = "";
+  try {
+    text = JSON.stringify(payload);
+  } catch {
+    return { sent: false, backpressured: false, disconnected: false };
+  }
+
+  try {
+    ws.send(text);
+  } catch {
+    return { sent: false, backpressured: false, disconnected: false };
+  }
+
+  noteSnapshotSent(runtime, Buffer.byteLength(text), socketBufferedAmount(ws));
+  return { sent: true, backpressured: false, disconnected: false };
+}
+
+function maybeLogRuntimeNetStats(lobby, runtime, now) {
+  const stats = ensureRuntimeNetStats(runtime);
+  const last = Number(stats.lastLogAtMs) || 0;
+  if ((now - last) < MATCH_NET_STATS_LOG_INTERVAL_MS) return;
+  stats.lastLogAtMs = now;
+  console.log(
+    `[runtime-net] lobby=${String(lobby?.code || "")} droppedSnapshots=${stats.droppedSnapshots | 0} skippedDueToBackpressure=${stats.skippedDueToBackpressure | 0} avgSnapshotBytes=${Math.max(0, Number(stats.avgSnapshotBytes) | 0)} maxBufferedAmountSeen=${Math.max(0, Number(stats.maxBufferedAmountSeen) | 0)}`
+  );
+}
+
 function wsDebug(text, extra = null) {
   if (!WS_DEBUG_LOGS) return;
   if (extra == null) {
@@ -616,7 +733,9 @@ async function ensureLobbyRuntime(lobby) {
       lastStatsSnapshotAtMs: 0,
       lastRelationsSnapshotAtMs: 0,
       lastEventsSnapshotAtMs: 0,
-      lastEntityHashes: Object.create(null),
+      lastEntitySnapshotAtMs: 0,
+      backpressuredSockets: 0,
+      netStats: createRuntimeNetStats(),
       assignmentsBySession: new Map(),
       nationToSession: new Map()
     };
@@ -816,6 +935,9 @@ function consumeChangedTiles(world) {
     const idx = Number(items[i]) | 0;
     if (idx < 0 || idx >= world.owner.length) continue;
     dedupe.set(idx, Number(world.owner[idx]) | 0);
+    if ((dedupe.size | 0) > MATCH_TILE_DELTA_CAP) {
+      return { full: true, changedTiles: [] };
+    }
   }
 
   const changedTiles = [];
@@ -824,29 +946,23 @@ function consumeChangedTiles(world) {
 }
 
 function serializeEntitiesDelta(world, runtime, forceFull = false) {
-  const sets = [
-    ["structures", world.structures],
-    ["ships", world.ships],
-    ["nukeFlights", world.nukeFlights],
-    ["airborneMissions", world.airborneMissions],
-    ["operations", world.operations]
-  ];
-
-  const out = {};
-  for (let i = 0; i < sets.length; i++) {
-    const [key, list] = sets[i];
-    const json = stringifyWire(Array.isArray(list) ? list : []);
-    const hash = sha1(json);
-    if (!forceFull && runtime.lastEntityHashes[key] === hash) continue;
-    runtime.lastEntityHashes[key] = hash;
-    try {
-      const parsed = JSON.parse(json);
-      out[key] = Array.isArray(parsed) ? parsed : [];
-    } catch {
-      out[key] = [];
-    }
+  const now = nowMs();
+  if (!forceFull) {
+    const lastAt = Number(runtime?.lastEntitySnapshotAtMs) || 0;
+    if ((now - lastAt) < MATCH_ENTITY_DELTA_INTERVAL_MS) return undefined;
   }
-  return out;
+
+  if (runtime && typeof runtime === "object") {
+    runtime.lastEntitySnapshotAtMs = now;
+  }
+
+  return {
+    structures: cloneWire(Array.isArray(world?.structures) ? world.structures : []) || [],
+    ships: cloneWire(Array.isArray(world?.ships) ? world.ships : []) || [],
+    nukeFlights: cloneWire(Array.isArray(world?.nukeFlights) ? world.nukeFlights : []) || [],
+    airborneMissions: cloneWire(Array.isArray(world?.airborneMissions) ? world.airborneMissions : []) || [],
+    operations: cloneWire(Array.isArray(world?.operations) ? world.operations : []) || []
+  };
 }
 function remapDeepNationKeys(value, assignedNationId, keys) {
   if (!value || typeof value !== "object") return;
@@ -1120,11 +1236,13 @@ function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual")
   mapped.type = "full_sync";
   mapped.reason = String(reason || "manual");
   mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
-  wsSend(ws, mapped);
+  const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped);
+  if (sent.backpressured) runtime.backpressuredSockets = Math.max(1, Number(runtime.backpressuredSockets) | 0);
 }
 
 function broadcastFullSync(lobby, runtime, reason = "resync") {
   const base = buildSnapshotPacket(lobby, runtime, { fullSync: true });
+  let backpressured = 0;
   for (const [sessionId, ws] of lobby.sockets.entries()) {
     const assignment = runtime.assignmentsBySession.get(sessionId);
     if (!assignment) continue;
@@ -1132,8 +1250,10 @@ function broadcastFullSync(lobby, runtime, reason = "resync") {
     mapped.type = "full_sync";
     mapped.reason = String(reason || "resync");
     mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
-    wsSend(ws, mapped);
+    const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped);
+    if (sent.backpressured) backpressured++;
   }
+  runtime.backpressuredSockets = backpressured;
 }
 
 function broadcastSnapshotDelta(lobby, runtime) {
@@ -1143,6 +1263,15 @@ function broadcastSnapshotDelta(lobby, runtime) {
     return;
   }
   const includeStateHash = ((runtime.simTick | 0) % MATCH_STATE_HASH_EVERY_TICKS) === 0;
+  const hasTileDelta = Array.isArray(base.changedTiles) && base.changedTiles.length > 0;
+  const hasEntityDelta = !!(base.changedEntities && typeof base.changedEntities === "object" && Object.keys(base.changedEntities).length > 0);
+  const hasStats = Array.isArray(base.nationStats) || Array.isArray(base.leaderboard);
+  const hasRelations = !!(base.relations && typeof base.relations === "object");
+  const hasEvents = Array.isArray(base.events);
+  if (!hasTileDelta && !hasEntityDelta && !hasStats && !hasRelations && !hasEvents && !includeStateHash) {
+    return;
+  }
+  let backpressured = 0;
 
   for (const [sessionId, ws] of lobby.sockets.entries()) {
     const assignment = runtime.assignmentsBySession.get(sessionId);
@@ -1152,8 +1281,65 @@ function broadcastSnapshotDelta(lobby, runtime) {
     if (includeStateHash) {
       mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
     }
-    wsSend(ws, mapped);
+    const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped);
+    if (sent.backpressured) backpressured++;
   }
+  runtime.backpressuredSockets = backpressured;
+}
+
+function pickSpawnViaFailsafe(world, nationId) {
+  if (!world || typeof world !== "object") return false;
+  const id = Math.max(1, Number(nationId) | 0);
+  if (!world.nation?.[id]?.alive) return false;
+
+  let pick = null;
+  const planned = world._spawnPos?.[id] || null;
+  if (typeof world._findFallbackSpawnTile === "function") {
+    pick = world._findFallbackSpawnTile(id, planned);
+  }
+  if (!pick && typeof world._findRandomSpawnTile === "function") {
+    pick = world._findRandomSpawnTile(id, { requireDensity: false, minDistanceScale: 0, allowAnyBiome: true });
+  }
+  if (!pick || !Number.isFinite(pick.x) || !Number.isFinite(pick.y)) return false;
+
+  if (typeof world.pickSpawn === "function") {
+    const res = world.pickSpawn(id, pick.x | 0, pick.y | 0);
+    if (res && res.ok) return true;
+  }
+  if (typeof world._lockSpawnSelection === "function") {
+    const res = world._lockSpawnSelection(id, pick.x | 0, pick.y | 0);
+    if (res && res.ok) return true;
+  }
+  return false;
+}
+
+function applySpawnPhaseFailsafe(lobby, runtime, now) {
+  const world = runtime?.world;
+  const phase = world?._spawnPhase;
+  if (!phase || !phase.active) return false;
+  const startedAt = Math.max(0, Number(lobby?.startedAt) || 0);
+  if (!startedAt) return false;
+  const elapsedMs = Math.max(0, now - startedAt);
+  if (elapsedMs < MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS) return false;
+
+  let changed = false;
+  if (runtime?.assignmentsBySession && typeof runtime.assignmentsBySession.values === "function") {
+    for (const assignment of runtime.assignmentsBySession.values()) {
+      const nationId = Math.max(1, Number(assignment?.nationId) | 0);
+      if (phase.picked?.[nationId]) continue;
+      if (pickSpawnViaFailsafe(world, nationId)) changed = true;
+    }
+  }
+
+  if (elapsedMs >= MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS && world?._spawnPhase?.active && typeof world._finalizeSpawnPhase === "function") {
+    world._finalizeSpawnPhase();
+    changed = true;
+  }
+
+  if (changed) {
+    touchLobby(lobby);
+  }
+  return changed;
 }
 
 function flushRuntimeTick(lobby, runtime, now) {
@@ -1192,14 +1378,31 @@ function flushRuntimeTick(lobby, runtime, now) {
     }
   }
 
-  if ((now - (Number(runtime.lastSnapshotAtMs) || 0)) >= MATCH_SNAPSHOT_INTERVAL_MS) {
-    const behind = runtime.simAccMs > (stepMs * 1.25);
-    const forceDue = (now - (Number(runtime.lastSnapshotAtMs) || 0)) >= MATCH_SNAPSHOT_FORCE_INTERVAL_MS;
-    if (!behind || forceDue) {
-      runtime.lastSnapshotAtMs = now;
-      broadcastSnapshotDelta(lobby, runtime);
-    }
+  const spawnFailsafeChanged = applySpawnPhaseFailsafe(lobby, runtime, now);
+  if (spawnFailsafeChanged) {
+    runtime.lastSnapshotAtMs = now;
+    broadcastFullSync(lobby, runtime, "spawn_failsafe");
   }
+
+  let bufferedSockets = 0;
+  for (const ws of lobby.sockets.values()) {
+    if (socketBufferedAmount(ws) >= MATCH_BACKPRESSURE_SOFT_BYTES) bufferedSockets++;
+  }
+  runtime.backpressuredSockets = bufferedSockets;
+
+  let snapshotIntervalMs = MATCH_SNAPSHOT_INTERVAL_MS;
+  if (runtime.simAccMs > (stepMs * 1.25)) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.75);
+  if ((runtime.backpressuredSockets | 0) > 0) snapshotIntervalMs = Math.round(snapshotIntervalMs * 2.0);
+
+  const lastSnapshotAtMs = Number(runtime.lastSnapshotAtMs) || 0;
+  const due = (now - lastSnapshotAtMs) >= snapshotIntervalMs;
+  const forceDue = (now - lastSnapshotAtMs) >= MATCH_SNAPSHOT_FORCE_INTERVAL_MS;
+  if (due || forceDue) {
+    runtime.lastSnapshotAtMs = now;
+    broadcastSnapshotDelta(lobby, runtime);
+  }
+
+  maybeLogRuntimeNetStats(lobby, runtime, now);
 }
 
 function closeLobbySocket(lobby, sessionId) {
@@ -1382,6 +1585,9 @@ function attachSocketToLobby(lobby, sessionId, ws) {
   ws.code = lobby.code;
   ws.isAlive = true;
   ws.initialSyncPending = !!lobby.started;
+  ws._backpressureSinceMs = 0;
+  ws._lastBackpressurePingAtMs = 0;
+  ws._maxBufferedAmountSeen = 0;
 
   ws.on("pong", () => {
     ws.isAlive = true;

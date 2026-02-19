@@ -32,17 +32,28 @@ const MATCH_SNAPSHOT_STATS_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_
 const MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS = Math.max(180, Number(process.env.MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS || 320));
 const MATCH_SNAPSHOT_EVENTS_INTERVAL_MS = Math.max(300, Number(process.env.MATCH_SNAPSHOT_EVENTS_INTERVAL_MS || 550));
 const WS_DEBUG_LOGS = /^(1|true|yes|on)$/i.test(String(process.env.WS_DEBUG_LOGS || "").trim());
-const MATCH_MAX_WORLD_WIDTH = Math.max(480, Number(process.env.MATCH_MAX_WORLD_WIDTH || 12000));
-const MATCH_MAX_WORLD_HEIGHT = Math.max(240, Number(process.env.MATCH_MAX_WORLD_HEIGHT || 6000));
-const MATCH_MAX_WORLD_TILES = Math.max(120000, Number(process.env.MATCH_MAX_WORLD_TILES || 12_000_000));
-const MATCH_MAX_AI_COUNT = Math.max(2, Number(process.env.MATCH_MAX_AI_COUNT || 400));
+const MATCH_MAX_WORLD_WIDTH_DEFAULT = 12000;
+const MATCH_MAX_WORLD_HEIGHT_DEFAULT = 6000;
+const MATCH_MAX_WORLD_TILES_DEFAULT = 12_000_000;
+const MATCH_MAX_AI_COUNT_DEFAULT = 400;
+const MATCH_MAX_WORLD_WIDTH = Math.max(MATCH_MAX_WORLD_WIDTH_DEFAULT, Number(process.env.MATCH_MAX_WORLD_WIDTH || MATCH_MAX_WORLD_WIDTH_DEFAULT));
+const MATCH_MAX_WORLD_HEIGHT = Math.max(MATCH_MAX_WORLD_HEIGHT_DEFAULT, Number(process.env.MATCH_MAX_WORLD_HEIGHT || MATCH_MAX_WORLD_HEIGHT_DEFAULT));
+const MATCH_MAX_WORLD_TILES = Math.max(MATCH_MAX_WORLD_TILES_DEFAULT, Number(process.env.MATCH_MAX_WORLD_TILES || MATCH_MAX_WORLD_TILES_DEFAULT));
+const MATCH_MAX_AI_COUNT = Math.max(MATCH_MAX_AI_COUNT_DEFAULT, Number(process.env.MATCH_MAX_AI_COUNT || MATCH_MAX_AI_COUNT_DEFAULT));
 
 const MAP_MODE_WORLD = "earth";
 const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-19-authoritative-runtime-v12");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-19-authoritative-runtime-v13");
+
+const SERVER_WORLD_SIZE_PRESETS = Object.freeze({
+  Small: Object.freeze({ width: 960, height: 600, aiCount: 96 }),
+  Large: Object.freeze({ width: 1400, height: 840, aiCount: 144 }),
+  "Super Large": Object.freeze({ width: 3200, height: 1600, aiCount: 240 }),
+  "Extremely Large": Object.freeze({ width: 4200, height: 2100, aiCount: 320 })
+});
 
 let activeSimDtS = DEFAULT_SIM_DT_S;
 let runtimeModulesPromise = null;
@@ -354,7 +365,41 @@ function sanitizeName(raw) {
 
 function sanitizeMatchConfig(raw) {
   if (!raw || typeof raw !== "object") return null;
-  return cloneWire(raw);
+  const src = cloneWire(raw) || {};
+  const presetRaw = String(src.sizePreset || "Large");
+  const sizePreset = Object.prototype.hasOwnProperty.call(SERVER_WORLD_SIZE_PRESETS, presetRaw)
+    ? presetRaw
+    : "Large";
+  const aiRaw = Number(src.aiCount);
+  const aiCount = Number.isFinite(aiRaw) && aiRaw > 0
+    ? Math.max(1, Math.min(MATCH_MAX_AI_COUNT, Math.floor(aiRaw)))
+    : null;
+  const mapModeRaw = String(src.mapMode || "").trim().toLowerCase();
+  const mapMode = (
+    mapModeRaw === MAP_MODE_WORLD ||
+    mapModeRaw === "world_map" ||
+    mapModeRaw === "world-map"
+  ) ? MAP_MODE_WORLD : MAP_MODE_GENERATOR;
+  return {
+    ...src,
+    sizePreset,
+    aiCount,
+    mapMode
+  };
+}
+
+function buildWorldSpecFromMatchConfig(matchConfigRaw) {
+  const cfg = sanitizeMatchConfig(matchConfigRaw) || {};
+  const presetKey = String(cfg.sizePreset || "Large");
+  const preset = SERVER_WORLD_SIZE_PRESETS[presetKey] || SERVER_WORLD_SIZE_PRESETS.Large;
+  const aiRaw = Number(cfg.aiCount);
+  const aiCount = Number.isFinite(aiRaw) && aiRaw > 0
+    ? Math.floor(aiRaw)
+    : Math.max(1, Number(preset?.aiCount) || 4);
+  const width = Math.max(1, Number(preset?.width) || 960);
+  const height = Math.max(1, Number(preset?.height) || 480);
+  const mapMode = resolveMatchMapMode(null, cfg);
+  return sanitizeWorldSpec({ width, height, aiCount, mapMode });
 }
 
 function sanitizeWorldSpec(raw) {
@@ -592,12 +637,16 @@ function resolveWorldSpecForLobby(lobby) {
       mapMode
     });
   }
-  return sanitizeWorldSpec({
-    width: Number(cfg?.worldWidth) || 960,
-    height: Number(cfg?.worldHeight) || 480,
-    aiCount: Math.max(1, Number(cfg?.aiCount) || 4),
-    mapMode
-  });
+  const fromCfg = buildWorldSpecFromMatchConfig(cfg);
+  if (fromCfg) {
+    return sanitizeWorldSpec({
+      width: fromCfg.width,
+      height: fromCfg.height,
+      aiCount: fromCfg.aiCount,
+      mapMode
+    });
+  }
+  return sanitizeWorldSpec({ width: 1400, height: 840, aiCount: 144, mapMode });
 }
 
 function getLobbyByCodeOrThrow(codeRaw) {
@@ -713,6 +762,21 @@ function removeRuntimeAssignmentForSession(lobby, sessionIdRaw) {
   return assignment;
 }
 
+function enforceHumanNationRuntimeState(runtime) {
+  if (!runtime?.world || !runtime.assignmentsBySession) return;
+  for (const assignment of runtime.assignmentsBySession.values()) {
+    const nationId = Math.max(1, Number(assignment?.nationId) | 0);
+    if (nationId >= 2 && Array.isArray(runtime.world._ai) && nationId < runtime.world._ai.length) {
+      runtime.world._ai[nationId] = null;
+    }
+    const nation = runtime.world.nation?.[nationId];
+    if (nation && typeof nation === "object") {
+      nation.isHuman = true;
+      nation.isAiControlled = false;
+    }
+  }
+}
+
 function ensureRuntimeAssignments(lobby, runtime) {
   if (!runtime || !runtime.world) return;
   if (runtime.assignmentsBySession && runtime.assignmentsBySession.size > 0) return;
@@ -799,6 +863,7 @@ function ensureRuntimeAssignments(lobby, runtime) {
     assignmentLog.push(`${String(a.playerId || a.sessionId || "")}:${nid}`);
   }
   runtime.world._humanNationIds = humanNationIds;
+  enforceHumanNationRuntimeState(runtime);
   pushInitialPlayerJoinEvents(lobby, runtime);
   console.log(`[runtime-assign] lobby=${String(lobby?.code || "")} players=${assignmentLog.join(",")}`);
 }
@@ -1484,6 +1549,7 @@ function applySpawnPhaseFailsafe(lobby, runtime, now) {
 }
 
 function flushRuntimeTick(lobby, runtime, now) {
+  enforceHumanNationRuntimeState(runtime);
   const stepMs = simDtMs();
   const lastPumpAt = Number(runtime.lastPumpAtMs) || now;
   const deltaRawMs = Math.max(0, now - lastPumpAt);
@@ -1866,7 +1932,13 @@ const server = createServer(async (req, res) => {
         ok: true,
         uptimeS: Math.round(process.uptime()),
         build: SERVER_BUILD_ID,
-        runtimeMainSrc: runtimeModulesSrcDir || ""
+        runtimeMainSrc: runtimeModulesSrcDir || "",
+        limits: {
+          maxWorldWidth: MATCH_MAX_WORLD_WIDTH,
+          maxWorldHeight: MATCH_MAX_WORLD_HEIGHT,
+          maxWorldTiles: MATCH_MAX_WORLD_TILES,
+          maxAiCount: MATCH_MAX_AI_COUNT
+        }
       });
       return;
     }
@@ -1961,13 +2033,17 @@ const server = createServer(async (req, res) => {
       if (!lobby.started) {
         const cfg = sanitizeMatchConfig(body?.matchConfig);
         if (cfg) lobby.matchConfig = cfg;
-        const worldSpec = sanitizeWorldSpec(body?.worldSpec);
-        if (worldSpec) lobby.matchWorldSpec = worldSpec;
+        const computedSpec = buildWorldSpecFromMatchConfig(lobby.matchConfig);
+        const requestedSpec = sanitizeWorldSpec(body?.worldSpec);
+        lobby.matchWorldSpec = computedSpec || requestedSpec || lobby.matchWorldSpec || null;
+        console.log(
+          `[lobby-start] code=${lobby.code} requested=${JSON.stringify(requestedSpec || null)} computed=${JSON.stringify(computedSpec || null)} effective=${JSON.stringify(lobby.matchWorldSpec || null)} cfg=${JSON.stringify(lobby.matchConfig || null)}`
+        );
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
         lobby.started = true;
         markLobbySocketsPendingInitialSync(lobby);
-        kickRuntimeInit(lobby, "start");
+        await ensureLobbyRuntime(lobby);
         touchLobby(lobby);
         broadcastLobby(lobby, "started");
       }
@@ -2037,13 +2113,17 @@ const server = createServer(async (req, res) => {
       if (!lobby.started) {
         const cfg = sanitizeMatchConfig(body?.matchConfig);
         if (cfg) lobby.matchConfig = cfg;
-        const worldSpec = sanitizeWorldSpec(body?.worldSpec);
-        if (worldSpec) lobby.matchWorldSpec = worldSpec;
+        const computedSpec = buildWorldSpecFromMatchConfig(lobby.matchConfig);
+        const requestedSpec = sanitizeWorldSpec(body?.worldSpec);
+        lobby.matchWorldSpec = computedSpec || requestedSpec || lobby.matchWorldSpec || null;
+        console.log(
+          `[lobby-start] code=${lobby.code} requested=${JSON.stringify(requestedSpec || null)} computed=${JSON.stringify(computedSpec || null)} effective=${JSON.stringify(lobby.matchWorldSpec || null)} cfg=${JSON.stringify(lobby.matchConfig || null)}`
+        );
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
         lobby.started = true;
         markLobbySocketsPendingInitialSync(lobby);
-        kickRuntimeInit(lobby, "start_legacy");
+        await ensureLobbyRuntime(lobby);
         touchLobby(lobby);
         broadcastLobby(lobby, "started");
       }

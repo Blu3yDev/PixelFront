@@ -24,7 +24,6 @@ export function createHUD() {
   const setPoliticalMapMode = must("setPoliticalMapMode");
   const setDisableAtmosphere = must("setDisableAtmosphere");
   const setReduceMotion = must("setReduceMotion");
-  const setLowPowerOverlays = must("setLowPowerOverlays");
   const setMenuMusicVolume = must("setMenuMusicVolume");
   const setWarMusicVolume = must("setWarMusicVolume");
   const setMenuMusicVolumeValue = must("setMenuMusicVolumeValue");
@@ -229,7 +228,6 @@ export function createHUD() {
     politicalMapMode: false,
     disableAtmosphere: false,
     reduceMotion: false,
-    lowPowerOverlays: false,
     menuMusicVolume: 12,
     warMusicVolume: 9
   };
@@ -240,6 +238,8 @@ export function createHUD() {
     const from = ev.from | 0;
     const to = ev.to | 0;
     if (from === PLAYER_ID || to === PLAYER_ID) return true;
+    const kind = String(ev.kind || "").toLowerCase();
+    if (kind === "player_joined" || kind === "player_left") return true;
 
     const text = String(ev.text || "");
     if (!text) return false;
@@ -259,7 +259,9 @@ export function createHUD() {
       kind === "ceasefire_request" ||
       kind === "nation_collapsed" ||
       kind === "nation_eliminated" ||
-      kind === "nuke_incoming"
+      kind === "nuke_incoming" ||
+      kind === "player_joined" ||
+      kind === "player_left"
     ) return true;
 
     const text = String(ev.text || "");
@@ -278,6 +280,8 @@ export function createHUD() {
     if (t.includes("detonated")) return true;
     if (t.includes("intercepted")) return true;
     if (t.includes("rebels rise up")) return true;
+    if (t.includes(" joined as ")) return true;
+    if (t.includes(" left (")) return true;
 
     return false;
   }
@@ -340,9 +344,6 @@ export function createHUD() {
       reduceMotion: Object.prototype.hasOwnProperty.call(src, "reduceMotion")
         ? Boolean(src.reduceMotion)
         : defaultSettings.reduceMotion,
-      lowPowerOverlays: Object.prototype.hasOwnProperty.call(src, "lowPowerOverlays")
-        ? Boolean(src.lowPowerOverlays)
-        : defaultSettings.lowPowerOverlays,
       menuMusicVolume: Object.prototype.hasOwnProperty.call(src, "menuMusicVolume")
         ? clampInt(src.menuMusicVolume, 0, 100)
         : defaultSettings.menuMusicVolume,
@@ -364,7 +365,6 @@ export function createHUD() {
     setPoliticalMapMode.checked = settingsState.politicalMapMode;
     setDisableAtmosphere.checked = settingsState.disableAtmosphere;
     setReduceMotion.checked = settingsState.reduceMotion;
-    setLowPowerOverlays.checked = settingsState.lowPowerOverlays;
     setMenuMusicVolume.value = String(settingsState.menuMusicVolume);
     setWarMusicVolume.value = String(settingsState.warMusicVolume);
     setMenuMusicVolumeValue.textContent = `${settingsState.menuMusicVolume}%`;
@@ -387,7 +387,6 @@ export function createHUD() {
       politicalMapMode: setPoliticalMapMode.checked,
       disableAtmosphere: setDisableAtmosphere.checked,
       reduceMotion: setReduceMotion.checked,
-      lowPowerOverlays: setLowPowerOverlays.checked,
       menuMusicVolume: Number(setMenuMusicVolume.value),
       warMusicVolume: Number(setWarMusicVolume.value)
     });
@@ -553,8 +552,7 @@ export function createHUD() {
     setNukeDestinationOverlay,
     setPoliticalMapMode,
     setDisableAtmosphere,
-    setReduceMotion,
-    setLowPowerOverlays
+    setReduceMotion
   ];
   const settingsRangeInputs = [
     setMenuMusicVolume,

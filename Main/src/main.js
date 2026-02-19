@@ -87,7 +87,6 @@ const DEFAULT_CLIENT_SETTINGS = Object.freeze({
   politicalMapMode: false,
   disableAtmosphere: false,
   reduceMotion: false,
-  lowPowerOverlays: false,
   menuMusicVolume: 12,
   warMusicVolume: 9
 });
@@ -1782,9 +1781,6 @@ function sanitizeClientSettings(next) {
     reduceMotion: Object.prototype.hasOwnProperty.call(src, "reduceMotion")
       ? Boolean(src.reduceMotion)
       : DEFAULT_CLIENT_SETTINGS.reduceMotion,
-    lowPowerOverlays: Object.prototype.hasOwnProperty.call(src, "lowPowerOverlays")
-      ? Boolean(src.lowPowerOverlays)
-      : DEFAULT_CLIENT_SETTINGS.lowPowerOverlays,
     menuMusicVolume: Object.prototype.hasOwnProperty.call(src, "menuMusicVolume")
       ? clampPct(src.menuMusicVolume, DEFAULT_CLIENT_SETTINGS.menuMusicVolume)
       : DEFAULT_CLIENT_SETTINGS.menuMusicVolume,
@@ -2231,8 +2227,7 @@ function applyClientSettings(next, opts = {}) {
       nukeDestinationOverlay: clientSettings.nukeDestinationOverlay,
       politicalMapMode: clientSettings.politicalMapMode,
       atmosphereEnabled: !clientSettings.disableAtmosphere,
-      reduceMotion: clientSettings.reduceMotion,
-      lowPowerOverlays: clientSettings.lowPowerOverlays
+      reduceMotion: clientSettings.reduceMotion
     });
   }
 
@@ -3017,8 +3012,7 @@ function createMainMenuController(options = null) {
     nukeDestinationOverlay: document.getElementById("mmSetNukeDestinationOverlay"),
     politicalMapMode: document.getElementById("mmSetPoliticalMapMode"),
     disableAtmosphere: document.getElementById("mmSetDisableAtmosphere"),
-    reduceMotion: document.getElementById("mmSetReduceMotion"),
-    lowPowerOverlays: document.getElementById("mmSetLowPowerOverlays")
+    reduceMotion: document.getElementById("mmSetReduceMotion")
   };
   const menuMusicVolumeInput = document.getElementById("mmSetMenuMusicVolume");
   const warMusicVolumeInput = document.getElementById("mmSetWarMusicVolume");

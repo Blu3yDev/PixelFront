@@ -42,7 +42,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-19-authoritative-runtime-v9");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-19-authoritative-runtime-v11");
 
 let activeSimDtS = DEFAULT_SIM_DT_S;
 let runtimeModulesPromise = null;
@@ -616,6 +616,103 @@ function getPlayerFromLobbyOrThrow(lobby, sessionIdRaw) {
   return player;
 }
 
+function appendRuntimeTimelineEvent(runtime, textRaw, extraRaw = null) {
+  const world = runtime?.world;
+  if (!world || typeof world !== "object") return null;
+  const text = String(textRaw || "").trim();
+  if (!text) return null;
+
+  let id = Number(world._nextEventId) | 0;
+  if (id <= 0) id = 1;
+  world._nextEventId = (id + 1) | 0;
+
+  const ev = { id, t: Math.max(0, Number(world.time) || 0), text };
+  if (extraRaw && typeof extraRaw === "object") {
+    const extra = cloneWire(extraRaw) || null;
+    if (extra && typeof extra === "object") Object.assign(ev, extra);
+  }
+
+  if (!Array.isArray(world.globalEvents)) world.globalEvents = [];
+  world.globalEvents.push(ev);
+  const globalCap = Math.max(30, Number(world._maxGlobalEvents) || 220);
+  if (world.globalEvents.length > globalCap) {
+    world.globalEvents.splice(0, world.globalEvents.length - globalCap);
+  }
+
+  if (!Array.isArray(world.events)) world.events = [];
+  world.events.push(ev);
+  const eventsCap = Math.max(30, Number(world._maxEvents) || 90);
+  if (world.events.length > eventsCap) {
+    world.events.splice(0, world.events.length - eventsCap);
+  }
+
+  return ev;
+}
+
+function pushInitialPlayerJoinEvents(lobby, runtime) {
+  if (!runtime?.world || !runtime.assignmentsBySession) return;
+  const assignments = Array.from(runtime.assignmentsBySession.values())
+    .sort((a, b) => (Number(a?.nationId) | 0) - (Number(b?.nationId) | 0));
+  for (let i = 0; i < assignments.length; i++) {
+    const a = assignments[i];
+    const nationId = Math.max(1, Number(a?.nationId) | 0);
+    const player = Array.isArray(lobby?.players)
+      ? (lobby.players.find((row) => String(row?.sessionId || "") === String(a?.sessionId || "")) || null)
+      : null;
+    const nationName = String(runtime.world?.nation?.[nationId]?.name || `Nation ${nationId}`).trim();
+    const playerName = sanitizeName(player?.name || `Player ${nationId}`);
+    appendRuntimeTimelineEvent(runtime, `${playerName} joined as ${nationName}.`, {
+      kind: "player_joined",
+      nationId,
+      from: nationId,
+      to: 0,
+      playerId: String(a?.playerId || ""),
+      sessionId: String(a?.sessionId || "")
+    });
+  }
+}
+
+function pushPlayerLeftEvent(lobby, player) {
+  const runtime = lobby?.runtime;
+  if (!lobby?.started || !runtime?.world || !runtime.assignmentsBySession || !player) return;
+  const assignment = runtime.assignmentsBySession.get(String(player.sessionId || ""));
+  if (!assignment) return;
+  const nationId = Math.max(1, Number(assignment.nationId) | 0);
+  const nationName = String(runtime.world?.nation?.[nationId]?.name || `Nation ${nationId}`).trim();
+  const playerName = sanitizeName(player?.name || nationName || "Player");
+  appendRuntimeTimelineEvent(runtime, `${playerName} left (${nationName}).`, {
+    kind: "player_left",
+    nationId,
+    from: nationId,
+    to: 0,
+    playerId: String(assignment.playerId || ""),
+    sessionId: String(player.sessionId || "")
+  });
+  runtime.lastEventsSnapshotAtMs = 0;
+}
+
+function removeRuntimeAssignmentForSession(lobby, sessionIdRaw) {
+  const runtime = lobby?.runtime;
+  if (!runtime?.assignmentsBySession || !runtime.nationToSession) return null;
+  const sessionId = String(sessionIdRaw || "").trim();
+  if (!sessionId) return null;
+  const assignment = runtime.assignmentsBySession.get(sessionId) || null;
+  if (!assignment) return null;
+
+  const nationId = Math.max(1, Number(assignment.nationId) | 0);
+  runtime.assignmentsBySession.delete(sessionId);
+  runtime.nationToSession.delete(nationId);
+
+  if (runtime.world && runtime.world._humanNationIds instanceof Set) {
+    runtime.world._humanNationIds.delete(nationId);
+  }
+  const nation = runtime.world?.nation?.[nationId];
+  if (nation && typeof nation === "object") {
+    nation.isHuman = false;
+  }
+  return assignment;
+}
+
 function ensureRuntimeAssignments(lobby, runtime) {
   if (!runtime || !runtime.world) return;
   if (runtime.assignmentsBySession && runtime.assignmentsBySession.size > 0) return;
@@ -630,28 +727,80 @@ function ensureRuntimeAssignments(lobby, runtime) {
     throw new Error(`Configured AI count (${configuredAi}) is too low for ${lobby.players.length} players. Set aiCount >= ${requiredAi} in lobby settings.`);
   }
 
+  const sessionIds = new Set();
+  const playerIds = new Set();
   for (let i = 0; i < lobby.players.length; i++) {
     const p = lobby.players[i];
+    const sessionId = String(p?.sessionId || "").trim();
+    const playerId = String(p?.playerId || p?.sessionId || "").trim();
+    if (!sessionId) throw new Error(`Invalid player session at slot ${i + 1}.`);
+    if (!playerId) throw new Error(`Invalid player identity at slot ${i + 1}.`);
+    if (sessionIds.has(sessionId)) throw new Error(`Duplicate session detected for player slot ${i + 1}.`);
+    if (playerIds.has(playerId)) throw new Error(`Duplicate player identity detected for player slot ${i + 1}.`);
+    sessionIds.add(sessionId);
+    playerIds.add(playerId);
+
     const nationId = i + 1;
     const assignment = {
-      sessionId: p.sessionId,
-      playerId: String(p.playerId || p.sessionId || "").trim(),
+      sessionId,
+      playerId,
       nationId,
       lastSeq: 0
     };
-    runtime.assignmentsBySession.set(p.sessionId, assignment);
-    runtime.nationToSession.set(nationId, p.sessionId);
+    runtime.assignmentsBySession.set(sessionId, assignment);
+    runtime.nationToSession.set(nationId, sessionId);
   }
 
+  if (runtime.assignmentsBySession.size !== lobby.players.length) {
+    throw new Error(`Runtime assignment mismatch: expected ${lobby.players.length}, got ${runtime.assignmentsBySession.size}.`);
+  }
+  if (runtime.nationToSession.size !== lobby.players.length) {
+    throw new Error(`Runtime nation assignment mismatch: expected ${lobby.players.length}, got ${runtime.nationToSession.size}.`);
+  }
+  for (const a of runtime.assignmentsBySession.values()) {
+    const nationId = Number(a?.nationId) | 0;
+    const sessionId = String(a?.sessionId || "");
+    if (!sessionId || nationId <= 0) throw new Error("Runtime assignment contains invalid identity.");
+    if (runtime.nationToSession.get(nationId) !== sessionId) {
+      throw new Error(`Runtime nation->session mismatch for nation ${nationId}.`);
+    }
+  }
+
+  const playerBaseline = (runtime.world.nation && runtime.world.nation[OWNER_PLAYER] && typeof runtime.world.nation[OWNER_PLAYER] === "object")
+    ? cloneWire(runtime.world.nation[OWNER_PLAYER])
+    : null;
   const humanNationIds = new Set();
+  const assignmentLog = [];
   for (const a of runtime.assignmentsBySession.values()) {
     humanNationIds.add(a.nationId | 0);
     const nid = a.nationId | 0;
+    const player = Array.isArray(lobby.players)
+      ? (lobby.players.find((p) => String(p?.sessionId || "") === String(a.sessionId || "")) || null)
+      : null;
+    const nation = runtime.world.nation?.[nid];
+    if (nation && typeof nation === "object") {
+      if (nid !== OWNER_PLAYER && playerBaseline && typeof playerBaseline === "object") {
+        // Keep all human players on parity with host/player baseline, not AI-skewed starts.
+        nation.gold = Number(playerBaseline.gold) || nation.gold || 0;
+        nation.population = Number(playerBaseline.population) || nation.population || 0;
+        nation.infantry = Number(playerBaseline.infantry) || nation.infantry || 0;
+        nation.attackRatio = Number(playerBaseline.attackRatio) || nation.attackRatio || 0.2;
+        nation.aggression = Number(playerBaseline.aggression) || Number(playerBaseline.attackCommit) || nation.aggression || 0;
+        nation.attackCommit = Number(playerBaseline.attackCommit) || Number(playerBaseline.aggression) || nation.attackCommit || 0;
+        nation.mobilization = Number(playerBaseline.mobilization) || nation.mobilization || 0.35;
+      }
+      nation.name = sanitizeName(player?.name || nation.name || `Player ${nid}`);
+      nation.isHuman = true;
+      nation.isAiControlled = false;
+    }
     if (nid >= 2 && Array.isArray(runtime.world._ai) && nid < runtime.world._ai.length) {
       runtime.world._ai[nid] = null;
     }
+    assignmentLog.push(`${String(a.playerId || a.sessionId || "")}:${nid}`);
   }
   runtime.world._humanNationIds = humanNationIds;
+  pushInitialPlayerJoinEvents(lobby, runtime);
+  console.log(`[runtime-assign] lobby=${String(lobby?.code || "")} players=${assignmentLog.join(",")}`);
 }
 
 async function ensureLobbyRuntime(lobby) {
@@ -1836,10 +1985,16 @@ const server = createServer(async (req, res) => {
       const code = String(body?.code || "").trim().toUpperCase();
       const lobby = getLobbyByCodeOrThrow(code);
       const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
+      pushPlayerLeftEvent(lobby, viewerPlayer);
+      removeRuntimeAssignmentForSession(lobby, viewerPlayer.sessionId);
 
       lobby.players = lobby.players.filter((p) => p.sessionId !== viewerPlayer.sessionId);
       playerIndex.delete(viewerPlayer.sessionId);
       closeLobbySocket(lobby, viewerPlayer.sessionId);
+
+      if (lobby.runtime && lobby.started) {
+        broadcastSnapshotDelta(lobby, lobby.runtime);
+      }
 
       if (!lobby.players.length) {
         lobbiesByCode.delete(lobby.code);
@@ -1906,10 +2061,16 @@ const server = createServer(async (req, res) => {
       const body = await parseJsonBody(req);
       const lobby = getLobbyByCodeOrThrow(code);
       const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
+      pushPlayerLeftEvent(lobby, viewerPlayer);
+      removeRuntimeAssignmentForSession(lobby, viewerPlayer.sessionId);
 
       lobby.players = lobby.players.filter((p) => p.sessionId !== viewerPlayer.sessionId);
       playerIndex.delete(viewerPlayer.sessionId);
       closeLobbySocket(lobby, viewerPlayer.sessionId);
+
+      if (lobby.runtime && lobby.started) {
+        broadcastSnapshotDelta(lobby, lobby.runtime);
+      }
 
       if (!lobby.players.length) {
         lobbiesByCode.delete(lobby.code);

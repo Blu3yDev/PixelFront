@@ -18,10 +18,12 @@ const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(160, Number(process.env.MATCH_
 const MATCH_STATE_HASH_EVERY_TICKS = Math.max(4, Number(process.env.MATCH_STATE_HASH_EVERY_TICKS || 24));
 const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 9000));
 const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(100, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 500));
-const MATCH_BACKPRESSURE_SOFT_BYTES = Math.max(64 * 1024, Number(process.env.MATCH_BACKPRESSURE_SOFT_BYTES || (512 * 1024)));
-const MATCH_BACKPRESSURE_HARD_BYTES = Math.max(MATCH_BACKPRESSURE_SOFT_BYTES, Number(process.env.MATCH_BACKPRESSURE_HARD_BYTES || (2 * 1024 * 1024)));
+const MATCH_BACKPRESSURE_SOFT_BYTES = Math.max(64 * 1024, Number(process.env.MATCH_BACKPRESSURE_SOFT_BYTES || (1536 * 1024)));
+const MATCH_BACKPRESSURE_HARD_BYTES = Math.max(MATCH_BACKPRESSURE_SOFT_BYTES, Number(process.env.MATCH_BACKPRESSURE_HARD_BYTES || (6 * 1024 * 1024)));
 const MATCH_BACKPRESSURE_DISCONNECT_MS = Math.max(1000, Number(process.env.MATCH_BACKPRESSURE_DISCONNECT_MS || 8000));
 const MATCH_BACKPRESSURE_HEARTBEAT_MS = Math.max(200, Number(process.env.MATCH_BACKPRESSURE_HEARTBEAT_MS || 1500));
+const MATCH_FULL_SYNC_MIN_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_FULL_SYNC_MIN_INTERVAL_MS || 900));
+const MATCH_FULL_SYNC_RETRY_INTERVAL_MS = Math.max(100, Number(process.env.MATCH_FULL_SYNC_RETRY_INTERVAL_MS || 450));
 const MATCH_NET_STATS_LOG_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_NET_STATS_LOG_INTERVAL_MS || 10000));
 const MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS = Math.max(2000, Number(process.env.MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS || 12000));
 const MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS = Math.max(MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS, Number(process.env.MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS || 20000));
@@ -40,7 +42,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-18-authoritative-runtime-v4");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-19-authoritative-runtime-v5");
 
 let activeSimDtS = DEFAULT_SIM_DT_S;
 let runtimeModulesPromise = null;
@@ -419,7 +421,7 @@ function socketBufferedAmount(ws) {
   return Math.max(0, Number(ws?.bufferedAmount) || 0);
 }
 
-function maybeGuardSnapshotBackpressure(lobby, runtime, sessionId, ws, now) {
+function maybeGuardSnapshotBackpressure(lobby, runtime, sessionId, ws, now, { critical = false } = {}) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return { skip: true, disconnected: false, buffered: 0 };
   const stats = ensureRuntimeNetStats(runtime);
   const buffered = socketBufferedAmount(ws);
@@ -434,18 +436,6 @@ function maybeGuardSnapshotBackpressure(lobby, runtime, sessionId, ws, now) {
 
   if (!(Number(ws._backpressureSinceMs) > 0)) ws._backpressureSinceMs = now;
 
-  stats.skippedDueToBackpressure++;
-  stats.droppedSnapshots++;
-
-  if ((now - (Number(ws._lastBackpressurePingAtMs) || 0)) >= MATCH_BACKPRESSURE_HEARTBEAT_MS) {
-    ws._lastBackpressurePingAtMs = now;
-    try {
-      ws.send(JSON.stringify({ type: "pong", serverTime: now, backpressure: true }));
-    } catch {
-      // Ignore heartbeat failures for overloaded sockets.
-    }
-  }
-
   const heldMs = now - (Number(ws._backpressureSinceMs) || now);
   const shouldDisconnect = buffered >= MATCH_BACKPRESSURE_HARD_BYTES && heldMs >= MATCH_BACKPRESSURE_DISCONNECT_MS;
   if (shouldDisconnect) {
@@ -457,6 +447,22 @@ function maybeGuardSnapshotBackpressure(lobby, runtime, sessionId, ws, now) {
     });
     closeLobbySocket(lobby, sessionId);
     return { skip: true, disconnected: true, buffered };
+  }
+
+  if (critical) {
+    return { skip: false, disconnected: false, buffered };
+  }
+
+  stats.skippedDueToBackpressure++;
+  stats.droppedSnapshots++;
+
+  if ((now - (Number(ws._lastBackpressurePingAtMs) || 0)) >= MATCH_BACKPRESSURE_HEARTBEAT_MS) {
+    ws._lastBackpressurePingAtMs = now;
+    try {
+      ws.send(JSON.stringify({ type: "pong", serverTime: now, backpressure: true }));
+    } catch {
+      // Ignore heartbeat failures for overloaded sockets.
+    }
   }
 
   return { skip: true, disconnected: false, buffered };
@@ -473,9 +479,9 @@ function noteSnapshotSent(runtime, byteLen, bufferedAmount) {
   if (buffered > stats.maxBufferedAmountSeen) stats.maxBufferedAmountSeen = buffered;
 }
 
-function sendSnapshotPayload(lobby, runtime, sessionId, ws, payload) {
+function sendSnapshotPayload(lobby, runtime, sessionId, ws, payload, { critical = false } = {}) {
   const now = nowMs();
-  const guard = maybeGuardSnapshotBackpressure(lobby, runtime, sessionId, ws, now);
+  const guard = maybeGuardSnapshotBackpressure(lobby, runtime, sessionId, ws, now, { critical });
   if (guard.skip) {
     return { sent: false, backpressured: guard.buffered >= MATCH_BACKPRESSURE_SOFT_BYTES, disconnected: !!guard.disconnected };
   }
@@ -1217,7 +1223,18 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
   if (includeEvents) runtime.lastEventsSnapshotAtMs = now;
 
   if (fullSync) {
-    packet.ownerPacked = encodeOwnerPackedBase64(world.owner);
+    const spawnActive = !!(world?._spawnPhase && world._spawnPhase.active);
+    let claimedTiles = 0;
+    if (spawnActive) {
+      const nationCount = Math.max(1, Number(world?._nationCount) | 0);
+      for (let id = 1; id <= nationCount; id++) {
+        claimedTiles += Math.max(0, Number(world?.landOwnedCount?.[id]) | 0);
+      }
+    }
+    // Join-time full syncs during untouched spawn phase are huge and redundant.
+    if (!spawnActive || claimedTiles > 0) {
+      packet.ownerPacked = encodeOwnerPackedBase64(world.owner);
+    }
     packet.changedTiles = [];
   } else {
     const delta = consumeChangedTiles(world);
@@ -1229,15 +1246,27 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
 }
 
 function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual") {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return { sent: false, backpressured: false, disconnected: false, throttled: true };
+  const now = nowMs();
+  const nextAttemptAt = Math.max(0, Number(ws._nextFullSyncAttemptAtMs) || 0);
+  if (now < nextAttemptAt) return { sent: false, backpressured: false, disconnected: false, throttled: true };
+
   const assignment = runtime.assignmentsBySession.get(String(sessionId || ""));
-  if (!assignment) return;
+  if (!assignment) return { sent: false, backpressured: false, disconnected: false, throttled: true };
   const base = buildSnapshotPacket(lobby, runtime, { fullSync: true });
   const mapped = remapSnapshotForSession(base, assignment.nationId);
   mapped.type = "full_sync";
   mapped.reason = String(reason || "manual");
   mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
-  const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped);
-  if (sent.backpressured) runtime.backpressuredSockets = Math.max(1, Number(runtime.backpressuredSockets) | 0);
+  const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped, { critical: true });
+  if (sent.sent) {
+    ws._lastFullSyncAtMs = now;
+    ws._nextFullSyncAttemptAtMs = now + MATCH_FULL_SYNC_MIN_INTERVAL_MS;
+  } else {
+    ws._nextFullSyncAttemptAtMs = now + MATCH_FULL_SYNC_RETRY_INTERVAL_MS;
+    if (sent.backpressured) runtime.backpressuredSockets = Math.max(1, Number(runtime.backpressuredSockets) | 0);
+  }
+  return sent;
 }
 
 function broadcastFullSync(lobby, runtime, reason = "resync") {
@@ -1250,7 +1279,7 @@ function broadcastFullSync(lobby, runtime, reason = "resync") {
     mapped.type = "full_sync";
     mapped.reason = String(reason || "resync");
     mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
-    const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped);
+    const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped, { critical: false });
     if (sent.backpressured) backpressured++;
   }
   runtime.backpressuredSockets = backpressured;
@@ -1588,6 +1617,8 @@ function attachSocketToLobby(lobby, sessionId, ws) {
   ws._backpressureSinceMs = 0;
   ws._lastBackpressurePingAtMs = 0;
   ws._maxBufferedAmountSeen = 0;
+  ws._lastFullSyncAtMs = 0;
+  ws._nextFullSyncAttemptAtMs = 0;
 
   ws.on("pong", () => {
     ws.isAlive = true;
@@ -1634,8 +1665,8 @@ function attachSocketToLobby(lobby, sessionId, ws) {
       });
 
       if (lobby.started && runtime) {
-        sendFullSyncToSession(lobby, runtime, sessionId, ws, "lobby_state_request");
-        ws.initialSyncPending = false;
+        const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, "lobby_state_request");
+        ws.initialSyncPending = !fullSync?.sent;
       }
       return;
     }
@@ -1663,8 +1694,8 @@ function attachSocketToLobby(lobby, sessionId, ws) {
         });
         return;
       }
-      sendFullSyncToSession(lobby, runtime, sessionId, ws, String(msg?.reason || "full_sync_request"));
-      ws.initialSyncPending = false;
+      const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, String(msg?.reason || "full_sync_request"));
+      ws.initialSyncPending = !fullSync?.sent;
       return;
     }
 
@@ -1700,8 +1731,8 @@ function stepLobbyRuntime(lobby, now) {
   for (const [sessionId, ws] of lobby.sockets.entries()) {
     if (!ws || ws.readyState !== WebSocket.OPEN) continue;
     if (!ws.initialSyncPending) continue;
-    sendFullSyncToSession(lobby, runtime, sessionId, ws, "runtime_ready");
-    ws.initialSyncPending = false;
+    const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, "runtime_ready");
+    ws.initialSyncPending = !fullSync?.sent;
   }
 
   flushRuntimeTick(lobby, runtime, now);
@@ -2025,8 +2056,8 @@ wss.on("connection", (ws, _req, ctx) => {
     });
 
     if (lobby.started && runtime) {
-      sendFullSyncToSession(lobby, runtime, sessionId, ws, "join");
-      ws.initialSyncPending = false;
+      const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, "join");
+      ws.initialSyncPending = !fullSync?.sent;
     }
   })();
 });

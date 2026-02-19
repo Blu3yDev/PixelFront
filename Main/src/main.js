@@ -18,9 +18,9 @@ import {
 import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
 
-// PF_BUILD: v11 2026-02-18
-window.__PF_BUILD = "v12";
-console.info("[PixelFront] BUILD v1.5 Beta loaded (v12)");
+// PF_BUILD: v13 2026-02-19
+window.__PF_BUILD = "v13";
+console.info("[PixelFront] BUILD v1.5 Beta loaded (v13)");
 document.title = "PixelFront | Beta";
 
 const canvas = document.getElementById("game");
@@ -563,11 +563,13 @@ let multiplayerSessionProbeInFlight = false;
 let multiplayerSessionTerminated = false;
 let multiplayerHasAuthoritativeSync = false;
 let multiplayerIdentityRefreshAtMs = 0;
+let multiplayerNextHudStatusAtMs = 0;
 
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
-const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 4500;
-const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 1200;
+const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 2200;
+const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 900;
 const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 1200;
+const MULTIPLAYER_HUD_STATUS_COOLDOWN_MS = 1200;
 
 const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   setAttackRatio: Object.freeze({ cmd: "set_attack_ratio" }),
@@ -641,6 +643,7 @@ function resetMultiplayerSnapshotState() {
   multiplayerLastSnapshotAtMs = Date.now();
   multiplayerLastFullSyncRequestAtMs = 0;
   multiplayerLastHashMismatchAtMs = 0;
+  multiplayerNextHudStatusAtMs = 0;
 }
 
 function clearMultiplayerMatchSocket() {
@@ -1280,6 +1283,15 @@ function requestMultiplayerFullSync(reasonRaw = "") {
   }
 }
 
+function setMultiplayerHudStatus(messageRaw) {
+  const text = String(messageRaw || "").trim();
+  if (!text || !hud || typeof hud.setOpMessage !== "function") return;
+  const now = Date.now();
+  if (now < multiplayerNextHudStatusAtMs) return;
+  multiplayerNextHudStatusAtMs = now + MULTIPLAYER_HUD_STATUS_COOLDOWN_MS;
+  hud.setOpMessage(text);
+}
+
 function maybeHandleMultiplayerStateHashMismatch(packet) {
   const expected = String(packet?.stateHash || "").trim();
   if (!expected) return;
@@ -1373,6 +1385,7 @@ function drainMultiplayerSnapshotBuffer(force = false) {
   if (!multiplayerHasAuthoritativeSync) {
     // Keep actively requesting initial authoritative state until first full sync arrives.
     if ((now - multiplayerLastSnapshotAtMs) > MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS) {
+      setMultiplayerHudStatus("Waiting for server... requesting authoritative sync.");
       const ws = multiplayerMatchSocket;
       if (ws && ws.readyState === WebSocket.OPEN) {
         try { ws.send(JSON.stringify({ type: "lobby_state_request" })); } catch {}
@@ -1384,6 +1397,7 @@ function drainMultiplayerSnapshotBuffer(force = false) {
 
   if (multiplayerLatestServerTick <= 0) {
     if (now - multiplayerLastSnapshotAtMs > MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS) {
+      setMultiplayerHudStatus("Server delayed... attempting resync.");
       requestMultiplayerFullSync("no_snapshot");
     }
     return;
@@ -1409,6 +1423,7 @@ function drainMultiplayerSnapshotBuffer(force = false) {
   if (!progressed) {
     const expectedTick = (multiplayerLastAppliedTick | 0) + 1;
     if (expectedTick <= targetTick && (now - multiplayerLastSnapshotAtMs) > MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS) {
+      setMultiplayerHudStatus("Server delayed... attempting resync.");
       requestMultiplayerFullSync("gap_or_stale");
     }
   }
@@ -1521,11 +1536,10 @@ function connectMultiplayerMatchSocket() {
     try {
       const t = Date.now();
       ws.send(JSON.stringify({ type: "ping", clientTime: t }));
-      ws.send(JSON.stringify({ type: "lobby_state_request" }));
     } catch {
       // Ignore ping send errors.
     }
-    requestMultiplayerFullSync("on_open");
+    multiplayerAwaitingFullSync = true;
     if (hud && typeof hud.setOpMessage === "function") {
       hud.setOpMessage("Multiplayer link connected. Waiting for authoritative sync...");
     }
@@ -1573,7 +1587,6 @@ function connectMultiplayerMatchSocket() {
       if (activeMultiplayerSession && helloTick > 0) {
         activeMultiplayerSession.serverTick = Math.max(Number(activeMultiplayerSession.serverTick) || 0, helloTick);
       }
-      requestMultiplayerFullSync("hello");
       return;
     }
 

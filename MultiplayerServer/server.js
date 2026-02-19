@@ -32,17 +32,17 @@ const MATCH_SNAPSHOT_STATS_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_
 const MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS = Math.max(180, Number(process.env.MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS || 320));
 const MATCH_SNAPSHOT_EVENTS_INTERVAL_MS = Math.max(300, Number(process.env.MATCH_SNAPSHOT_EVENTS_INTERVAL_MS || 550));
 const WS_DEBUG_LOGS = /^(1|true|yes|on)$/i.test(String(process.env.WS_DEBUG_LOGS || "").trim());
-const MATCH_MAX_WORLD_WIDTH = Math.max(480, Number(process.env.MATCH_MAX_WORLD_WIDTH || 960));
-const MATCH_MAX_WORLD_HEIGHT = Math.max(240, Number(process.env.MATCH_MAX_WORLD_HEIGHT || 540));
-const MATCH_MAX_WORLD_TILES = Math.max(120000, Number(process.env.MATCH_MAX_WORLD_TILES || 220_000));
-const MATCH_MAX_AI_COUNT = Math.max(2, Number(process.env.MATCH_MAX_AI_COUNT || 6));
+const MATCH_MAX_WORLD_WIDTH = Math.max(480, Number(process.env.MATCH_MAX_WORLD_WIDTH || 12000));
+const MATCH_MAX_WORLD_HEIGHT = Math.max(240, Number(process.env.MATCH_MAX_WORLD_HEIGHT || 6000));
+const MATCH_MAX_WORLD_TILES = Math.max(120000, Number(process.env.MATCH_MAX_WORLD_TILES || 12_000_000));
+const MATCH_MAX_AI_COUNT = Math.max(2, Number(process.env.MATCH_MAX_AI_COUNT || 400));
 
 const MAP_MODE_WORLD = "earth";
 const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-19-authoritative-runtime-v11");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-19-authoritative-runtime-v12");
 
 let activeSimDtS = DEFAULT_SIM_DT_S;
 let runtimeModulesPromise = null;

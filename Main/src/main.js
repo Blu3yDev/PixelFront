@@ -177,14 +177,32 @@ if (MULTIPLAYER_API_BASE) {
   console.warn("[Multiplayer] API base is not configured.");
 }
 
-const MULTIPLAYER_WORLD_LIMITS = Object.freeze({
-  minWidth: 480,
-  minHeight: 240,
-  maxWidth: 960,
-  maxHeight: 540,
-  maxTiles: 220_000,
-  maxAiCount: 6
-});
+const MULTIPLAYER_WORLD_LIMITS = (() => {
+  const presets = Object.values(WORLD_SIZE_PRESETS || {});
+  let maxWidth = 960;
+  let maxHeight = 540;
+  let maxTiles = 220_000;
+  let maxAiCount = 6;
+  for (let i = 0; i < presets.length; i++) {
+    const p = presets[i];
+    const w = Number(p?.maxWidth);
+    const h = Number(p?.maxHeight);
+    const t = Number(p?.maxTotalTiles);
+    const a = Number(p?.aiCount);
+    if (Number.isFinite(w) && w > maxWidth) maxWidth = Math.floor(w);
+    if (Number.isFinite(h) && h > maxHeight) maxHeight = Math.floor(h);
+    if (Number.isFinite(t) && t > maxTiles) maxTiles = Math.floor(t);
+    if (Number.isFinite(a) && a > maxAiCount) maxAiCount = Math.floor(a);
+  }
+  return Object.freeze({
+    minWidth: 480,
+    minHeight: 240,
+    maxWidth,
+    maxHeight,
+    maxTiles,
+    maxAiCount
+  });
+})();
 
 function normalizeApiBase(rawValue) {
   const raw = String(rawValue || "").trim();

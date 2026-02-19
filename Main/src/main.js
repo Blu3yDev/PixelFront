@@ -18,9 +18,9 @@ import {
 import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
 
-// PF_BUILD: v15 2026-02-19
-window.__PF_BUILD = "v15";
-console.info("[PixelFront] BUILD v1.5 Beta loaded (v15)");
+// PF_BUILD: v16 2026-02-19
+window.__PF_BUILD = "v16";
+console.info("[PixelFront] BUILD v1.5 Beta loaded (v16)");
 document.title = "PixelFront | Beta";
 
 const canvas = document.getElementById("game");
@@ -564,12 +564,14 @@ let multiplayerSessionTerminated = false;
 let multiplayerHasAuthoritativeSync = false;
 let multiplayerIdentityRefreshAtMs = 0;
 let multiplayerNextHudStatusAtMs = 0;
+let multiplayerLastLabelRecomputeAtMs = 0;
 
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 2200;
 const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 900;
 const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 1200;
 const MULTIPLAYER_HUD_STATUS_COOLDOWN_MS = 1200;
+const MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS = 120;
 
 const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   setAttackRatio: Object.freeze({ cmd: "set_attack_ratio" }),
@@ -644,6 +646,7 @@ function resetMultiplayerSnapshotState() {
   multiplayerLastFullSyncRequestAtMs = 0;
   multiplayerLastHashMismatchAtMs = 0;
   multiplayerNextHudStatusAtMs = 0;
+  multiplayerLastLabelRecomputeAtMs = 0;
 }
 
 function clearMultiplayerMatchSocket() {
@@ -1145,6 +1148,29 @@ function flushMultiplayerPixelWrites(worldRef) {
     if (!Array.isArray(worldRef._pixelWriteList) || worldRef._pixelWriteList.length <= 0) break;
   }
 }
+
+function maybeRefreshMultiplayerDerivedState(worldRef, force = false) {
+  if (!worldRef || typeof worldRef !== "object") return;
+  const now = Date.now();
+  if (!force && (now - multiplayerLastLabelRecomputeAtMs) < MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS) return;
+  multiplayerLastLabelRecomputeAtMs = now;
+
+  try {
+    if (force && typeof worldRef._rebuildLabelStats === "function") {
+      worldRef._rebuildLabelStats();
+    }
+  } catch {
+    // Keep snapshot apply resilient when optional label caches are missing.
+  }
+
+  try {
+    if (typeof worldRef._recomputeLabels === "function") {
+      worldRef._recomputeLabels();
+    }
+  } catch {
+    // Keep snapshot apply resilient when label recompute fails on a frame.
+  }
+}
 function multiplayerHashMixString(state, textRaw) {
   const text = String(textRaw || "");
   let h = state >>> 0;
@@ -1331,6 +1357,7 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false) {
     applyMultiplayerEvents(worldRef, packet.events);
   }
   applyMultiplayerWorldMeta(worldRef, packet);
+  maybeRefreshMultiplayerDerivedState(worldRef, isFullSync);
 
   if (Array.isArray(packet.leaderboard)) {
     worldRef._serverLeaderboard = cloneMultiplayerPayload(packet.leaderboard) || [];

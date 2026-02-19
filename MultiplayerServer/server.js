@@ -10,14 +10,14 @@ const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
 const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 60 * 6));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
-const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(60, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 140));
+const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(60, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 100));
 const MATCH_MAX_STEPS_PER_PUMP = Math.max(2, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 8));
 const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERVAL_MS || 16));
 const MATCH_MAX_BACKLOG_MS = Math.max(100, Number(process.env.MATCH_MAX_BACKLOG_MS || 250));
 const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(160, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 240));
 const MATCH_STATE_HASH_EVERY_TICKS = Math.max(4, Number(process.env.MATCH_STATE_HASH_EVERY_TICKS || 24));
 const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 9000));
-const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(100, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 500));
+const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(60, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 100));
 const MATCH_BACKPRESSURE_SOFT_BYTES = Math.max(64 * 1024, Number(process.env.MATCH_BACKPRESSURE_SOFT_BYTES || (1536 * 1024)));
 const MATCH_BACKPRESSURE_HARD_BYTES = Math.max(MATCH_BACKPRESSURE_SOFT_BYTES, Number(process.env.MATCH_BACKPRESSURE_HARD_BYTES || (6 * 1024 * 1024)));
 const MATCH_BACKPRESSURE_DISCONNECT_MS = Math.max(1000, Number(process.env.MATCH_BACKPRESSURE_DISCONNECT_MS || 8000));
@@ -42,7 +42,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-19-authoritative-runtime-v7");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-19-authoritative-runtime-v8");
 
 let activeSimDtS = DEFAULT_SIM_DT_S;
 let runtimeModulesPromise = null;
@@ -590,7 +590,8 @@ function applyLobbyWorldPerfCaps(specRaw, lobby) {
   const minAi = Math.max(1, playerCount - 1);
 
   // Keep multiplayer responsive on smaller hosts by capping AI and tile count more aggressively.
-  const dynamicMaxAi = Math.max(minAi, Math.min(MATCH_MAX_AI_COUNT, playerCount + 2));
+  // Keep AI pressure closer to human lobby size for fairer PvP pacing.
+  const dynamicMaxAi = Math.max(minAi, Math.min(MATCH_MAX_AI_COUNT, playerCount + 1));
   const dynamicMaxTiles = Math.max(
     140_000,
     Math.min(MATCH_MAX_WORLD_TILES, 140_000 + (playerCount * 50_000))

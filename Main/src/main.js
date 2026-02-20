@@ -363,6 +363,12 @@ function computeWorldSize(mapMode = MAP_MODE.GENERATOR, matchConfig = null) {
 
 function sanitizeMultiplayerWorldSpec(raw) {
   if (!raw || typeof raw !== "object") return null;
+  const hasPositiveNumber = (value) => {
+    if (value == null) return false;
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0;
+  };
+  if (!hasPositiveNumber(raw.width) || !hasPositiveNumber(raw.height) || !hasPositiveNumber(raw.aiCount)) return null;
   const width = Number(raw.width);
   const height = Number(raw.height);
   const aiCount = Number(raw.aiCount);
@@ -372,7 +378,6 @@ function sanitizeMultiplayerWorldSpec(raw) {
     mapModeRaw === "world_map" ||
     mapModeRaw === "world-map"
   ) ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
-  if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(aiCount)) return null;
   const lim = MULTIPLAYER_WORLD_LIMITS;
   let w = Math.max(lim.minWidth, Math.min(lim.maxWidth, Math.floor(width)));
   let h = Math.max(lim.minHeight, Math.min(lim.maxHeight, Math.floor(height)));
@@ -403,6 +408,24 @@ function buildMultiplayerWorldSpec(matchConfig = null) {
     aiCount: ws.aiCount,
     mapMode
   });
+}
+
+function buildMultiplayerMatchConfigWire(matchConfig = null, worldSpec = null) {
+  const cfg = sanitizeMatchConfig(matchConfig || activeMatchConfig);
+  const spec = sanitizeMultiplayerWorldSpec(worldSpec) || buildMultiplayerWorldSpec(cfg);
+  if (!spec) return cfg;
+  const aiRaw = Number(cfg.aiCount);
+  const aiCount = Number.isFinite(aiRaw) && aiRaw > 0
+    ? Math.max(1, Math.floor(aiRaw))
+    : Math.max(1, Math.floor(spec.aiCount));
+  return {
+    ...cfg,
+    aiCount,
+    mapMode: spec.mapMode,
+    worldWidth: spec.width,
+    worldHeight: spec.height,
+    worldAiCount: spec.aiCount
+  };
 }
 
 function buildMultiplayerWsUrl(codeRaw, sessionIdRaw) {
@@ -4589,7 +4612,8 @@ function createMainMenuController(options = null) {
           const prevLabel = startBtn.textContent || "Start";
           startBtn.textContent = "Starting...";
           const worldSpec = buildMultiplayerWorldSpec(cfg);
-          const payload = await startLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId, cfg, worldSpec);
+          const wireMatchConfig = buildMultiplayerMatchConfigWire(cfg, worldSpec);
+          const payload = await startLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId, wireMatchConfig, worldSpec);
           const viewer = (payload?.viewer && typeof payload.viewer === "object") ? payload.viewer : null;
           if (viewer) applyViewerIdentity(viewer);
           if (payload?.lobby) {
@@ -4676,11 +4700,14 @@ function createMainMenuController(options = null) {
         createLobbyBtn.disabled = true;
         const prevLabel = createLobbyBtn.textContent || "Create";
         createLobbyBtn.textContent = "Creating...";
+        const worldSpec = buildMultiplayerWorldSpec(cfg);
+        const wireMatchConfig = buildMultiplayerMatchConfigWire(cfg, worldSpec);
         const payload = await multiplayerFetch("/api/lobbies/create", {
           method: "POST",
           body: {
             playerName: playerNameFromInput(),
-            matchConfig: cfg
+            matchConfig: wireMatchConfig,
+            worldSpec
           }
         });
         const sessionId = String(payload?.sessionId || "");

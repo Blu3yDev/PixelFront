@@ -404,6 +404,14 @@ function buildWorldSpecFromMatchConfig(matchConfigRaw) {
 
 function sanitizeWorldSpec(raw) {
   if (!raw || typeof raw !== "object") return null;
+  const hasPositiveNumber = (value) => {
+    if (value == null) return false;
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0;
+  };
+  if (!hasPositiveNumber(raw.width) || !hasPositiveNumber(raw.height) || !hasPositiveNumber(raw.aiCount)) {
+    return null;
+  }
   const width = Number(raw.width);
   const height = Number(raw.height);
   const aiCount = Number(raw.aiCount);
@@ -413,7 +421,6 @@ function sanitizeWorldSpec(raw) {
     mapModeRaw === "world_map" ||
     mapModeRaw === "world-map"
   ) ? "earth" : "generator";
-  if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(aiCount)) return null;
   const minW = 480;
   const minH = 240;
   let w = Math.max(minW, Math.min(MATCH_MAX_WORLD_WIDTH, Math.floor(width)));
@@ -647,6 +654,43 @@ function resolveWorldSpecForLobby(lobby) {
     });
   }
   return sanitizeWorldSpec({ width: 1400, height: 840, aiCount: 144, mapMode });
+}
+
+function resolveLobbyStartSpec(lobby, bodyRaw) {
+  const body = (bodyRaw && typeof bodyRaw === "object") ? bodyRaw : {};
+  const cfgFromBody = sanitizeMatchConfig(body.matchConfig);
+  const cfg = cfgFromBody || sanitizeMatchConfig(lobby?.matchConfig) || sanitizeMatchConfig({}) || {};
+
+  const requestedSpec = sanitizeWorldSpec(body.worldSpec);
+  const computedSpec = buildWorldSpecFromMatchConfig(cfg);
+  const existingSpec = sanitizeWorldSpec(lobby?.matchWorldSpec);
+
+  const preferredSpec = requestedSpec || computedSpec || existingSpec || null;
+  const mapMode = resolveMatchMapMode(preferredSpec, cfg);
+  const normalizedPreferredSpec = preferredSpec
+    ? sanitizeWorldSpec({
+        width: preferredSpec.width,
+        height: preferredSpec.height,
+        aiCount: preferredSpec.aiCount,
+        mapMode
+      })
+    : null;
+
+  const fallbackRaw = buildWorldSpecFromMatchConfig(cfg) || { width: 1400, height: 840, aiCount: 144, mapMode };
+  const fallbackSpec = sanitizeWorldSpec({
+    width: Number(fallbackRaw?.width) || 1400,
+    height: Number(fallbackRaw?.height) || 840,
+    aiCount: Math.max(1, Number(fallbackRaw?.aiCount) || 144),
+    mapMode
+  });
+
+  return {
+    cfg,
+    requestedSpec,
+    computedSpec,
+    existingSpec,
+    effectiveSpec: normalizedPreferredSpec || fallbackSpec || null
+  };
 }
 
 function getLobbyByCodeOrThrow(codeRaw) {
@@ -2031,13 +2075,12 @@ const server = createServer(async (req, res) => {
       if (viewerPlayer.sessionId !== lobby.hostSessionId) throw new Error("Only host can start.");
 
       if (!lobby.started) {
-        const cfg = sanitizeMatchConfig(body?.matchConfig);
-        if (cfg) lobby.matchConfig = cfg;
-        const computedSpec = buildWorldSpecFromMatchConfig(lobby.matchConfig);
-        const requestedSpec = sanitizeWorldSpec(body?.worldSpec);
-        lobby.matchWorldSpec = computedSpec || requestedSpec || lobby.matchWorldSpec || null;
+        const resolvedStart = resolveLobbyStartSpec(lobby, body);
+        lobby.matchConfig = resolvedStart.cfg;
+        lobby.matchWorldSpec = resolvedStart.effectiveSpec;
+        if (!lobby.matchWorldSpec) throw new Error("Lobby world spec is missing.");
         console.log(
-          `[lobby-start] code=${lobby.code} requested=${JSON.stringify(requestedSpec || null)} computed=${JSON.stringify(computedSpec || null)} effective=${JSON.stringify(lobby.matchWorldSpec || null)} cfg=${JSON.stringify(lobby.matchConfig || null)}`
+          `[lobby-start] code=${lobby.code} requested=${JSON.stringify(resolvedStart.requestedSpec || null)} computed=${JSON.stringify(resolvedStart.computedSpec || null)} existing=${JSON.stringify(resolvedStart.existingSpec || null)} effective=${JSON.stringify(lobby.matchWorldSpec || null)} cfg=${JSON.stringify(lobby.matchConfig || null)}`
         );
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();
@@ -2111,13 +2154,12 @@ const server = createServer(async (req, res) => {
       if (viewerPlayer.sessionId !== lobby.hostSessionId) throw new Error("Only host can start.");
 
       if (!lobby.started) {
-        const cfg = sanitizeMatchConfig(body?.matchConfig);
-        if (cfg) lobby.matchConfig = cfg;
-        const computedSpec = buildWorldSpecFromMatchConfig(lobby.matchConfig);
-        const requestedSpec = sanitizeWorldSpec(body?.worldSpec);
-        lobby.matchWorldSpec = computedSpec || requestedSpec || lobby.matchWorldSpec || null;
+        const resolvedStart = resolveLobbyStartSpec(lobby, body);
+        lobby.matchConfig = resolvedStart.cfg;
+        lobby.matchWorldSpec = resolvedStart.effectiveSpec;
+        if (!lobby.matchWorldSpec) throw new Error("Lobby world spec is missing.");
         console.log(
-          `[lobby-start] code=${lobby.code} requested=${JSON.stringify(requestedSpec || null)} computed=${JSON.stringify(computedSpec || null)} effective=${JSON.stringify(lobby.matchWorldSpec || null)} cfg=${JSON.stringify(lobby.matchConfig || null)}`
+          `[lobby-start] code=${lobby.code} requested=${JSON.stringify(resolvedStart.requestedSpec || null)} computed=${JSON.stringify(resolvedStart.computedSpec || null)} existing=${JSON.stringify(resolvedStart.existingSpec || null)} effective=${JSON.stringify(lobby.matchWorldSpec || null)} cfg=${JSON.stringify(lobby.matchConfig || null)}`
         );
         lobby.matchSeed = toSeed(body?.seed);
         lobby.startedAt = nowMs();

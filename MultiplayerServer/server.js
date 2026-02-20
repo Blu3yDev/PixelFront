@@ -46,7 +46,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-19-authoritative-runtime-v13");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-20-authoritative-runtime-v14");
 
 const SERVER_WORLD_SIZE_PRESETS = Object.freeze({
   Small: Object.freeze({ width: 960, height: 600, aiCount: 96 }),
@@ -392,12 +392,18 @@ function buildWorldSpecFromMatchConfig(matchConfigRaw) {
   const cfg = sanitizeMatchConfig(matchConfigRaw) || {};
   const presetKey = String(cfg.sizePreset || "Large");
   const preset = SERVER_WORLD_SIZE_PRESETS[presetKey] || SERVER_WORLD_SIZE_PRESETS.Large;
-  const aiRaw = Number(cfg.aiCount);
+  const widthRaw = Number(cfg.worldWidth ?? cfg.width);
+  const heightRaw = Number(cfg.worldHeight ?? cfg.height);
+  const aiRaw = Number(cfg.worldAiCount ?? cfg.aiCount);
+  const width = Number.isFinite(widthRaw) && widthRaw > 0
+    ? Math.floor(widthRaw)
+    : Math.max(1, Number(preset?.width) || 960);
+  const height = Number.isFinite(heightRaw) && heightRaw > 0
+    ? Math.floor(heightRaw)
+    : Math.max(1, Number(preset?.height) || 480);
   const aiCount = Number.isFinite(aiRaw) && aiRaw > 0
     ? Math.floor(aiRaw)
     : Math.max(1, Number(preset?.aiCount) || 4);
-  const width = Math.max(1, Number(preset?.width) || 960);
-  const height = Math.max(1, Number(preset?.height) || 480);
   const mapMode = resolveMatchMapMode(null, cfg);
   return sanitizeWorldSpec({ width, height, aiCount, mapMode });
 }
@@ -665,7 +671,7 @@ function resolveLobbyStartSpec(lobby, bodyRaw) {
   const computedSpec = buildWorldSpecFromMatchConfig(cfg);
   const existingSpec = sanitizeWorldSpec(lobby?.matchWorldSpec);
 
-  const preferredSpec = requestedSpec || computedSpec || existingSpec || null;
+  const preferredSpec = computedSpec || requestedSpec || existingSpec || null;
   const mapMode = resolveMatchMapMode(preferredSpec, cfg);
   const normalizedPreferredSpec = preferredSpec
     ? sanitizeWorldSpec({

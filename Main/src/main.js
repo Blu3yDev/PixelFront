@@ -410,14 +410,53 @@ function buildMultiplayerWorldSpec(matchConfig = null) {
   });
 }
 
+function toPositiveIntOrFallback(raw, fallback) {
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  const fb = Number(fallback);
+  if (Number.isFinite(fb) && fb > 0) return Math.floor(fb);
+  return 1;
+}
+
+function buildMultiplayerWorldSpecWire(matchConfig = null, worldSpec = null) {
+  const cfg = sanitizeMatchConfig(matchConfig || activeMatchConfig);
+  const presetKeyRaw = String(cfg?.sizePreset ?? DEFAULT_MATCH_CONFIG.sizePreset);
+  const presetKey = Object.prototype.hasOwnProperty.call(WORLD_SIZE_PRESETS, presetKeyRaw)
+    ? presetKeyRaw
+    : DEFAULT_MATCH_CONFIG.sizePreset;
+  const preset = WORLD_SIZE_PRESETS[presetKey] || WORLD_SIZE_PRESETS[DEFAULT_MATCH_CONFIG.sizePreset] || {};
+  const fromProvided = sanitizeMultiplayerWorldSpec(worldSpec);
+  const fromComputed = buildMultiplayerWorldSpec(cfg);
+  const base = fromProvided || fromComputed || null;
+
+  const width = toPositiveIntOrFallback(
+    base?.width ?? cfg?.worldWidth ?? preset.minWidth ?? preset.maxWidth ?? 1400,
+    preset.minWidth ?? 1400
+  );
+  const height = toPositiveIntOrFallback(
+    base?.height ?? cfg?.worldHeight ?? preset.minHeight ?? preset.maxHeight ?? 840,
+    preset.minHeight ?? 840
+  );
+  const aiCount = toPositiveIntOrFallback(
+    base?.aiCount ?? cfg?.worldAiCount ?? cfg?.aiCount ?? preset.aiCount ?? 96,
+    preset.aiCount ?? 96
+  );
+  const mapModeRaw = String(base?.mapMode ?? cfg?.mapMode ?? MAP_MODE.WORLD_MAP).toLowerCase();
+  const mapMode = mapModeRaw === MAP_MODE.WORLD_MAP ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
+  const repaired = sanitizeMultiplayerWorldSpec({ width, height, aiCount, mapMode });
+  if (repaired) return repaired;
+  return {
+    width: Math.max(480, width),
+    height: Math.max(240, height),
+    aiCount: Math.max(1, aiCount),
+    mapMode
+  };
+}
+
 function buildMultiplayerMatchConfigWire(matchConfig = null, worldSpec = null) {
   const cfg = sanitizeMatchConfig(matchConfig || activeMatchConfig);
-  const spec = sanitizeMultiplayerWorldSpec(worldSpec) || buildMultiplayerWorldSpec(cfg);
-  if (!spec) return cfg;
-  const aiRaw = Number(cfg.aiCount);
-  const aiCount = Number.isFinite(aiRaw) && aiRaw > 0
-    ? Math.max(1, Math.floor(aiRaw))
-    : Math.max(1, Math.floor(spec.aiCount));
+  const spec = buildMultiplayerWorldSpecWire(cfg, worldSpec);
+  const aiCount = toPositiveIntOrFallback(spec?.aiCount, WORLD_SIZE_PRESETS?.[cfg?.sizePreset]?.aiCount ?? 96);
   return {
     ...cfg,
     aiCount,
@@ -3348,12 +3387,14 @@ function createMainMenuController(options = null) {
     const code = String(codeRaw || "").trim().toUpperCase();
     const sessionId = String(sessionIdRaw || "").trim();
     const codeEnc = encodeURIComponent(code);
+    const wireWorldSpec = buildMultiplayerWorldSpecWire(matchConfig, worldSpec);
+    const wireMatchConfig = buildMultiplayerMatchConfigWire(matchConfig, wireWorldSpec);
 
     if (multiplayerApiMode === "legacy") {
       try {
         return await multiplayerFetch(`/api/lobbies/${codeEnc}/start`, {
           method: "POST",
-          body: { sessionId, matchConfig, worldSpec }
+          body: { sessionId, matchConfig: wireMatchConfig, worldSpec: wireWorldSpec }
         });
       } catch (err) {
         if ((Number(err?.status) || 0) === 404) multiplayerApiMode = "auto";
@@ -3364,7 +3405,7 @@ function createMainMenuController(options = null) {
     try {
       const payload = await multiplayerFetch("/api/lobbies/start", {
         method: "POST",
-        body: { code, sessionId, matchConfig, worldSpec }
+        body: { code, sessionId, matchConfig: wireMatchConfig, worldSpec: wireWorldSpec }
       });
       multiplayerApiMode = "modern";
       return payload;
@@ -3373,7 +3414,7 @@ function createMainMenuController(options = null) {
       multiplayerApiMode = "legacy";
       return await multiplayerFetch(`/api/lobbies/${codeEnc}/start`, {
         method: "POST",
-        body: { sessionId, matchConfig, worldSpec }
+        body: { sessionId, matchConfig: wireMatchConfig, worldSpec: wireWorldSpec }
       });
     }
   };
@@ -4611,9 +4652,8 @@ function createMainMenuController(options = null) {
           startBtn.disabled = true;
           const prevLabel = startBtn.textContent || "Start";
           startBtn.textContent = "Starting...";
-          const worldSpec = buildMultiplayerWorldSpec(cfg);
-          const wireMatchConfig = buildMultiplayerMatchConfigWire(cfg, worldSpec);
-          const payload = await startLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId, wireMatchConfig, worldSpec);
+          const worldSpec = buildMultiplayerWorldSpecWire(cfg);
+          const payload = await startLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId, cfg, worldSpec);
           const viewer = (payload?.viewer && typeof payload.viewer === "object") ? payload.viewer : null;
           if (viewer) applyViewerIdentity(viewer);
           if (payload?.lobby) {
@@ -4700,7 +4740,7 @@ function createMainMenuController(options = null) {
         createLobbyBtn.disabled = true;
         const prevLabel = createLobbyBtn.textContent || "Create";
         createLobbyBtn.textContent = "Creating...";
-        const worldSpec = buildMultiplayerWorldSpec(cfg);
+        const worldSpec = buildMultiplayerWorldSpecWire(cfg);
         const wireMatchConfig = buildMultiplayerMatchConfigWire(cfg, worldSpec);
         const payload = await multiplayerFetch("/api/lobbies/create", {
           method: "POST",

@@ -5472,6 +5472,12 @@ function createMainMenuController(options = null) {
   const syncInteractiveState = () => {
     if (flagBtn) flagBtn.disabled = false;
     if (matchInputs.mapMode) matchInputs.mapMode.disabled = true;
+    if (multiplayerBtn) {
+      multiplayerBtn.disabled = true;
+      multiplayerBtn.classList.add("isDisabled");
+      multiplayerBtn.textContent = "Disabled";
+      multiplayerBtn.setAttribute("aria-disabled", "true");
+    }
     refreshMultiplayerUI();
   };
 
@@ -5500,7 +5506,7 @@ function createMainMenuController(options = null) {
   };
 
   setHint(playBtn, "Open match configuration.");
-  setHint(multiplayerBtn, "Create or join a private multiplayer lobby.");
+  setHint(multiplayerBtn, "Multiplayer is currently disabled.");
   setHint(settingsBtn, "Open client settings.");
   setHint(flagBtn, "Open flag editor.");
   setHint(bookBtn, "Guide is empty for now.");
@@ -5512,7 +5518,7 @@ function createMainMenuController(options = null) {
       setView("play");
     });
   }
-  if (multiplayerBtn) {
+  if (multiplayerBtn && !multiplayerBtn.disabled) {
     multiplayerBtn.addEventListener("click", async () => {
       setView("multiplayer");
       const ready = await ensureMultiplayerReady();

@@ -36,17 +36,23 @@ const MATCH_MAX_WORLD_WIDTH_DEFAULT = 12000;
 const MATCH_MAX_WORLD_HEIGHT_DEFAULT = 6000;
 const MATCH_MAX_WORLD_TILES_DEFAULT = 12_000_000;
 const MATCH_MAX_AI_COUNT_DEFAULT = 400;
-const MATCH_MAX_WORLD_WIDTH = Math.max(MATCH_MAX_WORLD_WIDTH_DEFAULT, Number(process.env.MATCH_MAX_WORLD_WIDTH || MATCH_MAX_WORLD_WIDTH_DEFAULT));
-const MATCH_MAX_WORLD_HEIGHT = Math.max(MATCH_MAX_WORLD_HEIGHT_DEFAULT, Number(process.env.MATCH_MAX_WORLD_HEIGHT || MATCH_MAX_WORLD_HEIGHT_DEFAULT));
-const MATCH_MAX_WORLD_TILES = Math.max(MATCH_MAX_WORLD_TILES_DEFAULT, Number(process.env.MATCH_MAX_WORLD_TILES || MATCH_MAX_WORLD_TILES_DEFAULT));
-const MATCH_MAX_AI_COUNT = Math.max(MATCH_MAX_AI_COUNT_DEFAULT, Number(process.env.MATCH_MAX_AI_COUNT || MATCH_MAX_AI_COUNT_DEFAULT));
+const readBoundedEnvInt = (name, fallback, min) => {
+  const raw = Number(process.env[name]);
+  if (!Number.isFinite(raw) || raw <= 0) return Math.max(min, Math.floor(fallback));
+  return Math.max(min, Math.floor(raw));
+};
+const MATCH_MAX_WORLD_WIDTH = readBoundedEnvInt("MATCH_MAX_WORLD_WIDTH", MATCH_MAX_WORLD_WIDTH_DEFAULT, 480);
+const MATCH_MAX_WORLD_HEIGHT = readBoundedEnvInt("MATCH_MAX_WORLD_HEIGHT", MATCH_MAX_WORLD_HEIGHT_DEFAULT, 240);
+const MATCH_MAX_WORLD_TILES = readBoundedEnvInt("MATCH_MAX_WORLD_TILES", MATCH_MAX_WORLD_TILES_DEFAULT, 120000);
+const MATCH_MAX_AI_COUNT = readBoundedEnvInt("MATCH_MAX_AI_COUNT", MATCH_MAX_AI_COUNT_DEFAULT, 2);
 
 const MAP_MODE_WORLD = "earth";
 const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-20-authoritative-runtime-v14");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-20-authoritative-runtime-v16");
+const SERVER_INSTANCE_ID = randomUUID().slice(0, 8);
 
 const SERVER_WORLD_SIZE_PRESETS = Object.freeze({
   Small: Object.freeze({ width: 960, height: 600, aiCount: 96 }),
@@ -408,6 +414,37 @@ function buildWorldSpecFromMatchConfig(matchConfigRaw) {
   return sanitizeWorldSpec({ width, height, aiCount, mapMode });
 }
 
+function toPositiveIntOrNull(raw) {
+  if (raw == null) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.floor(n);
+}
+
+function coerceWorldSpecFromWire(rawSpec, matchConfigRaw = null) {
+  const cfg = sanitizeMatchConfig(matchConfigRaw) || {};
+  const presetKey = String(cfg.sizePreset || "Large");
+  const preset = SERVER_WORLD_SIZE_PRESETS[presetKey] || SERVER_WORLD_SIZE_PRESETS.Large;
+  const src = (rawSpec && typeof rawSpec === "object") ? rawSpec : {};
+  const width = toPositiveIntOrNull(src.width)
+    ?? toPositiveIntOrNull(cfg.worldWidth)
+    ?? toPositiveIntOrNull(cfg.width)
+    ?? toPositiveIntOrNull(preset?.width)
+    ?? 1400;
+  const height = toPositiveIntOrNull(src.height)
+    ?? toPositiveIntOrNull(cfg.worldHeight)
+    ?? toPositiveIntOrNull(cfg.height)
+    ?? toPositiveIntOrNull(preset?.height)
+    ?? 840;
+  const aiCount = toPositiveIntOrNull(src.aiCount)
+    ?? toPositiveIntOrNull(cfg.worldAiCount)
+    ?? toPositiveIntOrNull(cfg.aiCount)
+    ?? toPositiveIntOrNull(preset?.aiCount)
+    ?? 144;
+  const mapMode = resolveMatchMapMode(src, cfg);
+  return sanitizeWorldSpec({ width, height, aiCount, mapMode });
+}
+
 function sanitizeWorldSpec(raw) {
   if (!raw || typeof raw !== "object") return null;
   const hasPositiveNumber = (value) => {
@@ -667,9 +704,9 @@ function resolveLobbyStartSpec(lobby, bodyRaw) {
   const cfgFromBody = sanitizeMatchConfig(body.matchConfig);
   const cfg = cfgFromBody || sanitizeMatchConfig(lobby?.matchConfig) || sanitizeMatchConfig({}) || {};
 
-  const requestedSpec = sanitizeWorldSpec(body.worldSpec);
-  const computedSpec = buildWorldSpecFromMatchConfig(cfg);
-  const existingSpec = sanitizeWorldSpec(lobby?.matchWorldSpec);
+  const requestedSpec = coerceWorldSpecFromWire(body.worldSpec, cfg);
+  const computedSpec = buildWorldSpecFromMatchConfig(cfg) || coerceWorldSpecFromWire(null, cfg);
+  const existingSpec = coerceWorldSpecFromWire(lobby?.matchWorldSpec, cfg);
 
   const preferredSpec = computedSpec || requestedSpec || existingSpec || null;
   const mapMode = resolveMatchMapMode(preferredSpec, cfg);
@@ -697,6 +734,44 @@ function resolveLobbyStartSpec(lobby, bodyRaw) {
     existingSpec,
     effectiveSpec: normalizedPreferredSpec || fallbackSpec || null
   };
+}
+
+async function startLobbyMatch(lobby, body) {
+  const resolvedStart = resolveLobbyStartSpec(lobby, body);
+  if (!resolvedStart.effectiveSpec) throw new Error("Lobby world spec is missing.");
+  const prevState = {
+    matchConfig: sanitizeMatchConfig(lobby?.matchConfig) || null,
+    matchWorldSpec: sanitizeWorldSpec(lobby?.matchWorldSpec),
+    matchSeed: Number(lobby?.matchSeed) || 0,
+    startedAt: Number(lobby?.startedAt) || 0,
+    started: !!lobby?.started,
+    runtime: lobby?.runtime || null
+  };
+
+  lobby.matchConfig = resolvedStart.cfg;
+  lobby.matchWorldSpec = resolvedStart.effectiveSpec;
+  lobby.matchSeed = toSeed(body?.seed);
+  lobby.startedAt = nowMs();
+  lobby.started = true;
+  markLobbySocketsPendingInitialSync(lobby);
+
+  try {
+    await ensureLobbyRuntime(lobby);
+  } catch (err) {
+    lobby.runtime = prevState.runtime;
+    lobby.matchConfig = prevState.matchConfig;
+    lobby.matchWorldSpec = prevState.matchWorldSpec;
+    lobby.matchSeed = prevState.matchSeed;
+    lobby.startedAt = prevState.startedAt;
+    lobby.started = prevState.started;
+    throw err;
+  }
+
+  console.log(
+    `[lobby-start] code=${lobby.code} requested=${JSON.stringify(resolvedStart.requestedSpec || null)} computed=${JSON.stringify(resolvedStart.computedSpec || null)} existing=${JSON.stringify(resolvedStart.existingSpec || null)} effective=${JSON.stringify(lobby.matchWorldSpec || null)} cfg=${JSON.stringify(lobby.matchConfig || null)}`
+  );
+  touchLobby(lobby);
+  broadcastLobby(lobby, "started");
 }
 
 function getLobbyByCodeOrThrow(codeRaw) {
@@ -1982,6 +2057,7 @@ const server = createServer(async (req, res) => {
         ok: true,
         uptimeS: Math.round(process.uptime()),
         build: SERVER_BUILD_ID,
+        instanceId: SERVER_INSTANCE_ID,
         runtimeMainSrc: runtimeModulesSrcDir || "",
         limits: {
           maxWorldWidth: MATCH_MAX_WORLD_WIDTH,
@@ -2081,20 +2157,7 @@ const server = createServer(async (req, res) => {
       if (viewerPlayer.sessionId !== lobby.hostSessionId) throw new Error("Only host can start.");
 
       if (!lobby.started) {
-        const resolvedStart = resolveLobbyStartSpec(lobby, body);
-        lobby.matchConfig = resolvedStart.cfg;
-        lobby.matchWorldSpec = resolvedStart.effectiveSpec;
-        if (!lobby.matchWorldSpec) throw new Error("Lobby world spec is missing.");
-        console.log(
-          `[lobby-start] code=${lobby.code} requested=${JSON.stringify(resolvedStart.requestedSpec || null)} computed=${JSON.stringify(resolvedStart.computedSpec || null)} existing=${JSON.stringify(resolvedStart.existingSpec || null)} effective=${JSON.stringify(lobby.matchWorldSpec || null)} cfg=${JSON.stringify(lobby.matchConfig || null)}`
-        );
-        lobby.matchSeed = toSeed(body?.seed);
-        lobby.startedAt = nowMs();
-        lobby.started = true;
-        markLobbySocketsPendingInitialSync(lobby);
-        await ensureLobbyRuntime(lobby);
-        touchLobby(lobby);
-        broadcastLobby(lobby, "started");
+        await startLobbyMatch(lobby, body);
       }
 
       writeJson(res, 200, {
@@ -2160,20 +2223,7 @@ const server = createServer(async (req, res) => {
       if (viewerPlayer.sessionId !== lobby.hostSessionId) throw new Error("Only host can start.");
 
       if (!lobby.started) {
-        const resolvedStart = resolveLobbyStartSpec(lobby, body);
-        lobby.matchConfig = resolvedStart.cfg;
-        lobby.matchWorldSpec = resolvedStart.effectiveSpec;
-        if (!lobby.matchWorldSpec) throw new Error("Lobby world spec is missing.");
-        console.log(
-          `[lobby-start] code=${lobby.code} requested=${JSON.stringify(resolvedStart.requestedSpec || null)} computed=${JSON.stringify(resolvedStart.computedSpec || null)} existing=${JSON.stringify(resolvedStart.existingSpec || null)} effective=${JSON.stringify(lobby.matchWorldSpec || null)} cfg=${JSON.stringify(lobby.matchConfig || null)}`
-        );
-        lobby.matchSeed = toSeed(body?.seed);
-        lobby.startedAt = nowMs();
-        lobby.started = true;
-        markLobbySocketsPendingInitialSync(lobby);
-        await ensureLobbyRuntime(lobby);
-        touchLobby(lobby);
-        broadcastLobby(lobby, "started");
+        await startLobbyMatch(lobby, body);
       }
 
       writeJson(res, 200, {
@@ -2220,7 +2270,7 @@ const server = createServer(async (req, res) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
-console.log(`[multiplayer-server] build=${SERVER_BUILD_ID}`);
+console.log(`[multiplayer-server] build=${SERVER_BUILD_ID} instance=${SERVER_INSTANCE_ID}`);
 
 server.on("upgrade", (req, socket, head) => {
   try {

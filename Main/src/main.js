@@ -18,9 +18,9 @@ import {
 import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
 
-// PF_BUILD: v16 2026-02-19
-window.__PF_BUILD = "v16";
-console.info("[PixelFront] BUILD v1.5 Beta loaded (v16)");
+// PF_BUILD: v17 2026-02-20
+window.__PF_BUILD = "v17";
+console.info("[PixelFront] BUILD v1.5 Beta loaded (v17)");
 document.title = "PixelFront | Beta";
 
 const canvas = document.getElementById("game");
@@ -3389,6 +3389,16 @@ function createMainMenuController(options = null) {
     const codeEnc = encodeURIComponent(code);
     const wireWorldSpec = buildMultiplayerWorldSpecWire(matchConfig, worldSpec);
     const wireMatchConfig = buildMultiplayerMatchConfigWire(matchConfig, wireWorldSpec);
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+    const shouldRetryStart = (err) => {
+      const status = Number(err?.status) || 0;
+      const msg = String(err?.message || "").toLowerCase();
+      if (status !== 400) return false;
+      if (msg.includes("world spec")) return true;
+      if (msg.includes("failed to initialize")) return true;
+      if (msg.includes("runtime")) return true;
+      return false;
+    };
 
     if (multiplayerApiMode === "legacy") {
       try {
@@ -3397,6 +3407,13 @@ function createMainMenuController(options = null) {
           body: { sessionId, matchConfig: wireMatchConfig, worldSpec: wireWorldSpec }
         });
       } catch (err) {
+        if (shouldRetryStart(err)) {
+          await sleep(280);
+          return await multiplayerFetch(`/api/lobbies/${codeEnc}/start`, {
+            method: "POST",
+            body: { sessionId, matchConfig: wireMatchConfig, worldSpec: wireWorldSpec }
+          });
+        }
         if ((Number(err?.status) || 0) === 404) multiplayerApiMode = "auto";
         else throw err;
       }
@@ -3410,6 +3427,15 @@ function createMainMenuController(options = null) {
       multiplayerApiMode = "modern";
       return payload;
     } catch (err) {
+      if (shouldRetryStart(err)) {
+        await sleep(280);
+        const retryPayload = await multiplayerFetch("/api/lobbies/start", {
+          method: "POST",
+          body: { code, sessionId, matchConfig: wireMatchConfig, worldSpec: wireWorldSpec }
+        });
+        multiplayerApiMode = "modern";
+        return retryPayload;
+      }
       if (!shouldUseLegacyRoutes(err)) throw err;
       multiplayerApiMode = "legacy";
       return await multiplayerFetch(`/api/lobbies/${codeEnc}/start`, {

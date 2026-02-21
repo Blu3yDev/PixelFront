@@ -18,9 +18,9 @@ import {
 import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
 
-// PF_BUILD: v24 2026-02-21
-window.__PF_BUILD = "v24";
-console.info("[PixelFront] BUILD v1.5 Beta loaded (v24)");
+// PF_BUILD: v25 2026-02-21
+window.__PF_BUILD = "v25";
+console.info("[PixelFront] BUILD v1.5 Beta loaded (v25)");
 document.title = "PixelFront | Beta";
 
 const canvas = document.getElementById("game");
@@ -651,7 +651,7 @@ let multiplayerCatchupVisibleSinceMs = 0;
 let multiplayerPendingSpawnPick = null;
 let multiplayerPendingSpawnRetryTimer = 0;
 
-const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 1;
+const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 5000;
 const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 2300;
 const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 2200;
@@ -827,6 +827,8 @@ function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     return { ok: false, reason: "Multiplayer link disconnected. Reconnecting...", seq: 0 };
   }
+  const sess = activeMultiplayerSession;
+  let useFallbackIdentityForSpawn = false;
   if (!hasMultiplayerIdentity()) {
     const now = Date.now();
     if (now >= multiplayerIdentityRefreshAtMs) {
@@ -838,7 +840,11 @@ function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
       }
       void probeActiveMultiplayerSessionState();
     }
-    return { ok: false, reason: "Awaiting server player assignment.", seq: 0 };
+    if (!isSpawnPickCmd) {
+      return { ok: false, reason: "Awaiting server player assignment.", seq: 0 };
+    }
+    // Spawn picks are allowed to go through with fallback identity during assignment races.
+    useFallbackIdentityForSpawn = true;
   }
   if (!multiplayerHasAuthoritativeSync && isSpawnPickCmd) {
     requestMultiplayerFullSync("spawn_pick_before_full_sync");
@@ -846,12 +852,17 @@ function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
   const args = Array.isArray(argsRaw) ? argsRaw : [];
   const seq = Math.max(1, multiplayerPendingInputSeq | 0);
   multiplayerPendingInputSeq = (seq + 1) | 0;
-  const sess = activeMultiplayerSession;
   try {
+    const payloadPlayerId = useFallbackIdentityForSpawn
+      ? String(sess?.playerId || sess?.sessionId || "")
+      : String(sess.playerId || "");
+    const payloadNationId = useFallbackIdentityForSpawn
+      ? Math.max(0, Number(sess?.nationId) | 0)
+      : (Number(sess.nationId) | 0);
     ws.send(JSON.stringify({
       type: "match_input",
-      playerId: String(sess.playerId || ""),
-      nationId: Number(sess.nationId) | 0,
+      playerId: payloadPlayerId,
+      nationId: payloadNationId,
       seq,
       clientTime: Date.now(),
       cmd,
@@ -921,7 +932,7 @@ function retryPendingSpawnPick() {
   }
 
   const ws = multiplayerMatchSocket;
-  if (!ws || ws.readyState !== WebSocket.OPEN || !hasMultiplayerIdentity()) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
     multiplayerPendingSpawnPick = {
       ...pending,
       retries: retryCount + 1,

@@ -29,6 +29,8 @@ const MATCH_STATE_HASH_EVERY_TICKS_MAX = Math.max(
 const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 14000));
 const MATCH_TILE_DELTA_DRAIN_MIN = Math.max(500, Number(process.env.MATCH_TILE_DELTA_DRAIN_MIN || 1800));
 const MATCH_TILE_DELTA_BACKLOG_CAP = Math.max(MATCH_TILE_DELTA_CAP, Number(process.env.MATCH_TILE_DELTA_BACKLOG_CAP || 180000));
+const MATCH_OWNER_SWEEP_CHUNK_MIN = Math.max(300, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MIN || 1200));
+const MATCH_OWNER_SWEEP_CHUNK_MAX = Math.max(MATCH_OWNER_SWEEP_CHUNK_MIN, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MAX || 7000));
 const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(40, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 68));
 const MATCH_ENTITY_DELTA_INTERVAL_MAX_MS = Math.max(
   MATCH_ENTITY_DELTA_INTERVAL_MS,
@@ -1176,6 +1178,8 @@ async function ensureLobbyRuntime(lobby) {
       netStats: createRuntimeNetStats(),
       tileDeltaBacklog: new Map(),
       ownerDeltaOverflowed: false,
+      ownerSweepActive: false,
+      ownerSweepCursor: 0,
       assignmentsBySession: new Map(),
       nationToSession: new Map()
     };
@@ -1391,7 +1395,17 @@ function ensureTileDeltaBacklog(runtime) {
   return runtime.tileDeltaBacklog;
 }
 
-function trimTileDeltaBacklog(backlog) {
+function activateOwnerSweep(runtime, reason = "") {
+  if (!runtime || typeof runtime !== "object") return;
+  runtime.ownerSweepActive = true;
+  const cursor = Number(runtime.ownerSweepCursor) | 0;
+  if (cursor < 0) runtime.ownerSweepCursor = 0;
+  if (WS_DEBUG_LOGS && reason) {
+    console.log(`[owner-sweep] reason=${String(reason)} cursor=${Math.max(0, Number(runtime.ownerSweepCursor) | 0)}`);
+  }
+}
+
+function trimTileDeltaBacklog(backlog, runtime = null) {
   if (!backlog || typeof backlog.size !== "number") return 0;
   const cap = Math.max(MATCH_TILE_DELTA_CAP, MATCH_TILE_DELTA_BACKLOG_CAP);
   let trimmed = 0;
@@ -1401,17 +1415,22 @@ function trimTileDeltaBacklog(backlog) {
     backlog.delete(first.value);
     trimmed++;
   }
+  if (trimmed > 0 && runtime) activateOwnerSweep(runtime, "tile_backlog_trim");
   return trimmed;
 }
 
 function consumeChangedTiles(world, runtime) {
   if (!world || typeof world._consumeOwnerDirty !== "function") return { overflow: true, merged: 0, trimmed: 0 };
   const consumed = world._consumeOwnerDirty();
-  if (consumed?.full) return { overflow: true, merged: 0, trimmed: 0 };
+  if (consumed?.full) {
+    activateOwnerSweep(runtime, "owner_dirty_overflow");
+    return { overflow: true, merged: 0, trimmed: 0 };
+  }
   const items = Array.isArray(consumed?.items) ? consumed.items : [];
   if (items.length <= 0) return { overflow: false, merged: 0, trimmed: 0 };
   const ownerArr = world.owner;
   if (!ownerArr || typeof ownerArr.length !== "number" || ownerArr.length <= 0) {
+    activateOwnerSweep(runtime, "owner_array_unavailable");
     return { overflow: true, merged: 0, trimmed: 0 };
   }
   const backlog = ensureTileDeltaBacklog(runtime);
@@ -1422,7 +1441,7 @@ function consumeChangedTiles(world, runtime) {
     backlog.set(idx, Number(ownerArr[idx]) | 0);
     merged++;
   }
-  const trimmed = trimTileDeltaBacklog(backlog);
+  const trimmed = trimTileDeltaBacklog(backlog, runtime);
   return { overflow: false, merged, trimmed };
 }
 
@@ -1438,6 +1457,40 @@ function drainRuntimeTileDeltaBacklog(runtime, maxItemsRaw) {
     backlog.delete(idx);
     changedTiles.push([Number(idx) | 0, Number(owner) | 0]);
   }
+  return changedTiles;
+}
+
+function appendOwnerSweepChunk(world, runtime, changedTiles, maxAdditionalRaw) {
+  if (!runtime?.ownerSweepActive) return changedTiles;
+  const ownerArr = world?.owner;
+  if (!ownerArr || typeof ownerArr.length !== "number" || ownerArr.length <= 0) {
+    runtime.ownerSweepActive = false;
+    runtime.ownerSweepCursor = 0;
+    return changedTiles;
+  }
+  const landArr = world?.land;
+  const maxAdditional = Math.max(MATCH_OWNER_SWEEP_CHUNK_MIN, Math.min(MATCH_OWNER_SWEEP_CHUNK_MAX, Number(maxAdditionalRaw) | 0));
+  const startCursor = Math.max(0, Number(runtime.ownerSweepCursor) | 0);
+  const n = ownerArr.length | 0;
+  let cursor = startCursor % Math.max(1, n);
+  let added = 0;
+  while (added < maxAdditional && n > 0) {
+    const idx = cursor;
+    cursor++;
+    if (cursor >= n) {
+      runtime.ownerSweepActive = false;
+      runtime.ownerSweepCursor = 0;
+      cursor = 0;
+    }
+    if (landArr && !landArr[idx]) {
+      if (!runtime.ownerSweepActive) break;
+      continue;
+    }
+    changedTiles.push([idx | 0, Number(ownerArr[idx]) | 0]);
+    added++;
+    if (!runtime.ownerSweepActive) break;
+  }
+  if (runtime.ownerSweepActive) runtime.ownerSweepCursor = cursor | 0;
   return changedTiles;
 }
 
@@ -1864,6 +1917,8 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
   } else {
     const consumeResult = consumeChangedTiles(world, runtime);
     runtime.ownerDeltaOverflowed = !!consumeResult.overflow;
+    if ((consumeResult.trimmed | 0) > 0) activateOwnerSweep(runtime, "tile_delta_trimmed");
+    if (consumeResult.overflow) activateOwnerSweep(runtime, "tile_delta_overflow");
     let tileDeltaCap = MATCH_TILE_DELTA_CAP;
     if (loadScale > 1) {
       tileDeltaCap = Math.round(tileDeltaCap / Math.min(2.25, 1 + ((loadScale - 1) * 0.72)));
@@ -1873,6 +1928,10 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
     }
     tileDeltaCap = Math.max(MATCH_TILE_DELTA_DRAIN_MIN, Math.min(MATCH_TILE_DELTA_CAP, tileDeltaCap));
     packet.changedTiles = drainRuntimeTileDeltaBacklog(runtime, tileDeltaCap);
+    if (runtime.ownerSweepActive && packet.changedTiles.length < tileDeltaCap) {
+      const room = Math.max(0, tileDeltaCap - packet.changedTiles.length);
+      appendOwnerSweepChunk(world, runtime, packet.changedTiles, room);
+    }
     packet._ownerOverflow = !!consumeResult.overflow;
   }
 
@@ -2067,11 +2126,9 @@ function updateRuntimeMemoryPressure(lobby, runtime, now) {
 
   if (rssMb >= hardMb) {
     const backlog = ensureTileDeltaBacklog(runtime);
-    const trimTarget = Math.max(MATCH_TILE_DELTA_DRAIN_MIN, Math.round(MATCH_TILE_DELTA_CAP * 0.35));
-    while ((backlog.size | 0) > trimTarget) {
-      const first = backlog.keys().next();
-      if (first.done) break;
-      backlog.delete(first.value);
+    if ((backlog.size | 0) > 0) {
+      backlog.clear();
+      activateOwnerSweep(runtime, "memory_pressure_backlog_reset");
     }
   }
 
@@ -2329,13 +2386,20 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
     return;
   }
 
+  const isSpawnPickCmd = String(input.cmd || "").trim().toLowerCase() === "pick_spawn";
   if (!input.playerId || input.playerId !== assignment.playerId) {
-    wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: input.seq, serverTickProcessed: runtime.simTick | 0, reason: "Player identity mismatch." });
-    return;
+    if (!isSpawnPickCmd) {
+      wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: input.seq, serverTickProcessed: runtime.simTick | 0, reason: "Player identity mismatch." });
+      return;
+    }
+    input.playerId = assignment.playerId;
   }
   if ((input.nationId | 0) !== (assignment.nationId | 0)) {
-    wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: input.seq, serverTickProcessed: runtime.simTick | 0, reason: "Nation identity mismatch." });
-    return;
+    if (!isSpawnPickCmd) {
+      wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: input.seq, serverTickProcessed: runtime.simTick | 0, reason: "Nation identity mismatch." });
+      return;
+    }
+    input.nationId = assignment.nationId | 0;
   }
   if ((input.seq | 0) <= 0) {
     wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: 0, serverTickProcessed: runtime.simTick | 0, reason: "Invalid sequence number." });
@@ -2349,7 +2413,16 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
   const args = mapInputArgsToCanonical(input.cmd, input.args, assignment.nationId);
   const actorCheck = validateActorNation(input.cmd, args, assignment.nationId);
   if (!actorCheck.ok) {
-    wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: input.seq | 0, serverTickProcessed: runtime.simTick | 0, reason: actorCheck.reason || "Illegal command actor nation." });
+    if (isSpawnPickCmd && args.length >= 1) {
+      args[0] = assignment.nationId | 0;
+    } else {
+      wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: input.seq | 0, serverTickProcessed: runtime.simTick | 0, reason: actorCheck.reason || "Illegal command actor nation." });
+      return;
+    }
+  }
+  const actorFinal = validateActorNation(input.cmd, args, assignment.nationId);
+  if (!actorFinal.ok) {
+    wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: input.seq | 0, serverTickProcessed: runtime.simTick | 0, reason: actorFinal.reason || "Illegal command actor nation." });
     return;
   }
 

@@ -1655,6 +1655,7 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false) {
   const worldRef = multiplayerWorldSyncWorld;
   if (!worldRef || !packet || typeof packet !== "object") return false;
   const tick = Math.max(0, Number(packet.tick) | 0);
+  const hadAuthoritativeSync = multiplayerHasAuthoritativeSync;
   let ownerApplied = 0;
 
   if (isFullSync) {
@@ -1686,7 +1687,8 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false) {
   applyMultiplayerWorldMeta(worldRef, packet);
   maybeRefreshMultiplayerDerivedState(worldRef, isFullSync);
 
-  if (isFullSync && ownerApplied > 0 && typeof worldRef._rebuildAllPixels === "function") {
+  // Full-map pixel rebuild is expensive; do it only on initial authoritative attach.
+  if (isFullSync && ownerApplied > 0 && !hadAuthoritativeSync && typeof worldRef._rebuildAllPixels === "function") {
     try {
       worldRef._rebuildAllPixels();
       if (typeof worldRef._rebuildAllBorders === "function") worldRef._rebuildAllBorders();

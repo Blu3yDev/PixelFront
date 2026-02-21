@@ -122,10 +122,19 @@ export function installBorders(World) {
       let checks = 0;
       const qLenStart = this._speckleQueue.length | 0;
       let maxChecks = SPECKLE_MAX_CHECKS_PER_PASS | 0;
-      if (qLenStart >= 120000) maxChecks = Math.min(maxChecks, 2500);
-      else if (qLenStart >= 80000) maxChecks = Math.min(maxChecks, 3400);
-      else if (qLenStart >= 40000) maxChecks = Math.min(maxChecks, 4600);
-      else maxChecks = Math.min(maxChecks, 7000);
+      if (qLenStart >= 120000) maxChecks = Math.min(maxChecks, 1800);
+      else if (qLenStart >= 80000) maxChecks = Math.min(maxChecks, 2400);
+      else if (qLenStart >= 40000) maxChecks = Math.min(maxChecks, 3200);
+      else maxChecks = Math.min(maxChecks, 4800);
+      const hasPerfNow = (typeof performance !== "undefined" && performance && typeof performance.now === "function");
+      const cleanupStartMs = hasPerfNow ? performance.now() : 0;
+      const cleanupBudgetMs = qLenStart >= 120000
+        ? 1.35
+        : qLenStart >= 80000
+          ? 1.55
+          : qLenStart >= 40000
+            ? 1.8
+            : 2.2;
       const retryLater = [];
       let counts = this._speckleNeighborCounts;
       let touched = this._speckleNeighborTouched;
@@ -139,6 +148,7 @@ export function installBorders(World) {
       const maxOwner = counts.length - 1;
 
       while (this._speckleQueue.length > 0 && checks < maxChecks) {
+        if (hasPerfNow && checks >= 192 && (performance.now() - cleanupStartMs) >= cleanupBudgetMs) break;
         const idx = this._speckleQueue.pop();
         if (!this._speckleSet.has(idx)) continue;
         checks++;
@@ -148,7 +158,8 @@ export function installBorders(World) {
         const age = this.time - (this.ownerStamp[idx] || 0);
         if (age < SPECKLE_MIN_AGE_S) {
           // Keep candidate for a later pass once ownership is old enough to stabilize.
-          retryLater.push(idx);
+          if ((retryLater.length | 0) < 32000) retryLater.push(idx);
+          else this._speckleSet.delete(idx);
           continue;
         }
 
@@ -457,7 +468,7 @@ export function installBorders(World) {
       }
 
       const setSize = set.size | 0;
-      const speckleBudget = setSize >= 30000 ? 5200 : (setSize >= 12000 ? 7600 : (setSize >= 5000 ? 9800 : 12000));
+      const speckleBudget = setSize >= 30000 ? 3200 : (setSize >= 12000 ? 5200 : (setSize >= 5000 ? 7600 : 9800));
       if (setSize <= speckleBudget) {
         for (const idx0 of set) {
           const idx = idx0 | 0;

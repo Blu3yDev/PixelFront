@@ -18,9 +18,9 @@ import {
 import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
 
-// PF_BUILD: v19 2026-02-21
-window.__PF_BUILD = "v19";
-console.info("[PixelFront] BUILD v1.5 Beta loaded (v19)");
+// PF_BUILD: v20 2026-02-21
+window.__PF_BUILD = "v20";
+console.info("[PixelFront] BUILD v1.5 Beta loaded (v20)");
 document.title = "PixelFront | Beta";
 
 const canvas = document.getElementById("game");
@@ -645,7 +645,7 @@ let multiplayerIdentityRefreshAtMs = 0;
 let multiplayerNextHudStatusAtMs = 0;
 let multiplayerLastLabelRecomputeAtMs = 0;
 
-const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
+const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 2;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 5000;
 const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 1800;
 const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 1200;

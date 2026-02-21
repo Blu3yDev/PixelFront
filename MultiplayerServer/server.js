@@ -10,14 +10,14 @@ const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
 const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 60 * 6));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
-const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(60, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 100));
+const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(45, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 80));
 const MATCH_MAX_STEPS_PER_PUMP = Math.max(2, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 8));
 const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERVAL_MS || 16));
 const MATCH_MAX_BACKLOG_MS = Math.max(100, Number(process.env.MATCH_MAX_BACKLOG_MS || 250));
 const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(160, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 240));
 const MATCH_STATE_HASH_EVERY_TICKS = Math.max(4, Number(process.env.MATCH_STATE_HASH_EVERY_TICKS || 24));
 const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 9000));
-const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(60, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 100));
+const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(60, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 90));
 const MATCH_BACKPRESSURE_SOFT_BYTES = Math.max(64 * 1024, Number(process.env.MATCH_BACKPRESSURE_SOFT_BYTES || (1536 * 1024)));
 const MATCH_BACKPRESSURE_HARD_BYTES = Math.max(MATCH_BACKPRESSURE_SOFT_BYTES, Number(process.env.MATCH_BACKPRESSURE_HARD_BYTES || (6 * 1024 * 1024)));
 const MATCH_BACKPRESSURE_DISCONNECT_MS = Math.max(1000, Number(process.env.MATCH_BACKPRESSURE_DISCONNECT_MS || 8000));
@@ -25,12 +25,12 @@ const MATCH_BACKPRESSURE_HEARTBEAT_MS = Math.max(200, Number(process.env.MATCH_B
 const MATCH_FULL_SYNC_MIN_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_FULL_SYNC_MIN_INTERVAL_MS || 900));
 const MATCH_FULL_SYNC_RETRY_INTERVAL_MS = Math.max(100, Number(process.env.MATCH_FULL_SYNC_RETRY_INTERVAL_MS || 450));
 const MATCH_NET_STATS_LOG_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_NET_STATS_LOG_INTERVAL_MS || 10000));
-const MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS = Math.max(1500, Number(process.env.MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS || 4000));
-const MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS = Math.max(MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS, Number(process.env.MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS || 7000));
+const MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS = Math.max(4000, Number(process.env.MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS || 22000));
+const MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS = Math.max(MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS, Number(process.env.MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS || 45000));
 const MATCH_LAG_WARN_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_LAG_WARN_INTERVAL_MS || 5000));
-const MATCH_SNAPSHOT_STATS_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_SNAPSHOT_STATS_INTERVAL_MS || 220));
-const MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS = Math.max(180, Number(process.env.MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS || 320));
-const MATCH_SNAPSHOT_EVENTS_INTERVAL_MS = Math.max(300, Number(process.env.MATCH_SNAPSHOT_EVENTS_INTERVAL_MS || 550));
+const MATCH_SNAPSHOT_STATS_INTERVAL_MS = Math.max(200, Number(process.env.MATCH_SNAPSHOT_STATS_INTERVAL_MS || 420));
+const MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS = Math.max(280, Number(process.env.MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS || 650));
+const MATCH_SNAPSHOT_EVENTS_INTERVAL_MS = Math.max(420, Number(process.env.MATCH_SNAPSHOT_EVENTS_INTERVAL_MS || 900));
 const WS_DEBUG_LOGS = /^(1|true|yes|on)$/i.test(String(process.env.WS_DEBUG_LOGS || "").trim());
 const MATCH_MAX_WORLD_WIDTH_DEFAULT = 12000;
 const MATCH_MAX_WORLD_HEIGHT_DEFAULT = 6000;
@@ -45,8 +45,16 @@ const MATCH_MAX_WORLD_WIDTH = readBoundedEnvInt("MATCH_MAX_WORLD_WIDTH", MATCH_M
 const MATCH_MAX_WORLD_HEIGHT = readBoundedEnvInt("MATCH_MAX_WORLD_HEIGHT", MATCH_MAX_WORLD_HEIGHT_DEFAULT, 240);
 const MATCH_MAX_WORLD_TILES = readBoundedEnvInt("MATCH_MAX_WORLD_TILES", MATCH_MAX_WORLD_TILES_DEFAULT, 120000);
 const MATCH_MAX_AI_COUNT = readBoundedEnvInt("MATCH_MAX_AI_COUNT", MATCH_MAX_AI_COUNT_DEFAULT, 2);
-const MATCH_RUNTIME_SAFE_MAX_WORLD_TILES = readBoundedEnvInt("MATCH_RUNTIME_SAFE_MAX_WORLD_TILES", 450000, 120000);
-const MATCH_RUNTIME_SAFE_MAX_AI_COUNT = readBoundedEnvInt("MATCH_RUNTIME_SAFE_MAX_AI_COUNT", 48, 2);
+const HARD_RUNTIME_SAFE_MAX_WORLD_TILES = 9_000_000;
+const HARD_RUNTIME_SAFE_MAX_AI_COUNT = 320;
+const MATCH_RUNTIME_SAFE_MAX_WORLD_TILES = Math.min(
+  HARD_RUNTIME_SAFE_MAX_WORLD_TILES,
+  readBoundedEnvInt("MATCH_RUNTIME_SAFE_MAX_WORLD_TILES", 9_000_000, 120000)
+);
+const MATCH_RUNTIME_SAFE_MAX_AI_COUNT = Math.min(
+  HARD_RUNTIME_SAFE_MAX_AI_COUNT,
+  readBoundedEnvInt("MATCH_RUNTIME_SAFE_MAX_AI_COUNT", 320, 2)
+);
 const MATCH_RUNTIME_SAFE_MIN_TILES_PER_AI = readBoundedEnvInt("MATCH_RUNTIME_SAFE_MIN_TILES_PER_AI", 5000, 1200);
 
 const MAP_MODE_WORLD = "earth";
@@ -54,7 +62,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-20-authoritative-runtime-v17");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v19");
 const SERVER_INSTANCE_ID = randomUUID().slice(0, 8);
 
 const SERVER_WORLD_SIZE_PRESETS = Object.freeze({
@@ -732,14 +740,18 @@ function resolveWorldSpecForLobby(lobby) {
 
 function resolveLobbyStartSpec(lobby, bodyRaw) {
   const body = (bodyRaw && typeof bodyRaw === "object") ? bodyRaw : {};
-  const cfgFromBody = sanitizeMatchConfig(body.matchConfig);
-  const cfg = cfgFromBody || sanitizeMatchConfig(lobby?.matchConfig) || sanitizeMatchConfig({}) || {};
+  const baseCfg = sanitizeMatchConfig(lobby?.matchConfig) || sanitizeMatchConfig({}) || {};
+  const cfg = sanitizeMatchConfig({
+    ...baseCfg,
+    ...((body.matchConfig && typeof body.matchConfig === "object") ? body.matchConfig : {})
+  }) || baseCfg;
 
   const requestedSpec = coerceWorldSpecFromWire(body.worldSpec, cfg);
   const computedSpec = buildWorldSpecFromMatchConfig(cfg) || coerceWorldSpecFromWire(null, cfg);
   const existingSpec = coerceWorldSpecFromWire(lobby?.matchWorldSpec, cfg);
 
-  const preferredSpec = computedSpec || requestedSpec || existingSpec || null;
+  // Host-provided worldSpec must win over computed defaults.
+  const preferredSpec = requestedSpec || computedSpec || existingSpec || null;
   const mapMode = resolveMatchMapMode(preferredSpec, cfg);
   const normalizedPreferredSpec = preferredSpec
     ? sanitizeWorldSpec({
@@ -1335,6 +1347,71 @@ function remapPair(row, assignedNationId, hasFrom = false) {
   return row;
 }
 
+function deriveSessionMatchOutcome(packet) {
+  const meta = (packet?.worldMeta && typeof packet.worldMeta === "object") ? packet.worldMeta : null;
+  if (!meta) return null;
+
+  const safeTime = Number.isFinite(Number(meta.time)) ? Number(meta.time) : 0;
+  const srcOutcome = (meta.matchOutcome && typeof meta.matchOutcome === "object") ? meta.matchOutcome : null;
+  const srcWinner = Math.max(0, Number(srcOutcome?.winner) | 0);
+  const srcAt = Number.isFinite(Number(srcOutcome?.at)) ? Number(srcOutcome.at) : safeTime;
+  const srcResult = String(srcOutcome?.result || "").trim().toLowerCase();
+  const gameOverWinner = Math.max(0, Number(meta?.gameOver?.winner) | 0);
+
+  const rows = Array.isArray(packet?.nationStats) ? packet.nationStats : [];
+  let playerAlive = null;
+  let fallbackWinner = 0;
+  let bestLand = -1;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || typeof row !== "object") continue;
+    const id = Math.max(1, Number(row.id) | 0);
+    if (id === OWNER_PLAYER) playerAlive = !!row.alive;
+    if (!row.alive) continue;
+    const land = Math.max(0, Number(row.landOwnedCount ?? row.land) | 0);
+    if (land > bestLand) {
+      bestLand = land;
+      fallbackWinner = id;
+    }
+  }
+  if (fallbackWinner <= 0 && Array.isArray(packet?.leaderboard)) {
+    for (let i = 0; i < packet.leaderboard.length; i++) {
+      const row = packet.leaderboard[i];
+      if (!row || typeof row !== "object") continue;
+      if (!row.alive) continue;
+      fallbackWinner = Math.max(1, Number(row.id) | 0);
+      break;
+    }
+  }
+
+  if (gameOverWinner > 0) {
+    return {
+      result: gameOverWinner === OWNER_PLAYER ? "win" : "loss",
+      winner: gameOverWinner,
+      at: srcAt
+    };
+  }
+
+  if (playerAlive === false) {
+    const winner = srcWinner > 0 ? srcWinner : fallbackWinner;
+    return {
+      result: "loss",
+      winner: winner > 0 ? winner : 0,
+      at: srcAt
+    };
+  }
+
+  if ((srcResult === "win" || srcResult === "victory") && srcWinner === OWNER_PLAYER) {
+    return {
+      result: "win",
+      winner: OWNER_PLAYER,
+      at: srcAt
+    };
+  }
+
+  return null;
+}
+
 function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
   const assigned = Number(assignedNationIdRaw) | 0;
   const packet = cloneWire(packetRaw) || {};
@@ -1411,6 +1488,7 @@ function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
         packet.worldMeta.spawnPhase.pickedIds[i] = mapCanonicalToLocalNationId(Number(packet.worldMeta.spawnPhase.pickedIds[i]) | 0, assigned);
       }
     }
+    packet.worldMeta.matchOutcome = deriveSessionMatchOutcome(packet);
   }
 
   return packet;
@@ -1766,10 +1844,11 @@ function flushRuntimeTick(lobby, runtime, now) {
   if (loadScale > 1) snapshotIntervalMs = Math.round(snapshotIntervalMs * loadScale);
   if (runtime.simAccMs > (stepMs * 1.25)) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.75);
   if ((runtime.backpressuredSockets | 0) > 0) snapshotIntervalMs = Math.round(snapshotIntervalMs * 2.0);
+  snapshotIntervalMs = Math.max(45, Math.min(260, snapshotIntervalMs));
 
   const lastSnapshotAtMs = Number(runtime.lastSnapshotAtMs) || 0;
   const due = (now - lastSnapshotAtMs) >= snapshotIntervalMs;
-  const forceIntervalMs = Math.round(MATCH_SNAPSHOT_FORCE_INTERVAL_MS * Math.max(1, loadScale));
+  const forceIntervalMs = Math.max(120, Math.min(420, Math.round(MATCH_SNAPSHOT_FORCE_INTERVAL_MS * Math.max(1, loadScale))));
   const forceDue = (now - lastSnapshotAtMs) >= forceIntervalMs;
   if (due || forceDue) {
     runtime.lastSnapshotAtMs = now;

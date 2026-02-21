@@ -438,6 +438,15 @@ export function installBorders(World) {
         this._refreshBorderCell(idx);
       }
 
+      if (this._authoritativeSyncApplying) {
+        set.clear();
+        if (this._ownerBatchVersionDirty) {
+          this.ownerVersion++;
+          this._ownerBatchVersionDirty = false;
+        }
+        return;
+      }
+
       const setSize = set.size | 0;
       const speckleBudget = setSize >= 30000 ? 1800 : (setSize >= 12000 ? 3000 : (setSize >= 5000 ? 5000 : 9000));
       if (setSize <= speckleBudget) {
@@ -469,6 +478,34 @@ export function installBorders(World) {
       const list = this._pixelWriteList;
       if (!list || list.length === 0) {
         this._flushDeferredPixelWrites(6000);
+        return;
+      }
+
+      const headlessAuthoritative = !!this._headlessAuthoritative;
+      if (headlessAuthoritative) {
+        const pending = Array.isArray(this._ownerDirtyPending) ? this._ownerDirtyPending : null;
+        const limit = Math.max(10000, Number(this._ownerDirtyOverflowLimit) | 0);
+        let overflow = !!this._ownerDirtyOverflow;
+
+        while (list.length > 0) {
+          const idx = list.pop() | 0;
+          if (pending && !overflow) {
+            if (pending.length >= limit) {
+              overflow = true;
+              this._ownerDirtyOverflow = true;
+              pending.length = 0;
+            } else {
+              pending.push(idx);
+            }
+          }
+        }
+
+        this._pixelWriteEpoch = (this._pixelWriteEpoch + 1) >>> 0;
+        if (this._pixelWriteEpoch === 0) {
+          this._pixelWriteEpoch = 1;
+          if (this._pixelWriteStamp) this._pixelWriteStamp.fill(0);
+        }
+        if (this._pixelDeferredList) this._pixelDeferredList.length = 0;
         return;
       }
 
@@ -777,13 +814,13 @@ export function installBorders(World) {
           terrVer[nOwner] = v;
         }
       }
-      if (!this._suspendOwnerVersionBump && nOwner > OWNER.NONE && typeof this._pushClaimFx === "function") {
+      if (!this._suspendOwnerVersionBump && !syncApplying && nOwner > OWNER.NONE && typeof this._pushClaimFx === "function") {
         const playerRelated = oldOwner === OWNER.PLAYER || nOwner === OWNER.PLAYER;
         if (!inBatch || playerRelated || ((idx & 7) === 0)) {
           this._pushClaimFx(idx, nOwner, oldOwner, this.time);
         }
       }
-      if (!this._suspendOwnerVersionBump && typeof this._markTilePressureAround === "function") {
+      if (!this._suspendOwnerVersionBump && !syncApplying && typeof this._markTilePressureAround === "function") {
         if (!inBatch || (((idx + (this._simTick | 0)) & 3) === 0)) {
           const pressureWeight = (oldOwner > 0 && nOwner > 0) ? 2.4 : 1.15;
           this._markTilePressureAround(idx, pressureWeight);
@@ -802,17 +839,20 @@ export function installBorders(World) {
       if (!this._suspendOwnerVersionBump) {
         // Defer and dedupe pixel updates to reduce repeated work under mass captures.
         this._queuePixelWrite(idx);
-        if (x > 0) this._queuePixelWrite(idx - 1);
-        if (x + 1 < w) this._queuePixelWrite(idx + 1);
-        if (y > 0) this._queuePixelWrite(idx - w);
-        if (y + 1 < this.h) this._queuePixelWrite(idx + w);
+        if (!syncApplying && !this._headlessAuthoritative) {
+          if (x > 0) this._queuePixelWrite(idx - 1);
+          if (x + 1 < w) this._queuePixelWrite(idx + 1);
+          if (y > 0) this._queuePixelWrite(idx - w);
+          if (y + 1 < this.h) this._queuePixelWrite(idx + w);
+        }
 
         if (inBatch) this._recordOwnerBatchNeighbors(idx);
+        else if (syncApplying) this._refreshBorderCell(idx);
         else this._updateBorderAround(idx, oldOwner, nOwner);
       }
 
       if (!this._suspendOwnerVersionBump) {
-        if (!inBatch) this._pushSpeckleCandidates(idx);
+        if (!inBatch && !syncApplying) this._pushSpeckleCandidates(idx);
       }
       if (!syncApplying) {
         const sid = this._structAt[idx] | 0;

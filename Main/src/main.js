@@ -657,6 +657,7 @@ let multiplayerDeferredVisualSyncPending = false;
 let multiplayerDeferredUiSyncAtMs = 0;
 let multiplayerLastHashVerifyAtMs = 0;
 let multiplayerDroppedDeltaPackets = false;
+let multiplayerDeferredOwnerAppliedHint = 0;
 const multiplayerStanceCommandState = {
   set_attack_ratio: { pendingArgs: null, timer: 0, lastSentAtMs: 0 },
   set_mobilization: { pendingArgs: null, timer: 0, lastSentAtMs: 0 }
@@ -792,6 +793,7 @@ function resetMultiplayerSnapshotState() {
   multiplayerCatchupVisibleSinceMs = 0;
   multiplayerLastDrainAtMs = 0;
   multiplayerDeferredVisualSyncPending = false;
+  multiplayerDeferredOwnerAppliedHint = 0;
   multiplayerDeferredUiSyncAtMs = 0;
   multiplayerLastHashVerifyAtMs = 0;
   multiplayerPendingSpawnPick = null;
@@ -1218,6 +1220,59 @@ function applyOwnerChangesFromList(worldRef, changedTiles) {
   return applied;
 }
 
+function applyPackedOwnerChangesFromBase64(worldRef, packedRaw, formatRaw = "u32_u16_le") {
+  if (!worldRef) return 0;
+  const ownerArr = worldRef.owner;
+  const landArr = worldRef.land;
+  if (!ownerArr || !landArr || ownerArr.length !== landArr.length) return 0;
+
+  const b64 = String(packedRaw || "").trim();
+  if (!b64) return 0;
+  const format = String(formatRaw || "u32_u16_le").trim().toLowerCase();
+  if (format !== "u32_u16_le") return 0;
+
+  let binary = "";
+  try {
+    binary = globalThis.atob(b64);
+  } catch {
+    return 0;
+  }
+  const byteLen = binary.length | 0;
+  if (byteLen < 6) return 0;
+
+  let applied = 0;
+  worldRef._authoritativeSyncApplying = true;
+  if (typeof worldRef._beginOwnerBatch === "function") worldRef._beginOwnerBatch();
+  try {
+    const evenLen = byteLen - (byteLen % 6);
+    for (let i = 0; i < evenLen; i += 6) {
+      const idx = (
+        (binary.charCodeAt(i) & 0xFF) |
+        ((binary.charCodeAt(i + 1) & 0xFF) << 8) |
+        ((binary.charCodeAt(i + 2) & 0xFF) << 16) |
+        ((binary.charCodeAt(i + 3) & 0xFF) << 24)
+      ) | 0;
+      if (idx < 0 || idx >= ownerArr.length) continue;
+      if (!landArr[idx]) continue;
+      const nextOwner = (
+        (binary.charCodeAt(i + 4) & 0xFF) |
+        ((binary.charCodeAt(i + 5) & 0xFF) << 8)
+      ) & 0xFFFF;
+      if ((ownerArr[idx] | 0) === nextOwner) continue;
+      if (typeof worldRef._setOwner === "function") {
+        worldRef._setOwner(idx, nextOwner);
+      } else {
+        ownerArr[idx] = nextOwner;
+      }
+      applied++;
+    }
+  } finally {
+    if (typeof worldRef._endOwnerBatch === "function") worldRef._endOwnerBatch();
+    worldRef._authoritativeSyncApplying = false;
+  }
+  return applied;
+}
+
 function applyPackedOwnerSnapshot(worldRef, ownerPackedRaw, formatRaw = "u16") {
   if (!worldRef) return 0;
   const incoming = decodeOwnerPackedBase64(ownerPackedRaw, formatRaw);
@@ -1582,9 +1637,10 @@ function applyMultiplayerWorldMeta(worldRef, packet) {
   worldRef._spawnPhase = spawnRaw;
 }
 
-function flushMultiplayerPixelWrites(worldRef) {
+function flushMultiplayerPixelWrites(worldRef, ownerAppliedHint = 0) {
   if (!worldRef || typeof worldRef._flushQueuedPixelWrites !== "function") return;
   const pendingWrites = Math.max(0, Number(worldRef?._pixelWriteList?.length) | 0);
+  const ownerApplied = Math.max(0, Number(ownerAppliedHint) | 0);
   const rawGap = Math.max(0, (multiplayerLatestServerTick | 0) - (multiplayerLastAppliedTick | 0));
   const gapTicks = Math.max(0, rawGap - MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS);
   let maxPasses = 3;
@@ -1596,6 +1652,14 @@ function flushMultiplayerPixelWrites(worldRef) {
   if (pendingWrites >= 90000 || gapTicks >= MULTIPLAYER_CATCHUP_HARD_GAP_TICKS) {
     maxPasses = 9;
     frameBudgetMs = 6.4;
+  }
+  if (ownerApplied >= 18000) {
+    maxPasses = Math.max(maxPasses, 11);
+    frameBudgetMs = Math.max(frameBudgetMs, 8.4);
+  }
+  if (ownerApplied >= 50000) {
+    maxPasses = Math.max(maxPasses, 14);
+    frameBudgetMs = Math.max(frameBudgetMs, 11.8);
   }
   const hasPerfNow = (typeof performance !== "undefined" && performance && typeof performance.now === "function");
   const startMs = hasPerfNow ? performance.now() : 0;
@@ -1817,9 +1881,21 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
         packet.ownerPacked,
         String(packet?.ownerPackedFormat || "u16")
       );
+    } else if (packet.changedTilesPacked) {
+      ownerApplied = applyPackedOwnerChangesFromBase64(
+        worldRef,
+        packet.changedTilesPacked,
+        String(packet?.changedTilesPackedFormat || "u32_u16_le")
+      );
     } else if (Array.isArray(packet.changedTiles)) {
       ownerApplied = applyOwnerChangesFromList(worldRef, packet.changedTiles);
     }
+  } else if (packet.changedTilesPacked) {
+    ownerApplied = applyPackedOwnerChangesFromBase64(
+      worldRef,
+      packet.changedTilesPacked,
+      String(packet?.changedTilesPackedFormat || "u32_u16_le")
+    );
   } else if (Array.isArray(packet.changedTiles) && packet.changedTiles.length > 0) {
     ownerApplied = applyOwnerChangesFromList(worldRef, packet.changedTiles);
   }
@@ -1855,8 +1931,9 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
 
   if (deferVisualSync) {
     multiplayerDeferredVisualSyncPending = true;
+    multiplayerDeferredOwnerAppliedHint = Math.max(multiplayerDeferredOwnerAppliedHint, ownerApplied | 0);
   } else {
-    flushMultiplayerPixelWrites(worldRef);
+    flushMultiplayerPixelWrites(worldRef, ownerApplied);
     worldRef.dirty = true;
   }
 
@@ -1915,7 +1992,8 @@ function flushDeferredMultiplayerVisualSync() {
   multiplayerDeferredVisualSyncPending = false;
   const worldRef = multiplayerWorldSyncWorld;
   if (!worldRef) return;
-  flushMultiplayerPixelWrites(worldRef);
+  flushMultiplayerPixelWrites(worldRef, multiplayerDeferredOwnerAppliedHint);
+  multiplayerDeferredOwnerAppliedHint = 0;
   worldRef.dirty = true;
   const now = Date.now();
   if (now >= multiplayerDeferredUiSyncAtMs) {

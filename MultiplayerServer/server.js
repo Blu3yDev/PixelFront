@@ -9,6 +9,7 @@ import { loadEarthDataNode } from "./earthDataNode.js";
 const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
 const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 60 * 6));
+const STARTED_EMPTY_LOBBY_TTL_MS = Math.max(60_000, Number(process.env.STARTED_EMPTY_LOBBY_TTL_MS || (1000 * 60 * 20)));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
 const MB = 1024 * 1024;
 const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(32, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 50));
@@ -19,6 +20,7 @@ const MATCH_SNAPSHOT_INTERVAL_MAX_MS = Math.max(
 );
 const MATCH_MAX_STEPS_PER_PUMP = Math.max(2, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 8));
 const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERVAL_MS || 16));
+const MATCH_RUNTIME_IDLE_NO_SOCKET_PAUSE_MS = Math.max(5000, Number(process.env.MATCH_RUNTIME_IDLE_NO_SOCKET_PAUSE_MS || 30000));
 const MATCH_MAX_BACKLOG_MS = Math.max(100, Number(process.env.MATCH_MAX_BACKLOG_MS || 250));
 const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(90, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 150));
 const MATCH_STATE_HASH_EVERY_TICKS = Math.max(4, Number(process.env.MATCH_STATE_HASH_EVERY_TICKS || 24));
@@ -43,8 +45,8 @@ const MATCH_STRUCTURE_DELTA_INTERVAL_MAX_MS = Math.max(
 );
 const MATCH_OPERATIONS_DELTA_INTERVAL_MS = Math.max(36, Number(process.env.MATCH_OPERATIONS_DELTA_INTERVAL_MS || 68));
 const MATCH_MOBILE_DELTA_INTERVAL_MS = Math.max(30, Number(process.env.MATCH_MOBILE_DELTA_INTERVAL_MS || 56));
-const MATCH_BACKPRESSURE_SOFT_BYTES = Math.max(64 * 1024, Number(process.env.MATCH_BACKPRESSURE_SOFT_BYTES || (1536 * 1024)));
-const MATCH_BACKPRESSURE_HARD_BYTES = Math.max(MATCH_BACKPRESSURE_SOFT_BYTES, Number(process.env.MATCH_BACKPRESSURE_HARD_BYTES || (6 * 1024 * 1024)));
+const MATCH_BACKPRESSURE_SOFT_BYTES = Math.max(64 * 1024, Number(process.env.MATCH_BACKPRESSURE_SOFT_BYTES || (384 * 1024)));
+const MATCH_BACKPRESSURE_HARD_BYTES = Math.max(MATCH_BACKPRESSURE_SOFT_BYTES, Number(process.env.MATCH_BACKPRESSURE_HARD_BYTES || (2 * 1024 * 1024)));
 const MATCH_BACKPRESSURE_DISCONNECT_MS = Math.max(1000, Number(process.env.MATCH_BACKPRESSURE_DISCONNECT_MS || 8000));
 const MATCH_BACKPRESSURE_HEARTBEAT_MS = Math.max(200, Number(process.env.MATCH_BACKPRESSURE_HEARTBEAT_MS || 1500));
 const MATCH_BACKPRESSURE_RECOVERY_SYNC_BUFFER_BYTES = Math.max(
@@ -64,6 +66,8 @@ const MATCH_FULL_SYNC_OWNER_PACKED_SAFE_TILES = Math.max(
 const MATCH_NET_STATS_LOG_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_NET_STATS_LOG_INTERVAL_MS || 10000));
 const MATCH_SNAPSHOT_TARGET_BYTES = Math.max(24000, Number(process.env.MATCH_SNAPSHOT_TARGET_BYTES || 72000));
 const MATCH_SNAPSHOT_TARGET_BYTES_HARD = Math.max(MATCH_SNAPSHOT_TARGET_BYTES, Number(process.env.MATCH_SNAPSHOT_TARGET_BYTES_HARD || 140000));
+const MATCH_CHANGED_TILES_PACK_MIN = Math.max(64, Number(process.env.MATCH_CHANGED_TILES_PACK_MIN || 320));
+const MATCH_CHANGED_TILES_PACK_MIN_AGGRESSIVE = Math.max(32, Number(process.env.MATCH_CHANGED_TILES_PACK_MIN_AGGRESSIVE || 120));
 const MATCH_WIRE_SOFT_WORLD_TILES = Math.max(400000, Number(process.env.MATCH_WIRE_SOFT_WORLD_TILES || 2200000));
 const MATCH_WIRE_SOFT_AI_COUNT = Math.max(8, Number(process.env.MATCH_WIRE_SOFT_AI_COUNT || 90));
 const MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS = Math.max(4000, Number(process.env.MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS || 22000));
@@ -108,7 +112,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v25");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v26");
 const SERVER_INSTANCE_ID = randomUUID().slice(0, 8);
 
 const SERVER_WORLD_SIZE_PRESETS = Object.freeze({
@@ -663,7 +667,7 @@ function maybeGuardSnapshotBackpressure(lobby, runtime, sessionId, ws, now, { cr
 
   ws._maxBufferedAmountSeen = Math.max(0, Number(ws._maxBufferedAmountSeen) || 0, buffered);
 
-  const preSoftThreshold = Math.max(64 * 1024, Math.round(MATCH_BACKPRESSURE_SOFT_BYTES * 0.84));
+  const preSoftThreshold = Math.max(64 * 1024, Math.round(MATCH_BACKPRESSURE_SOFT_BYTES * 0.65));
   if (!critical && buffered >= preSoftThreshold && buffered < MATCH_BACKPRESSURE_SOFT_BYTES) {
     stats.skippedDueToBackpressure++;
     stats.droppedSnapshots++;
@@ -788,6 +792,46 @@ function applyLightweightFullSyncOwner(runtime, packet) {
   appendOwnerSweepChunk(runtime.world, runtime, packet.changedTiles, chunkTarget);
 }
 
+function encodeChangedTilesPackedBase64(changedTiles) {
+  if (!Array.isArray(changedTiles) || changedTiles.length <= 0) return "";
+  const n = changedTiles.length | 0;
+  const buf = Buffer.allocUnsafe(n * 6);
+  let bi = 0;
+  for (let i = 0; i < n; i++) {
+    const row = changedTiles[i];
+    const tuple = Array.isArray(row);
+    const idx = Math.max(0, Number(tuple ? row[0] : row?.idx) | 0) >>> 0;
+    const owner = Math.max(0, Number(tuple ? row[1] : row?.owner) | 0) & 0xFFFF;
+    buf[bi++] = idx & 0xFF;
+    buf[bi++] = (idx >>> 8) & 0xFF;
+    buf[bi++] = (idx >>> 16) & 0xFF;
+    buf[bi++] = (idx >>> 24) & 0xFF;
+    buf[bi++] = owner & 0xFF;
+    buf[bi++] = (owner >>> 8) & 0xFF;
+  }
+  return buf.toString("base64");
+}
+
+function maybePackChangedTilesForWire(payloadRaw, { aggressive = false } = {}) {
+  const src = (payloadRaw && typeof payloadRaw === "object") ? payloadRaw : null;
+  if (!src) return payloadRaw;
+  const rows = Array.isArray(src.changedTiles) ? src.changedTiles : null;
+  if (!rows || rows.length <= 0) return src;
+
+  const minCount = aggressive ? MATCH_CHANGED_TILES_PACK_MIN_AGGRESSIVE : MATCH_CHANGED_TILES_PACK_MIN;
+  if ((rows.length | 0) < (minCount | 0)) return src;
+
+  const packed = encodeChangedTilesPackedBase64(rows);
+  if (!packed) return src;
+
+  const out = { ...src };
+  out.changedTilesPacked = packed;
+  out.changedTilesPackedFormat = "u32_u16_le";
+  out.changedTilesCount = rows.length | 0;
+  delete out.changedTiles;
+  return out;
+}
+
 function shapeSnapshotForCongestedSocket(payloadRaw, runtime, ws) {
   const src = (payloadRaw && typeof payloadRaw === "object") ? payloadRaw : null;
   if (!src) return payloadRaw;
@@ -804,26 +848,6 @@ function shapeSnapshotForCongestedSocket(payloadRaw, runtime, ws) {
   if (ws._socketCongestionLevel <= 0) return src;
 
   const out = downshiftSnapshotPayloadForWire(src);
-  ws._shapedTileSliceThisFrame = false;
-
-  if (Array.isArray(out?.changedTiles) && out.changedTiles.length > 0) {
-    let keep = out.changedTiles.length | 0;
-    const lvl = ws._socketCongestionLevel | 0;
-    if (lvl >= 3) {
-      keep = Math.max(MATCH_TILE_DELTA_DRAIN_MIN, Math.round(MATCH_TILE_DELTA_CAP * 0.26));
-    } else if (lvl >= 2) {
-      keep = Math.max(MATCH_TILE_DELTA_DRAIN_MIN, Math.round(MATCH_TILE_DELTA_CAP * 0.45));
-    } else {
-      keep = Math.max(MATCH_TILE_DELTA_DRAIN_MIN, Math.round(MATCH_TILE_DELTA_CAP * 0.68));
-    }
-    keep = Math.min(out.changedTiles.length | 0, keep | 0);
-    if ((out.changedTiles.length | 0) > (keep | 0)) {
-      out.changedTiles = out.changedTiles.slice(Math.max(0, out.changedTiles.length - keep));
-      ws._desyncedSinceBackpressure = true;
-      ws._shapedTileSliceThisFrame = true;
-      if (runtime && typeof runtime === "object") runtime._socketTileShapingApplied = true;
-    }
-  }
 
   if (ws._socketCongestionLevel >= 2 && out?.changedEntities && typeof out.changedEntities === "object") {
     const ce = { ...out.changedEntities };
@@ -1366,6 +1390,8 @@ async function ensureLobbyRuntime(lobby) {
         aiCount: Math.max(1, Number(worldSpec.aiCount) || 1)
       }
     );
+    // Server runtime is authoritative-only; skip expensive render pixel work.
+    world._headlessAuthoritative = true;
 
     if (effectiveMapMode !== requestedMapMode && lobby.matchWorldSpec && typeof lobby.matchWorldSpec === "object") {
       lobby.matchWorldSpec = { ...lobby.matchWorldSpec, mapMode: effectiveMapMode };
@@ -1376,6 +1402,8 @@ async function ensureLobbyRuntime(lobby) {
       simTick: 0,
       simAccMs: 0,
       lastPumpAtMs: nowMs(),
+      lastSocketSeenAtMs: nowMs(),
+      pausedNoSockets: false,
       lastSnapshotAtMs: 0,
       lastLagWarnAtMs: 0,
       lastStatsSnapshotAtMs: 0,
@@ -2230,7 +2258,8 @@ function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual")
   const hashMuted = !!mapped.ownerPackedOmitted;
   ws._stateHashMuted = hashMuted;
   if (!hashMuted) mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
-  const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped, { critical: !lightweight });
+  const wirePayload = maybePackChangedTilesForWire(mapped, { aggressive: lightweight });
+  const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, wirePayload, { critical: !lightweight });
   if (sent.sent) {
     ws._lastFullSyncAtMs = now;
     ws._nextFullSyncAttemptAtMs = now + MATCH_FULL_SYNC_MIN_INTERVAL_MS;
@@ -2260,7 +2289,8 @@ function broadcastFullSync(lobby, runtime, reason = "resync") {
     const hashMuted = !!mapped.ownerPackedOmitted;
     ws._stateHashMuted = hashMuted;
     if (!hashMuted) mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
-    const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped, { critical: !lightweight });
+    const wirePayload = maybePackChangedTilesForWire(mapped, { aggressive: lightweight });
+    const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, wirePayload, { critical: !lightweight });
     if (sent.sent) ws._desyncedSinceBackpressure = false;
     if (sent.backpressured) {
       backpressured++;
@@ -2320,7 +2350,6 @@ function broadcastSnapshotDelta(lobby, runtime) {
   }
   let backpressured = 0;
   let anyBackpressured = false;
-  runtime._socketTileShapingApplied = false;
 
   for (const [sessionId, ws] of lobby.sockets.entries()) {
     const assignment = runtime.assignmentsBySession.get(sessionId);
@@ -2337,7 +2366,10 @@ function broadcastSnapshotDelta(lobby, runtime) {
       preBuffered >= Math.round(MATCH_BACKPRESSURE_SOFT_BYTES * 0.30)
     );
     const shaped = shouldShape ? shapeSnapshotForCongestedSocket(mapped, runtime, ws) : mapped;
-    const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, shaped);
+    const wirePayload = maybePackChangedTilesForWire(shaped, {
+      aggressive: shouldShape || (Number(ws?._socketCongestionLevel) | 0) >= 2
+    });
+    const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, wirePayload);
     if (sent.sent && !sent.backpressured) {
       ws._socketCongestionLevel = Math.max(0, (Number(ws?._socketCongestionLevel) | 0) - 1);
     }
@@ -2348,7 +2380,6 @@ function broadcastSnapshotDelta(lobby, runtime) {
       ws._socketCongestionLevel = Math.min(8, Math.max(1, (Number(ws?._socketCongestionLevel) | 0) + 1));
     }
   }
-  if (runtime._socketTileShapingApplied) activateOwnerSweep(runtime, "congested_socket_tile_slice");
   if (anyBackpressured) activateOwnerSweep(runtime, "backpressure_snapshot_drop");
   runtime.backpressuredSockets = backpressured;
 }
@@ -2545,7 +2576,14 @@ function flushRuntimeTick(lobby, runtime, now) {
   if (runtime.simAccMs > (stepMs * 1.25)) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.18);
   if ((runtime.backpressuredSockets | 0) > 0) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.24);
   else if ((runtime.mediumBackpressuredSockets | 0) > 0) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.12);
-  snapshotIntervalMs = Math.max(MATCH_SNAPSHOT_INTERVAL_MIN_MS, Math.min(MATCH_SNAPSHOT_INTERVAL_MAX_MS, snapshotIntervalMs));
+  const playerMinSnapshotIntervalMs = connectedPlayers >= 8
+    ? Math.max(MATCH_SNAPSHOT_INTERVAL_MIN_MS, 56)
+    : connectedPlayers >= 6
+      ? Math.max(MATCH_SNAPSHOT_INTERVAL_MIN_MS, 48)
+      : connectedPlayers >= 4
+        ? Math.max(MATCH_SNAPSHOT_INTERVAL_MIN_MS, 42)
+        : MATCH_SNAPSHOT_INTERVAL_MIN_MS;
+  snapshotIntervalMs = Math.max(playerMinSnapshotIntervalMs, Math.min(MATCH_SNAPSHOT_INTERVAL_MAX_MS, snapshotIntervalMs));
 
   let entityDeltaIntervalMs = MATCH_ENTITY_DELTA_INTERVAL_MS;
   if (loadScale > 1) entityDeltaIntervalMs = Math.round(entityDeltaIntervalMs * (1 + ((loadScale - 1) * 0.55)));
@@ -2592,7 +2630,7 @@ function flushRuntimeTick(lobby, runtime, now) {
   const forceScale = Math.max(1, loadScale, playerLoadScale);
   const forceIntervalMs = Math.max(130, Math.min(420, Math.round(MATCH_SNAPSHOT_FORCE_INTERVAL_MS * forceScale)));
   const forceDue = (now - lastSnapshotAtMs) >= forceIntervalMs;
-  const accelIntervalMs = Math.max(MATCH_SNAPSHOT_INTERVAL_MIN_MS, Math.round(snapshotIntervalMs * 0.72));
+  const accelIntervalMs = Math.max(playerMinSnapshotIntervalMs, Math.round(snapshotIntervalMs * 0.72));
   const acceleratedDue = (runtime.backpressuredSockets | 0) <= 0
     && (runtime.mediumBackpressuredSockets | 0) <= 0
     && runtime.simAccMs <= (stepMs * 1.1)
@@ -2880,7 +2918,6 @@ function attachSocketToLobby(lobby, sessionId, ws) {
   ws._stateHashMuted = false;
   ws._desyncedSinceBackpressure = false;
   ws._socketCongestionLevel = 0;
-  ws._shapedTileSliceThisFrame = false;
 
   ws.on("pong", () => {
     ws.isAlive = true;
@@ -2973,8 +3010,13 @@ function attachSocketToLobby(lobby, sessionId, ws) {
 }
 
 function cleanupIdleLobbies() {
-  const cutoff = nowMs() - Math.max(60_000, LOBBY_IDLE_TTL_MS);
+  const now = nowMs();
   for (const [code, lobby] of lobbiesByCode) {
+    const startedNoSockets = !!(lobby?.started && (!lobby?.sockets || lobby.sockets.size <= 0));
+    const ttlMs = startedNoSockets
+      ? Math.min(Math.max(60_000, LOBBY_IDLE_TTL_MS), STARTED_EMPTY_LOBBY_TTL_MS)
+      : Math.max(60_000, LOBBY_IDLE_TTL_MS);
+    const cutoff = now - ttlMs;
     if (lobby.updatedAt >= cutoff) continue;
     for (const p of lobby.players) playerIndex.delete(p.sessionId);
     for (const ws of lobby.sockets.values()) {
@@ -2987,6 +3029,30 @@ function cleanupIdleLobbies() {
 function stepLobbyRuntime(lobby, now) {
   const runtime = lobby?.runtime;
   if (!runtime || !runtime.world || !lobby.started) return;
+
+  const openSockets = Math.max(0, Number(lobby?.sockets?.size) | 0);
+  if (openSockets > 0) {
+    runtime.lastSocketSeenAtMs = now;
+    if (runtime.pausedNoSockets) {
+      runtime.pausedNoSockets = false;
+      runtime.lastPumpAtMs = now;
+      runtime.simAccMs = 0;
+      console.log(`[runtime-resume] lobby=${String(lobby?.code || "")} sockets=${openSockets}`);
+    }
+  } else {
+    const lastSocketSeenAtMs = Math.max(0, Number(runtime.lastSocketSeenAtMs) || 0);
+    if (lastSocketSeenAtMs <= 0) runtime.lastSocketSeenAtMs = now;
+    const idleNoSocketMs = Math.max(0, now - Math.max(0, Number(runtime.lastSocketSeenAtMs) || now));
+    if (idleNoSocketMs >= MATCH_RUNTIME_IDLE_NO_SOCKET_PAUSE_MS) {
+      if (!runtime.pausedNoSockets) {
+        runtime.pausedNoSockets = true;
+        runtime.lastPumpAtMs = now;
+        runtime.simAccMs = 0;
+        console.log(`[runtime-pause] lobby=${String(lobby?.code || "")} reason=no_sockets idleMs=${Math.round(idleNoSocketMs)}`);
+      }
+      return;
+    }
+  }
 
   // If sockets were connected before runtime existed (common host/join/start race),
   // push an initial full sync as soon as runtime is ready.

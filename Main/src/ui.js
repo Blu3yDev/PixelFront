@@ -196,6 +196,11 @@ export function createHUD() {
   let cbPauseToggle = null;
   let cbSettingsChange = null;
   let cbSelectedAction = null;
+  const SLIDER_SYNC_RELEASE_GRACE_MS = 220;
+  let opRatioUserInteracting = false;
+  let opMobUserInteracting = false;
+  let opRatioHoldSyncUntilMs = 0;
+  let opMobHoldSyncUntilMs = 0;
 
   // State
   let buildMode = null;
@@ -428,7 +433,45 @@ export function createHUD() {
     api.setEventsVisible(!eventsVisible);
   });
 
+  const setSliderInteraction = (slider, interacting) => {
+    const active = !!interacting;
+    if (slider === opRatio) {
+      opRatioUserInteracting = active;
+      if (!active) opRatioHoldSyncUntilMs = Date.now() + SLIDER_SYNC_RELEASE_GRACE_MS;
+      return;
+    }
+    if (slider === opMob) {
+      opMobUserInteracting = active;
+      if (!active) opMobHoldSyncUntilMs = Date.now() + SLIDER_SYNC_RELEASE_GRACE_MS;
+    }
+  };
+  const isSliderSyncHeld = (slider) => {
+    const now = Date.now();
+    if (slider === opRatio) {
+      return opRatioUserInteracting || now < opRatioHoldSyncUntilMs;
+    }
+    if (slider === opMob) {
+      return opMobUserInteracting || now < opMobHoldSyncUntilMs;
+    }
+    return false;
+  };
+  const bindSliderInteraction = (slider) => {
+    if (!slider) return;
+    const start = () => setSliderInteraction(slider, true);
+    const end = () => setSliderInteraction(slider, false);
+    slider.addEventListener("pointerdown", start);
+    slider.addEventListener("pointerup", end);
+    slider.addEventListener("pointercancel", end);
+    slider.addEventListener("blur", end);
+    slider.addEventListener("change", end);
+    slider.addEventListener("keydown", start);
+    slider.addEventListener("keyup", end);
+  };
+  bindSliderInteraction(opRatio);
+  bindSliderInteraction(opMob);
+
   opRatio.addEventListener("input", () => {
+    setSliderInteraction(opRatio, true);
     const pct = clampInt(opRatio.value, 1, 100);
     opRatio.value = String(pct);
     opRatioVal.textContent = String(pct);
@@ -436,6 +479,7 @@ export function createHUD() {
   });
 
   opMob.addEventListener("input", () => {
+    setSliderInteraction(opMob, true);
     const pct = clampInt(opMob.value, 10, 100);
     opMob.value = String(pct);
     opMobVal.textContent = String(pct);
@@ -1337,16 +1381,24 @@ export function createHUD() {
     },
     setAttackRatio: (ratio01) => {
       const pct = clampInt(Math.round(clamp01(ratio01) * 100), 1, 100);
-      if (opRatio.value !== String(pct)) opRatio.value = String(pct);
-      opRatioVal.textContent = String(pct);
+      if (!isSliderSyncHeld(opRatio)) {
+        if (opRatio.value !== String(pct)) opRatio.value = String(pct);
+        opRatioVal.textContent = String(pct);
+      } else {
+        opRatioVal.textContent = String(clampInt(opRatio.value, 1, 100));
+      }
     },
     onAttackRatioChange: (cb) => (cbAttackRatio = cb),
 
     onMobilizationChange: (cb) => (cbMobilization = cb),
     setMobilization: (mob01) => {
       const pct = clampInt(Math.round(clamp01(mob01) * 100), 10, 100);
-      if (opMob.value !== String(pct)) opMob.value = String(pct);
-      opMobVal.textContent = String(pct);
+      if (!isSliderSyncHeld(opMob)) {
+        if (opMob.value !== String(pct)) opMob.value = String(pct);
+        opMobVal.textContent = String(pct);
+      } else {
+        opMobVal.textContent = String(clampInt(opMob.value, 10, 100));
+      }
     },
 
     onBuildMode: (cb) => (cbBuildMode = cb),

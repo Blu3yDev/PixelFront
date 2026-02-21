@@ -415,6 +415,19 @@ function sanitizeName(raw) {
   return text.slice(0, 20);
 }
 
+function sanitizePlayerFlag(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const cloned = cloneWire(raw);
+  if (!cloned || typeof cloned !== "object") return null;
+  try {
+    const payload = JSON.stringify(cloned);
+    if (payload.length > 12000) return null;
+  } catch {
+    return null;
+  }
+  return cloned;
+}
+
 function sanitizeMatchConfig(raw) {
   if (!raw || typeof raw !== "object") return null;
   const src = cloneWire(raw) || {};
@@ -1185,6 +1198,9 @@ function ensureRuntimeAssignments(lobby, runtime) {
         nation.mobilization = Number(playerBaseline.mobilization) || nation.mobilization || 0.35;
       }
       nation.name = sanitizeName(player?.name || nation.name || `Player ${nid}`);
+      if (player?.flag && typeof player.flag === "object") {
+        nation.flag = cloneWire(player.flag) || nation.flag || null;
+      }
       nation.isHuman = true;
       nation.isAiControlled = false;
     }
@@ -1309,7 +1325,8 @@ function lobbyViewer(lobby, player) {
     playerId: String(player?.playerId || player?.sessionId || "").trim(),
     nationId: Math.max(0, Number(assignment?.nationId) | 0),
     isHost: String(player?.sessionId || "") === String(lobby?.hostSessionId || ""),
-    name: String(player?.name || "Player")
+    name: String(player?.name || "Player"),
+    flag: cloneWire(player?.flag) || null
   };
 }
 
@@ -1331,6 +1348,7 @@ function lobbyView(lobby) {
       sessionId: p.sessionId,
       playerId: p.playerId,
       name: p.name,
+      flag: cloneWire(p.flag) || null,
       joinedAt: p.joinedAt,
       isHost: p.sessionId === lobby.hostSessionId
     }))
@@ -2815,13 +2833,14 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && path === "/api/lobbies/create") {
       const body = await parseJsonBody(req);
       const playerName = sanitizeName(body?.playerName);
+      const playerFlag = sanitizePlayerFlag(body?.playerFlag);
       const matchConfig = sanitizeMatchConfig(body?.matchConfig);
 
       const code = makeUniqueCode();
       const sessionId = randomUUID();
       const playerId = randomUUID();
       const t = nowMs();
-      const hostPlayer = { sessionId, playerId, name: playerName, joinedAt: t };
+      const hostPlayer = { sessionId, playerId, name: playerName, flag: playerFlag, joinedAt: t };
       const lobby = {
         code,
         createdAt: t,
@@ -2852,6 +2871,7 @@ const server = createServer(async (req, res) => {
       const body = await parseJsonBody(req);
       const code = String(body?.code || "").trim().toUpperCase();
       const playerName = sanitizeName(body?.playerName);
+      const playerFlag = sanitizePlayerFlag(body?.playerFlag);
       const lobby = getLobbyByCodeOrThrow(code);
       if (lobby.started) throw new Error("Lobby already started.");
       if (lobby.players.length >= Math.max(2, MAX_PLAYERS_PER_LOBBY)) throw new Error("Lobby is full.");
@@ -2859,7 +2879,7 @@ const server = createServer(async (req, res) => {
       const sessionId = randomUUID();
       const playerId = randomUUID();
       const t = nowMs();
-      const player = { sessionId, playerId, name: playerName, joinedAt: t };
+      const player = { sessionId, playerId, name: playerName, flag: playerFlag, joinedAt: t };
       lobby.players.push(player);
       touchLobby(lobby);
       playerIndex.set(sessionId, lobby.code);

@@ -898,6 +898,33 @@ export function installBorders(World) {
         captor.gold = (captor.gold || 0) + bonusGold;
       }
 
+      const humanIds = (this._humanNationIds instanceof Set)
+        ? Array.from(this._humanNationIds.values())
+            .map((id) => Math.max(1, Number(id) | 0))
+            .filter((id, idx, arr) => id <= (this._nationCount | 0) && arr.indexOf(id) === idx)
+        : [];
+      const multiplayerSessionScoped = humanIds.length > 1;
+      const defeatedIsHuman = (this._humanNationIds instanceof Set) && this._humanNationIds.has(defeatedOwner | 0);
+      if (multiplayerSessionScoped && defeatedIsHuman) {
+        n.capital = null;
+        const bonusNote = bonusGold > 0 ? ` (+${bonusGold} gold)` : "";
+        if (captorOwner > 0) {
+          this._pushEvent(`${this._nameOf(captorOwner)} captured ${this._nameOf(defeatedOwner)}'s capital and eliminated ${this._nameOf(defeatedOwner)}.${bonusNote}`, {
+            kind: "capital_captured",
+            from: captorOwner,
+            to: defeatedOwner
+          });
+        } else {
+          this._pushEvent(`${this._nameOf(defeatedOwner)}'s capital was destroyed and ${this._nameOf(defeatedOwner)} was eliminated.`, {
+            kind: "capital_captured",
+            from: OWNER.NONE,
+            to: defeatedOwner
+          });
+        }
+        this._eliminateNation(defeatedOwner, captorOwner, -1);
+        return;
+      }
+
       if (!n.collapsed) {
         n.collapsed = true;
         n.collapsedAt = this.time;

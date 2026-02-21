@@ -656,6 +656,10 @@ let multiplayerLastDrainAtMs = 0;
 let multiplayerDeferredVisualSyncPending = false;
 let multiplayerDeferredUiSyncAtMs = 0;
 let multiplayerLastHashVerifyAtMs = 0;
+const multiplayerStanceCommandState = {
+  set_attack_ratio: { pendingArgs: null, timer: 0, lastSentAtMs: 0 },
+  set_mobilization: { pendingArgs: null, timer: 0, lastSentAtMs: 0 }
+};
 
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 5000;
@@ -690,6 +694,7 @@ const MULTIPLAYER_SPAWN_RETRY_DELAY_MS = 220;
 const MULTIPLAYER_SPAWN_MAX_RETRIES = 3;
 const MULTIPLAYER_MATCH_PING_INTERVAL_MS = 2500;
 const MULTIPLAYER_MATCH_PING_STALE_MS = 9000;
+const MULTIPLAYER_STANCE_CMD_INTERVAL_MS = 44;
 
 const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   setAttackRatio: Object.freeze({ cmd: "set_attack_ratio" }),
@@ -754,6 +759,21 @@ function resetMultiplayerWorldSync() {
   multiplayerWorldSyncOriginals = new Map();
 }
 
+function resetMultiplayerStanceCommandState() {
+  const keys = Object.keys(multiplayerStanceCommandState || {});
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const state = multiplayerStanceCommandState[key];
+    if (!state || typeof state !== "object") continue;
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = 0;
+    }
+    state.pendingArgs = null;
+    state.lastSentAtMs = 0;
+  }
+}
+
 function resetMultiplayerSnapshotState() {
   multiplayerSnapshotBuffer.clear();
   multiplayerLatestServerTick = 0;
@@ -778,6 +798,7 @@ function resetMultiplayerSnapshotState() {
     clearTimeout(multiplayerPendingSpawnRetryTimer);
     multiplayerPendingSpawnRetryTimer = 0;
   }
+  resetMultiplayerStanceCommandState();
 }
 
 function clearMultiplayerMatchSocket() {
@@ -948,6 +969,47 @@ function multiplayerDisconnectedReturnForMethod(methodName, reason = "") {
   return { ok: false, reason: msg };
 }
 
+function queueMultiplayerStanceCommand(cmdRaw, argsRaw) {
+  const cmd = String(cmdRaw || "").trim().toLowerCase();
+  const state = multiplayerStanceCommandState[cmd];
+  const args = Array.isArray(argsRaw) ? argsRaw.slice() : [];
+  if (!state || typeof state !== "object") {
+    return sendMultiplayerMatchInput(cmd, args);
+  }
+
+  state.pendingArgs = args;
+  const flush = () => {
+    state.timer = 0;
+    const pending = Array.isArray(state.pendingArgs) ? state.pendingArgs.slice() : null;
+    state.pendingArgs = null;
+    if (!pending) return;
+    if (!isMultiplayerMatchEnabled()) return;
+    const sent = sendMultiplayerMatchInput(cmd, pending);
+    if (sent?.ok) {
+      state.lastSentAtMs = Date.now();
+      return;
+    }
+    // Keep latest stance queued during brief disconnect/sync stalls.
+    state.pendingArgs = pending;
+    if (!state.timer) {
+      const reason = String(sent?.reason || "").toLowerCase();
+      const retryDelay = (reason.includes("disconnected") || reason.includes("authoritative sync"))
+        ? 180
+        : MULTIPLAYER_STANCE_CMD_INTERVAL_MS;
+      state.timer = setTimeout(flush, retryDelay);
+    }
+  };
+
+  const elapsed = Date.now() - Math.max(0, Number(state.lastSentAtMs) || 0);
+  if (elapsed >= MULTIPLAYER_STANCE_CMD_INTERVAL_MS && !state.timer) {
+    flush();
+  } else if (!state.timer) {
+    const delay = Math.max(10, MULTIPLAYER_STANCE_CMD_INTERVAL_MS - elapsed);
+    state.timer = setTimeout(flush, delay);
+  }
+  return { ok: true, queued: true, seq: 0 };
+}
+
 function clearPendingSpawnRetry() {
   if (multiplayerPendingSpawnRetryTimer) {
     clearTimeout(multiplayerPendingSpawnRetryTimer);
@@ -1029,6 +1091,20 @@ function installMultiplayerWorldSync(worldRef) {
     const original = fn.bind(worldRef);
     multiplayerWorldSyncOriginals.set(methodName, original);
     worldRef[methodName] = (...args) => {
+      const isStanceMethod = (methodName === "setAttackRatio" || methodName === "setMobilization");
+      if (isStanceMethod) {
+        try {
+          original(...args);
+        } catch {
+          // Keep local stance prediction resilient; authoritative sync corrects divergences.
+        }
+        const sent = queueMultiplayerStanceCommand(rule.cmd, args);
+        if (!sent?.ok) {
+          return multiplayerDisconnectedReturnForMethod(methodName, sent.reason);
+        }
+        return multiplayerQueuedReturnForMethod(methodName, args);
+      }
+
       const sent = sendMultiplayerMatchInput(rule.cmd, args);
       if (!sent.ok) {
         if (methodName === "pickSpawn") {
@@ -1308,6 +1384,35 @@ function applyMultiplayerEntities(worldRef, changedEntities) {
   }
 }
 
+function syncNationFlagsFromAuthoritative(worldRef) {
+  if (!worldRef || !Array.isArray(worldRef.nation)) return;
+  let flagsChanged = false;
+
+  for (let id = 1; id < worldRef.nation.length; id++) {
+    const nation = worldRef.nation[id];
+    if (!nation || typeof nation !== "object") continue;
+    if (!nation.flag || typeof nation.flag !== "object") continue;
+    const safe = sanitizeFlag(nation.flag);
+    const prev = activeNationFlagsById[id];
+    const prevKey = prev && typeof prev === "object" ? JSON.stringify(sanitizeFlag(prev)) : "";
+    const nextKey = JSON.stringify(safe);
+    if (prevKey !== nextKey) {
+      activeNationFlagsById[id] = safe;
+      flagsChanged = true;
+    }
+    if ((id | 0) === OWNER.PLAYER) {
+      activePlayerFlag = safe;
+      if (renderer && typeof renderer.setPlayerFlag === "function") {
+        renderer.setPlayerFlag(safe);
+      }
+    }
+  }
+
+  if (flagsChanged && renderer && typeof renderer.setNationFlags === "function") {
+    renderer.setNationFlags(activeNationFlagsById);
+  }
+}
+
 function applyMultiplayerNationStats(worldRef, nationStats) {
   if (!worldRef || !Array.isArray(nationStats)) return;
   if (!Array.isArray(worldRef.nation)) return;
@@ -1323,6 +1428,7 @@ function applyMultiplayerNationStats(worldRef, nationStats) {
     worldRef.nation[id] = { ...cur, ...row, id };
   }
 
+  syncNationFlagsFromAuthoritative(worldRef);
   worldRef.player = worldRef.nation[OWNER.PLAYER] || worldRef.player || null;
 }
 
@@ -5456,6 +5562,7 @@ function createMainMenuController(options = null) {
           method: "POST",
           body: {
             playerName: playerNameFromInput(),
+            playerFlag: sanitizeFlag(activePlayerFlag),
             matchConfig: wireMatchConfig,
             worldSpec
           }
@@ -5521,7 +5628,8 @@ function createMainMenuController(options = null) {
           method: "POST",
           body: {
             code,
-            playerName: playerNameFromInput()
+            playerName: playerNameFromInput(),
+            playerFlag: sanitizeFlag(activePlayerFlag)
           }
         });
         const sessionId = String(payload?.sessionId || "");

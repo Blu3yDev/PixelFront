@@ -21,12 +21,19 @@ const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERV
 const MATCH_MAX_BACKLOG_MS = Math.max(100, Number(process.env.MATCH_MAX_BACKLOG_MS || 250));
 const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(110, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 170));
 const MATCH_STATE_HASH_EVERY_TICKS = Math.max(4, Number(process.env.MATCH_STATE_HASH_EVERY_TICKS || 24));
-const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 9000));
+const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 22000));
 const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(50, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 80));
 const MATCH_ENTITY_DELTA_INTERVAL_MAX_MS = Math.max(
   MATCH_ENTITY_DELTA_INTERVAL_MS,
   Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MAX_MS || 280)
 );
+const MATCH_STRUCTURE_DELTA_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_STRUCTURE_DELTA_INTERVAL_MS || 420));
+const MATCH_STRUCTURE_DELTA_INTERVAL_MAX_MS = Math.max(
+  MATCH_STRUCTURE_DELTA_INTERVAL_MS,
+  Number(process.env.MATCH_STRUCTURE_DELTA_INTERVAL_MAX_MS || 1100)
+);
+const MATCH_OPERATIONS_DELTA_INTERVAL_MS = Math.max(45, Number(process.env.MATCH_OPERATIONS_DELTA_INTERVAL_MS || 85));
+const MATCH_MOBILE_DELTA_INTERVAL_MS = Math.max(45, Number(process.env.MATCH_MOBILE_DELTA_INTERVAL_MS || 70));
 const MATCH_BACKPRESSURE_SOFT_BYTES = Math.max(64 * 1024, Number(process.env.MATCH_BACKPRESSURE_SOFT_BYTES || (1536 * 1024)));
 const MATCH_BACKPRESSURE_HARD_BYTES = Math.max(MATCH_BACKPRESSURE_SOFT_BYTES, Number(process.env.MATCH_BACKPRESSURE_HARD_BYTES || (6 * 1024 * 1024)));
 const MATCH_BACKPRESSURE_DISCONNECT_MS = Math.max(1000, Number(process.env.MATCH_BACKPRESSURE_DISCONNECT_MS || 8000));
@@ -71,7 +78,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v21");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v23");
 const SERVER_INSTANCE_ID = randomUUID().slice(0, 8);
 
 const SERVER_WORLD_SIZE_PRESETS = Object.freeze({
@@ -1096,6 +1103,13 @@ async function ensureLobbyRuntime(lobby) {
       lastEventsSnapshotAtMs: 0,
       lastEntitySnapshotAtMs: 0,
       entityDeltaIntervalMs: MATCH_ENTITY_DELTA_INTERVAL_MS,
+      structureDeltaIntervalMs: MATCH_STRUCTURE_DELTA_INTERVAL_MS,
+      operationsDeltaIntervalMs: MATCH_OPERATIONS_DELTA_INTERVAL_MS,
+      mobileDeltaIntervalMs: MATCH_MOBILE_DELTA_INTERVAL_MS,
+      lastStructuresSnapshotAtMs: 0,
+      lastOperationsSnapshotAtMs: 0,
+      lastMobileSnapshotAtMs: 0,
+      snapshotLoadScale: 1,
       backpressuredSockets: 0,
       netStats: createRuntimeNetStats(),
       assignmentsBySession: new Map(),
@@ -1330,26 +1344,64 @@ function consumeChangedTiles(world) {
 
 function serializeEntitiesDelta(world, runtime, forceFull = false) {
   const now = nowMs();
-  const dynamicIntervalMs = Math.max(
+  const dynamicEntityIntervalMs = Math.max(
     MATCH_ENTITY_DELTA_INTERVAL_MS,
     Number(runtime?.entityDeltaIntervalMs) || MATCH_ENTITY_DELTA_INTERVAL_MS
   );
-  if (!forceFull) {
+  const structureIntervalMs = Math.max(
+    MATCH_STRUCTURE_DELTA_INTERVAL_MS,
+    Math.min(
+      MATCH_STRUCTURE_DELTA_INTERVAL_MAX_MS,
+      Number(runtime?.structureDeltaIntervalMs) || MATCH_STRUCTURE_DELTA_INTERVAL_MS
+    )
+  );
+  const operationsIntervalMs = Math.max(
+    MATCH_OPERATIONS_DELTA_INTERVAL_MS,
+    Number(runtime?.operationsDeltaIntervalMs) || dynamicEntityIntervalMs
+  );
+  const mobileIntervalMs = Math.max(
+    MATCH_MOBILE_DELTA_INTERVAL_MS,
+    Number(runtime?.mobileDeltaIntervalMs) || dynamicEntityIntervalMs
+  );
+
+  const out = {};
+  let included = false;
+
+  const includeStructures = forceFull || ((now - (Number(runtime?.lastStructuresSnapshotAtMs) || 0)) >= structureIntervalMs);
+  if (includeStructures) {
+    out.structures = cloneWire(Array.isArray(world?.structures) ? world.structures : []) || [];
+    if (runtime && typeof runtime === "object") runtime.lastStructuresSnapshotAtMs = now;
+    included = true;
+  }
+
+  const includeOperations = forceFull || ((now - (Number(runtime?.lastOperationsSnapshotAtMs) || 0)) >= operationsIntervalMs);
+  if (includeOperations) {
+    out.operations = cloneWire(Array.isArray(world?.operations) ? world.operations : []) || [];
+    if (runtime && typeof runtime === "object") runtime.lastOperationsSnapshotAtMs = now;
+    included = true;
+  }
+
+  const includeMobile = forceFull || ((now - (Number(runtime?.lastMobileSnapshotAtMs) || 0)) >= mobileIntervalMs);
+  if (includeMobile) {
+    out.ships = cloneWire(Array.isArray(world?.ships) ? world.ships : []) || [];
+    out.nukeFlights = cloneWire(Array.isArray(world?.nukeFlights) ? world.nukeFlights : []) || [];
+    out.airborneMissions = cloneWire(Array.isArray(world?.airborneMissions) ? world.airborneMissions : []) || [];
+    if (runtime && typeof runtime === "object") runtime.lastMobileSnapshotAtMs = now;
+    included = true;
+  }
+
+  if (!included && !forceFull) {
     const lastAt = Number(runtime?.lastEntitySnapshotAtMs) || 0;
-    if ((now - lastAt) < dynamicIntervalMs) return undefined;
+    if ((now - lastAt) < dynamicEntityIntervalMs) return undefined;
+    // Safety valve: send operations cadence if the world is quiet for too long.
+    out.operations = cloneWire(Array.isArray(world?.operations) ? world.operations : []) || [];
+    if (runtime && typeof runtime === "object") runtime.lastOperationsSnapshotAtMs = now;
+    included = true;
   }
 
-  if (runtime && typeof runtime === "object") {
-    runtime.lastEntitySnapshotAtMs = now;
-  }
-
-  return {
-    structures: cloneWire(Array.isArray(world?.structures) ? world.structures : []) || [],
-    ships: cloneWire(Array.isArray(world?.ships) ? world.ships : []) || [],
-    nukeFlights: cloneWire(Array.isArray(world?.nukeFlights) ? world.nukeFlights : []) || [],
-    airborneMissions: cloneWire(Array.isArray(world?.airborneMissions) ? world.airborneMissions : []) || [],
-    operations: cloneWire(Array.isArray(world?.operations) ? world.operations : []) || []
-  };
+  if (!included) return undefined;
+  if (runtime && typeof runtime === "object") runtime.lastEntitySnapshotAtMs = now;
+  return out;
 }
 function remapDeepNationKeys(value, assignedNationId, keys) {
   if (!value || typeof value !== "object") return;
@@ -1663,9 +1715,16 @@ function computeStateHashForWorld(world, tickRaw, assignedNationIdRaw) {
 function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
   const world = runtime.world;
   const now = nowMs();
-  const includeStats = fullSync || ((now - (Number(runtime.lastStatsSnapshotAtMs) || 0)) >= MATCH_SNAPSHOT_STATS_INTERVAL_MS);
-  const includeRelations = fullSync || ((now - (Number(runtime.lastRelationsSnapshotAtMs) || 0)) >= MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS);
-  const includeEvents = fullSync || ((now - (Number(runtime.lastEventsSnapshotAtMs) || 0)) >= MATCH_SNAPSHOT_EVENTS_INTERVAL_MS);
+  const spawnActive = !!(world?._spawnPhase && world._spawnPhase.active);
+  const loadScale = Math.max(1, Number(runtime?.snapshotLoadScale) || 1);
+  const metaScale = loadScale > 1 ? Math.min(2.35, 1 + ((loadScale - 1) * 0.70)) : 1;
+  const pressureScale = (Number(runtime?.backpressuredSockets) | 0) > 0 ? 1.18 : 1;
+  const statsIntervalMs = Math.max(180, Math.round(MATCH_SNAPSHOT_STATS_INTERVAL_MS * metaScale * pressureScale));
+  const relationsIntervalMs = Math.max(320, Math.round(MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS * Math.min(2.8, metaScale * 1.28) * pressureScale));
+  const eventsIntervalMs = Math.max(440, Math.round(MATCH_SNAPSHOT_EVENTS_INTERVAL_MS * Math.min(2.5, metaScale * 1.18) * pressureScale));
+  const includeStats = fullSync || ((now - (Number(runtime.lastStatsSnapshotAtMs) || 0)) >= statsIntervalMs);
+  const includeRelations = fullSync || (!spawnActive && ((now - (Number(runtime.lastRelationsSnapshotAtMs) || 0)) >= relationsIntervalMs));
+  const includeEvents = fullSync || (!spawnActive && ((now - (Number(runtime.lastEventsSnapshotAtMs) || 0)) >= eventsIntervalMs));
   const packet = {
     type: fullSync ? "full_sync" : "snapshot_delta",
     serverTime: now,
@@ -1684,7 +1743,6 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
   if (includeEvents) runtime.lastEventsSnapshotAtMs = now;
 
   if (fullSync) {
-    const spawnActive = !!(world?._spawnPhase && world._spawnPhase.active);
     let claimedTiles = 0;
     if (spawnActive) {
       const nationCount = Math.max(1, Number(world?._nationCount) | 0);
@@ -1906,6 +1964,29 @@ function flushRuntimeTick(lobby, runtime, now) {
   runtime.entityDeltaIntervalMs = Math.max(
     MATCH_ENTITY_DELTA_INTERVAL_MS,
     Math.min(MATCH_ENTITY_DELTA_INTERVAL_MAX_MS, entityDeltaIntervalMs)
+  );
+  runtime.snapshotLoadScale = loadScale;
+
+  let structureDeltaIntervalMs = Math.round(runtime.entityDeltaIntervalMs * 2.8);
+  if (loadScale > 1) structureDeltaIntervalMs = Math.round(structureDeltaIntervalMs * (1 + ((loadScale - 1) * 0.35)));
+  if ((runtime.backpressuredSockets | 0) > 0) structureDeltaIntervalMs = Math.round(structureDeltaIntervalMs * 1.22);
+  runtime.structureDeltaIntervalMs = Math.max(
+    MATCH_STRUCTURE_DELTA_INTERVAL_MS,
+    Math.min(MATCH_STRUCTURE_DELTA_INTERVAL_MAX_MS, structureDeltaIntervalMs)
+  );
+
+  let operationsDeltaIntervalMs = Math.round(runtime.entityDeltaIntervalMs * 0.95);
+  if (runtime.simAccMs > (stepMs * 1.2)) operationsDeltaIntervalMs = Math.round(operationsDeltaIntervalMs * 1.12);
+  runtime.operationsDeltaIntervalMs = Math.max(
+    MATCH_OPERATIONS_DELTA_INTERVAL_MS,
+    Math.min(MATCH_ENTITY_DELTA_INTERVAL_MAX_MS, operationsDeltaIntervalMs)
+  );
+
+  let mobileDeltaIntervalMs = Math.round(runtime.entityDeltaIntervalMs * 0.82);
+  if ((runtime.backpressuredSockets | 0) > 0) mobileDeltaIntervalMs = Math.round(mobileDeltaIntervalMs * 1.10);
+  runtime.mobileDeltaIntervalMs = Math.max(
+    MATCH_MOBILE_DELTA_INTERVAL_MS,
+    Math.min(MATCH_ENTITY_DELTA_INTERVAL_MAX_MS, mobileDeltaIntervalMs)
   );
 
   const lastSnapshotAtMs = Number(runtime.lastSnapshotAtMs) || 0;

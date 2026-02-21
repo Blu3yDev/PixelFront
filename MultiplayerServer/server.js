@@ -47,6 +47,13 @@ const MATCH_BACKPRESSURE_SOFT_BYTES = Math.max(64 * 1024, Number(process.env.MAT
 const MATCH_BACKPRESSURE_HARD_BYTES = Math.max(MATCH_BACKPRESSURE_SOFT_BYTES, Number(process.env.MATCH_BACKPRESSURE_HARD_BYTES || (6 * 1024 * 1024)));
 const MATCH_BACKPRESSURE_DISCONNECT_MS = Math.max(1000, Number(process.env.MATCH_BACKPRESSURE_DISCONNECT_MS || 8000));
 const MATCH_BACKPRESSURE_HEARTBEAT_MS = Math.max(200, Number(process.env.MATCH_BACKPRESSURE_HEARTBEAT_MS || 1500));
+const MATCH_BACKPRESSURE_RECOVERY_SYNC_BUFFER_BYTES = Math.max(
+  48 * 1024,
+  Math.min(
+    MATCH_BACKPRESSURE_SOFT_BYTES,
+    Number(process.env.MATCH_BACKPRESSURE_RECOVERY_SYNC_BUFFER_BYTES || Math.round(MATCH_BACKPRESSURE_SOFT_BYTES * 0.42))
+  )
+);
 const MATCH_FULL_SYNC_MIN_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_FULL_SYNC_MIN_INTERVAL_MS || 900));
 const MATCH_FULL_SYNC_RETRY_INTERVAL_MS = Math.max(100, Number(process.env.MATCH_FULL_SYNC_RETRY_INTERVAL_MS || 450));
 const MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES = Math.max(120000, Number(process.env.MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES || 9500000));
@@ -2038,27 +2045,32 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
     if (consumeResult.overflow) activateOwnerSweep(runtime, "tile_delta_overflow");
     let tileDeltaCap = MATCH_TILE_DELTA_CAP;
     if (loadScale > 1) {
-      tileDeltaCap = Math.round(tileDeltaCap / Math.min(2.25, 1 + ((loadScale - 1) * 0.72)));
+      tileDeltaCap = Math.round(tileDeltaCap / Math.min(1.85, 1 + ((loadScale - 1) * 0.45)));
     }
     if ((Number(runtime?.backpressuredSockets) | 0) > 0) {
-      tileDeltaCap = Math.round(tileDeltaCap * 0.58);
+      tileDeltaCap = Math.round(tileDeltaCap * 0.74);
     }
     const stats = ensureRuntimeNetStats(runtime);
     const avgSnapshotBytes = Math.max(0, Number(stats?.avgSnapshotBytes) | 0);
     if (avgSnapshotBytes >= MATCH_SNAPSHOT_TARGET_BYTES_HARD) {
-      tileDeltaCap = Math.round(tileDeltaCap * 0.32);
+      tileDeltaCap = Math.round(tileDeltaCap * 0.52);
     } else if (avgSnapshotBytes >= Math.round(MATCH_SNAPSHOT_TARGET_BYTES * 1.35)) {
-      tileDeltaCap = Math.round(tileDeltaCap * 0.48);
-    } else if (avgSnapshotBytes >= MATCH_SNAPSHOT_TARGET_BYTES) {
       tileDeltaCap = Math.round(tileDeltaCap * 0.66);
+    } else if (avgSnapshotBytes >= MATCH_SNAPSHOT_TARGET_BYTES) {
+      tileDeltaCap = Math.round(tileDeltaCap * 0.80);
     }
     const maxBufferedSeen = Math.max(0, Number(stats?.maxBufferedAmountSeen) | 0);
     if (maxBufferedSeen >= (MATCH_BACKPRESSURE_SOFT_BYTES * 2)) {
-      tileDeltaCap = Math.round(tileDeltaCap * 0.42);
+      tileDeltaCap = Math.round(tileDeltaCap * 0.60);
     } else if (maxBufferedSeen >= MATCH_BACKPRESSURE_SOFT_BYTES) {
-      tileDeltaCap = Math.round(tileDeltaCap * 0.68);
+      tileDeltaCap = Math.round(tileDeltaCap * 0.78);
     }
     const backlogSize = Math.max(0, Number(runtime?.tileDeltaBacklog?.size) | 0);
+    if (backlogSize > (MATCH_TILE_DELTA_CAP * 6)) {
+      tileDeltaCap = Math.max(tileDeltaCap, MATCH_TILE_DELTA_CAP);
+    } else if (backlogSize > (MATCH_TILE_DELTA_CAP * 3)) {
+      tileDeltaCap = Math.max(tileDeltaCap, Math.round(MATCH_TILE_DELTA_CAP * 0.82));
+    }
     if ((Number(runtime?.backpressuredSockets) | 0) <= 0 && avgSnapshotBytes < MATCH_SNAPSHOT_TARGET_BYTES && backlogSize > (MATCH_TILE_DELTA_CAP * 2)) {
       tileDeltaCap = Math.round(tileDeltaCap * 1.15);
     }
@@ -2093,9 +2105,13 @@ function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual")
   if (sent.sent) {
     ws._lastFullSyncAtMs = now;
     ws._nextFullSyncAttemptAtMs = now + MATCH_FULL_SYNC_MIN_INTERVAL_MS;
+    ws._desyncedSinceBackpressure = false;
   } else {
     ws._nextFullSyncAttemptAtMs = now + MATCH_FULL_SYNC_RETRY_INTERVAL_MS;
-    if (sent.backpressured) runtime.backpressuredSockets = Math.max(1, Number(runtime.backpressuredSockets) | 0);
+    if (sent.backpressured) {
+      runtime.backpressuredSockets = Math.max(1, Number(runtime.backpressuredSockets) | 0);
+      ws._desyncedSinceBackpressure = true;
+    }
   }
   return sent;
 }
@@ -2113,7 +2129,11 @@ function broadcastFullSync(lobby, runtime, reason = "resync") {
     ws._stateHashMuted = hashMuted;
     if (!hashMuted) mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
     const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped, { critical: false });
-    if (sent.backpressured) backpressured++;
+    if (sent.sent) ws._desyncedSinceBackpressure = false;
+    if (sent.backpressured) {
+      backpressured++;
+      ws._desyncedSinceBackpressure = true;
+    }
   }
   runtime.backpressuredSockets = backpressured;
 }
@@ -2162,6 +2182,7 @@ function broadcastSnapshotDelta(lobby, runtime) {
     return;
   }
   let backpressured = 0;
+  let anyBackpressured = false;
 
   for (const [sessionId, ws] of lobby.sockets.entries()) {
     const assignment = runtime.assignmentsBySession.get(sessionId);
@@ -2172,8 +2193,13 @@ function broadcastSnapshotDelta(lobby, runtime) {
       mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
     }
     const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped);
-    if (sent.backpressured) backpressured++;
+    if (sent.backpressured) {
+      backpressured++;
+      anyBackpressured = true;
+      ws._desyncedSinceBackpressure = true;
+    }
   }
+  if (anyBackpressured) activateOwnerSweep(runtime, "backpressure_snapshot_drop");
   runtime.backpressuredSockets = backpressured;
 }
 
@@ -2351,15 +2377,15 @@ function flushRuntimeTick(lobby, runtime, now) {
     : 1;
   const wireLoadScale = Math.max(1, Math.sqrt(Math.max(wireAreaScale, wireAiScale)));
   const loadScale = Math.max(1, worldLoadScale, memoryScale, wireLoadScale);
-  if (loadScale > 1) snapshotIntervalMs = Math.round(snapshotIntervalMs * loadScale);
-  if (runtime.simAccMs > (stepMs * 1.25)) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.35);
-  if ((runtime.backpressuredSockets | 0) > 0) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.55);
+  if (loadScale > 1) snapshotIntervalMs = Math.round(snapshotIntervalMs * (1 + ((loadScale - 1) * 0.42)));
+  if (runtime.simAccMs > (stepMs * 1.25)) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.18);
+  if ((runtime.backpressuredSockets | 0) > 0) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.24);
   snapshotIntervalMs = Math.max(MATCH_SNAPSHOT_INTERVAL_MIN_MS, Math.min(MATCH_SNAPSHOT_INTERVAL_MAX_MS, snapshotIntervalMs));
 
   let entityDeltaIntervalMs = MATCH_ENTITY_DELTA_INTERVAL_MS;
-  if (loadScale > 1) entityDeltaIntervalMs = Math.round(entityDeltaIntervalMs * loadScale);
-  if (runtime.simAccMs > (stepMs * 1.25)) entityDeltaIntervalMs = Math.round(entityDeltaIntervalMs * 1.25);
-  if ((runtime.backpressuredSockets | 0) > 0) entityDeltaIntervalMs = Math.round(entityDeltaIntervalMs * 1.45);
+  if (loadScale > 1) entityDeltaIntervalMs = Math.round(entityDeltaIntervalMs * (1 + ((loadScale - 1) * 0.55)));
+  if (runtime.simAccMs > (stepMs * 1.25)) entityDeltaIntervalMs = Math.round(entityDeltaIntervalMs * 1.15);
+  if ((runtime.backpressuredSockets | 0) > 0) entityDeltaIntervalMs = Math.round(entityDeltaIntervalMs * 1.18);
   runtime.entityDeltaIntervalMs = Math.max(
     MATCH_ENTITY_DELTA_INTERVAL_MS,
     Math.min(MATCH_ENTITY_DELTA_INTERVAL_MAX_MS, entityDeltaIntervalMs)
@@ -2677,6 +2703,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
   ws._lastFullSyncAtMs = 0;
   ws._nextFullSyncAttemptAtMs = 0;
   ws._stateHashMuted = false;
+  ws._desyncedSinceBackpressure = false;
 
   ws.on("pong", () => {
     ws.isAlive = true;
@@ -2791,6 +2818,18 @@ function stepLobbyRuntime(lobby, now) {
     if (!ws.initialSyncPending) continue;
     const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, "runtime_ready");
     ws.initialSyncPending = !fullSync?.sent;
+  }
+
+  // Repair clients that missed deltas due to websocket backpressure.
+  let recoveryBudget = 2;
+  for (const [sessionId, ws] of lobby.sockets.entries()) {
+    if (recoveryBudget <= 0) break;
+    if (!ws || ws.readyState !== WebSocket.OPEN) continue;
+    if (ws.initialSyncPending) continue;
+    if (!ws._desyncedSinceBackpressure) continue;
+    if (socketBufferedAmount(ws) > MATCH_BACKPRESSURE_RECOVERY_SYNC_BUFFER_BYTES) continue;
+    const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, "backpressure_recovery");
+    if (fullSync?.sent) recoveryBudget--;
   }
 
   flushRuntimeTick(lobby, runtime, now);

@@ -26,8 +26,8 @@ const MATCH_STATE_HASH_EVERY_TICKS_MAX = Math.max(
   MATCH_STATE_HASH_EVERY_TICKS,
   Number(process.env.MATCH_STATE_HASH_EVERY_TICKS_MAX || 192)
 );
-const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 14000));
-const MATCH_TILE_DELTA_DRAIN_MIN = Math.max(500, Number(process.env.MATCH_TILE_DELTA_DRAIN_MIN || 1800));
+const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 7000));
+const MATCH_TILE_DELTA_DRAIN_MIN = Math.max(500, Number(process.env.MATCH_TILE_DELTA_DRAIN_MIN || 700));
 const MATCH_TILE_DELTA_BACKLOG_CAP = Math.max(MATCH_TILE_DELTA_CAP, Number(process.env.MATCH_TILE_DELTA_BACKLOG_CAP || 180000));
 const MATCH_OWNER_SWEEP_CHUNK_MIN = Math.max(300, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MIN || 1200));
 const MATCH_OWNER_SWEEP_CHUNK_MAX = Math.max(MATCH_OWNER_SWEEP_CHUNK_MIN, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MAX || 7000));
@@ -51,6 +51,10 @@ const MATCH_FULL_SYNC_MIN_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_F
 const MATCH_FULL_SYNC_RETRY_INTERVAL_MS = Math.max(100, Number(process.env.MATCH_FULL_SYNC_RETRY_INTERVAL_MS || 450));
 const MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES = Math.max(120000, Number(process.env.MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES || 9500000));
 const MATCH_NET_STATS_LOG_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_NET_STATS_LOG_INTERVAL_MS || 10000));
+const MATCH_SNAPSHOT_TARGET_BYTES = Math.max(24000, Number(process.env.MATCH_SNAPSHOT_TARGET_BYTES || 90000));
+const MATCH_SNAPSHOT_TARGET_BYTES_HARD = Math.max(MATCH_SNAPSHOT_TARGET_BYTES, Number(process.env.MATCH_SNAPSHOT_TARGET_BYTES_HARD || 180000));
+const MATCH_WIRE_SOFT_WORLD_TILES = Math.max(400000, Number(process.env.MATCH_WIRE_SOFT_WORLD_TILES || 2200000));
+const MATCH_WIRE_SOFT_AI_COUNT = Math.max(8, Number(process.env.MATCH_WIRE_SOFT_AI_COUNT || 90));
 const MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS = Math.max(4000, Number(process.env.MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS || 22000));
 const MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS = Math.max(MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS, Number(process.env.MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS || 45000));
 const MATCH_LAG_WARN_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_LAG_WARN_INTERVAL_MS || 5000));
@@ -685,6 +689,27 @@ function noteSnapshotSent(runtime, byteLen, bufferedAmount) {
   if (buffered > stats.maxBufferedAmountSeen) stats.maxBufferedAmountSeen = buffered;
 }
 
+function downshiftSnapshotPayloadForWire(payloadRaw) {
+  const src = (payloadRaw && typeof payloadRaw === "object") ? payloadRaw : null;
+  if (!src) return payloadRaw;
+  const out = { ...src };
+
+  if (Object.prototype.hasOwnProperty.call(out, "events")) delete out.events;
+  if (Object.prototype.hasOwnProperty.call(out, "relations")) delete out.relations;
+  if (Object.prototype.hasOwnProperty.call(out, "nationStats")) delete out.nationStats;
+  if (Object.prototype.hasOwnProperty.call(out, "leaderboard")) delete out.leaderboard;
+
+  if (out.changedEntities && typeof out.changedEntities === "object") {
+    const ce = { ...out.changedEntities };
+    if (Object.prototype.hasOwnProperty.call(ce, "structures")) delete ce.structures;
+    if (Object.prototype.hasOwnProperty.call(ce, "operations")) delete ce.operations;
+    if (Object.keys(ce).length > 0) out.changedEntities = ce;
+    else delete out.changedEntities;
+  }
+
+  return out;
+}
+
 function sendSnapshotPayload(lobby, runtime, sessionId, ws, payload, { critical = false } = {}) {
   const now = nowMs();
   const guard = maybeGuardSnapshotBackpressure(lobby, runtime, sessionId, ws, now, { critical });
@@ -699,13 +724,28 @@ function sendSnapshotPayload(lobby, runtime, sessionId, ws, payload, { critical 
     return { sent: false, backpressured: false, disconnected: false };
   }
 
+  let byteLen = Buffer.byteLength(text);
+  if (!critical && byteLen > MATCH_SNAPSHOT_TARGET_BYTES_HARD) {
+    try {
+      const reduced = downshiftSnapshotPayloadForWire(payload);
+      const reducedText = JSON.stringify(reduced);
+      const reducedBytes = Buffer.byteLength(reducedText);
+      if (reducedBytes < byteLen) {
+        text = reducedText;
+        byteLen = reducedBytes;
+      }
+    } catch {
+      // Keep original payload when downshift fails.
+    }
+  }
+
   try {
     ws.send(text);
   } catch {
     return { sent: false, backpressured: false, disconnected: false };
   }
 
-  noteSnapshotSent(runtime, Buffer.byteLength(text), socketBufferedAmount(ws));
+  noteSnapshotSent(runtime, byteLen, socketBufferedAmount(ws));
   return { sent: true, backpressured: false, disconnected: false };
 }
 
@@ -1985,6 +2025,25 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
     if ((Number(runtime?.backpressuredSockets) | 0) > 0) {
       tileDeltaCap = Math.round(tileDeltaCap * 0.58);
     }
+    const stats = ensureRuntimeNetStats(runtime);
+    const avgSnapshotBytes = Math.max(0, Number(stats?.avgSnapshotBytes) | 0);
+    if (avgSnapshotBytes >= MATCH_SNAPSHOT_TARGET_BYTES_HARD) {
+      tileDeltaCap = Math.round(tileDeltaCap * 0.32);
+    } else if (avgSnapshotBytes >= Math.round(MATCH_SNAPSHOT_TARGET_BYTES * 1.35)) {
+      tileDeltaCap = Math.round(tileDeltaCap * 0.48);
+    } else if (avgSnapshotBytes >= MATCH_SNAPSHOT_TARGET_BYTES) {
+      tileDeltaCap = Math.round(tileDeltaCap * 0.66);
+    }
+    const maxBufferedSeen = Math.max(0, Number(stats?.maxBufferedAmountSeen) | 0);
+    if (maxBufferedSeen >= (MATCH_BACKPRESSURE_SOFT_BYTES * 2)) {
+      tileDeltaCap = Math.round(tileDeltaCap * 0.42);
+    } else if (maxBufferedSeen >= MATCH_BACKPRESSURE_SOFT_BYTES) {
+      tileDeltaCap = Math.round(tileDeltaCap * 0.68);
+    }
+    const backlogSize = Math.max(0, Number(runtime?.tileDeltaBacklog?.size) | 0);
+    if ((Number(runtime?.backpressuredSockets) | 0) <= 0 && avgSnapshotBytes < MATCH_SNAPSHOT_TARGET_BYTES && backlogSize > (MATCH_TILE_DELTA_CAP * 2)) {
+      tileDeltaCap = Math.round(tileDeltaCap * 1.15);
+    }
     tileDeltaCap = Math.max(MATCH_TILE_DELTA_DRAIN_MIN, Math.min(MATCH_TILE_DELTA_CAP, tileDeltaCap));
     packet.changedTiles = drainRuntimeTileDeltaBacklog(runtime, tileDeltaCap);
     if (runtime.ownerSweepActive && packet.changedTiles.length < tileDeltaCap) {
@@ -2262,11 +2321,18 @@ function flushRuntimeTick(lobby, runtime, now) {
   const aiScale = aiCountApprox > MATCH_RUNTIME_SAFE_MAX_AI_COUNT
     ? Math.min(4, aiCountApprox / Math.max(1, MATCH_RUNTIME_SAFE_MAX_AI_COUNT))
     : 1;
+  const wireAreaScale = worldArea > MATCH_WIRE_SOFT_WORLD_TILES
+    ? Math.min(3, worldArea / Math.max(1, MATCH_WIRE_SOFT_WORLD_TILES))
+    : 1;
+  const wireAiScale = aiCountApprox > MATCH_WIRE_SOFT_AI_COUNT
+    ? Math.min(3, aiCountApprox / Math.max(1, MATCH_WIRE_SOFT_AI_COUNT))
+    : 1;
   const rawLoadScale = Math.max(1, areaScale, aiScale);
   const worldLoadScale = rawLoadScale > 1
     ? (1 + ((Math.sqrt(rawLoadScale) - 1) * 0.85))
     : 1;
-  const loadScale = Math.max(1, worldLoadScale, memoryScale);
+  const wireLoadScale = Math.max(1, Math.sqrt(Math.max(wireAreaScale, wireAiScale)));
+  const loadScale = Math.max(1, worldLoadScale, memoryScale, wireLoadScale);
   if (loadScale > 1) snapshotIntervalMs = Math.round(snapshotIntervalMs * loadScale);
   if (runtime.simAccMs > (stepMs * 1.25)) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.35);
   if ((runtime.backpressuredSockets | 0) > 0) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.55);

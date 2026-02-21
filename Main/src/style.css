@@ -255,6 +255,10 @@ body {
   z-index: 79;
 }
 
+.syncLagProgress[hidden] {
+  display: none !important;
+}
+
 .syncLagProgressFill {
   width: 0%;
   height: 100%;

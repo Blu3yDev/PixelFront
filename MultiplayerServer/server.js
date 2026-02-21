@@ -14,12 +14,12 @@ const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(35, Number(process.env.MATCH_SNAPSHO
 const MATCH_SNAPSHOT_INTERVAL_MIN_MS = Math.max(30, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MIN_MS || 40));
 const MATCH_SNAPSHOT_INTERVAL_MAX_MS = Math.max(
   MATCH_SNAPSHOT_INTERVAL_MIN_MS,
-  Number(process.env.MATCH_SNAPSHOT_INTERVAL_MAX_MS || 180)
+  Number(process.env.MATCH_SNAPSHOT_INTERVAL_MAX_MS || 150)
 );
 const MATCH_MAX_STEPS_PER_PUMP = Math.max(2, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 8));
 const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERVAL_MS || 16));
 const MATCH_MAX_BACKLOG_MS = Math.max(100, Number(process.env.MATCH_MAX_BACKLOG_MS || 250));
-const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 190));
+const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(110, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 170));
 const MATCH_STATE_HASH_EVERY_TICKS = Math.max(4, Number(process.env.MATCH_STATE_HASH_EVERY_TICKS || 24));
 const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 9000));
 const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(50, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 80));
@@ -71,7 +71,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v20");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v21");
 const SERVER_INSTANCE_ID = randomUUID().slice(0, 8);
 
 const SERVER_WORLD_SIZE_PRESETS = Object.freeze({

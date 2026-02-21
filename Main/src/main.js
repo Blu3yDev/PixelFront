@@ -18,9 +18,9 @@ import {
 import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
 
-// PF_BUILD: v21 2026-02-21
-window.__PF_BUILD = "v21";
-console.info("[PixelFront] BUILD v1.5 Beta loaded (v21)");
+// PF_BUILD: v22 2026-02-21
+window.__PF_BUILD = "v22";
+console.info("[PixelFront] BUILD v1.5 Beta loaded (v22)");
 document.title = "PixelFront | Beta";
 
 const canvas = document.getElementById("game");
@@ -647,24 +647,31 @@ let multiplayerLastLabelRecomputeAtMs = 0;
 let multiplayerCatchupEpisodeMaxGap = 0;
 let multiplayerCatchupLastGap = 0;
 let multiplayerCatchupLastActiveAtMs = 0;
+let multiplayerCatchupVisibleSinceMs = 0;
+let multiplayerPendingSpawnPick = null;
+let multiplayerPendingSpawnRetryTimer = 0;
 
-const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 2;
+const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 3;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 5000;
 const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 1800;
 const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 1200;
 const MULTIPLAYER_HUD_STATUS_COOLDOWN_MS = 1200;
 const MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS = 120;
-const MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS = 4;
-const MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS = 10;
-const MULTIPLAYER_CATCHUP_HARD_GAP_TICKS = 24;
-const MULTIPLAYER_CATCHUP_STICKY_MS = 600;
+const MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS = 12;
+const MULTIPLAYER_CATCHUP_HIDE_GAP_TICKS = 7;
+const MULTIPLAYER_CATCHUP_SHOW_MIN_MS = 700;
+const MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS = 16;
+const MULTIPLAYER_CATCHUP_HARD_GAP_TICKS = 34;
+const MULTIPLAYER_CATCHUP_STICKY_MS = 240;
 const MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS = 160;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 3.0;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 4.8;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 7.0;
-const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 18;
-const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 34;
-const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 60;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 2.2;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 3.8;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 5.2;
+const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 12;
+const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 24;
+const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 42;
+const MULTIPLAYER_SPAWN_RETRY_DELAY_MS = 220;
+const MULTIPLAYER_SPAWN_MAX_RETRIES = 3;
 
 const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   setAttackRatio: Object.freeze({ cmd: "set_attack_ratio" }),
@@ -743,6 +750,12 @@ function resetMultiplayerSnapshotState() {
   multiplayerCatchupEpisodeMaxGap = 0;
   multiplayerCatchupLastGap = 0;
   multiplayerCatchupLastActiveAtMs = 0;
+  multiplayerCatchupVisibleSinceMs = 0;
+  multiplayerPendingSpawnPick = null;
+  if (multiplayerPendingSpawnRetryTimer) {
+    clearTimeout(multiplayerPendingSpawnRetryTimer);
+    multiplayerPendingSpawnRetryTimer = 0;
+  }
 }
 
 function clearMultiplayerMatchSocket() {
@@ -751,6 +764,10 @@ function clearMultiplayerMatchSocket() {
     multiplayerMatchReconnectTimer = 0;
   }
   multiplayerMatchConnected = false;
+  if (multiplayerPendingSpawnRetryTimer) {
+    clearTimeout(multiplayerPendingSpawnRetryTimer);
+    multiplayerPendingSpawnRetryTimer = 0;
+  }
   if (!multiplayerMatchSocket) return;
   try {
     multiplayerMatchSocket.onopen = null;
@@ -794,7 +811,12 @@ function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
   if (!isMultiplayerMatchEnabled()) {
     return { ok: false, reason: "Multiplayer session inactive.", seq: 0 };
   }
-  if (!multiplayerHasAuthoritativeSync) {
+  const cmd = String(cmdRaw || "").trim();
+  if (!cmd) {
+    return { ok: false, reason: "Invalid multiplayer command.", seq: 0 };
+  }
+  const isSpawnPickCmd = cmd === "pick_spawn";
+  if (!multiplayerHasAuthoritativeSync && !isSpawnPickCmd) {
     return { ok: false, reason: "Waiting for authoritative sync...", seq: 0 };
   }
   const ws = multiplayerMatchSocket;
@@ -814,9 +836,8 @@ function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
     }
     return { ok: false, reason: "Awaiting server player assignment.", seq: 0 };
   }
-  const cmd = String(cmdRaw || "").trim();
-  if (!cmd) {
-    return { ok: false, reason: "Invalid multiplayer command.", seq: 0 };
+  if (!multiplayerHasAuthoritativeSync && isSpawnPickCmd) {
+    requestMultiplayerFullSync("spawn_pick_before_full_sync");
   }
   const args = Array.isArray(argsRaw) ? argsRaw : [];
   const seq = Math.max(1, multiplayerPendingInputSeq | 0);
@@ -832,6 +853,15 @@ function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
       cmd,
       args
     }));
+    if (isSpawnPickCmd) {
+      multiplayerPendingSpawnPick = {
+        x: Number(args?.[1]) | 0,
+        y: Number(args?.[2]) | 0,
+        seq,
+        retries: 0,
+        lastSentAtMs: Date.now()
+      };
+    }
     return { ok: true, reason: "", seq };
   } catch {
     return { ok: false, reason: "Failed to send multiplayer command.", seq: 0 };
@@ -858,6 +888,74 @@ function multiplayerDisconnectedReturnForMethod(methodName, reason = "") {
   return { ok: false, reason: msg };
 }
 
+function clearPendingSpawnRetry() {
+  if (multiplayerPendingSpawnRetryTimer) {
+    clearTimeout(multiplayerPendingSpawnRetryTimer);
+    multiplayerPendingSpawnRetryTimer = 0;
+  }
+}
+
+function spawnRejectLooksLikeIdentityMismatch(reasonRaw) {
+  const reason = String(reasonRaw || "").trim().toLowerCase();
+  if (!reason) return false;
+  if (reason.includes("nation identity mismatch")) return true;
+  if (reason.includes("player identity mismatch")) return true;
+  if (reason.includes("actor nation")) return true;
+  if (reason.includes("no nation assignment")) return true;
+  if (reason.includes("server player assignment")) return true;
+  return false;
+}
+
+function retryPendingSpawnPick() {
+  const pending = multiplayerPendingSpawnPick;
+  if (!pending || typeof pending !== "object") return;
+  const retryCount = Number(pending.retries) | 0;
+  if (retryCount >= MULTIPLAYER_SPAWN_MAX_RETRIES) {
+    multiplayerPendingSpawnPick = null;
+    clearPendingSpawnRetry();
+    return;
+  }
+
+  const ws = multiplayerMatchSocket;
+  if (!ws || ws.readyState !== WebSocket.OPEN || !hasMultiplayerIdentity()) {
+    multiplayerPendingSpawnPick = {
+      ...pending,
+      retries: retryCount + 1,
+      lastSentAtMs: Date.now()
+    };
+    try { ws?.send?.(JSON.stringify({ type: "lobby_state_request" })); } catch {}
+    void probeActiveMultiplayerSessionState();
+    clearPendingSpawnRetry();
+    multiplayerPendingSpawnRetryTimer = setTimeout(() => {
+      multiplayerPendingSpawnRetryTimer = 0;
+      retryPendingSpawnPick();
+    }, MULTIPLAYER_SPAWN_RETRY_DELAY_MS);
+    return;
+  }
+
+  const res = sendMultiplayerMatchInput("pick_spawn", [OWNER.PLAYER, pending.x | 0, pending.y | 0]);
+  if (!res.ok || (res.seq | 0) <= 0) {
+    multiplayerPendingSpawnPick = {
+      ...pending,
+      retries: retryCount + 1,
+      lastSentAtMs: Date.now()
+    };
+    clearPendingSpawnRetry();
+    multiplayerPendingSpawnRetryTimer = setTimeout(() => {
+      multiplayerPendingSpawnRetryTimer = 0;
+      retryPendingSpawnPick();
+    }, MULTIPLAYER_SPAWN_RETRY_DELAY_MS);
+    return;
+  }
+
+  multiplayerPendingSpawnPick = {
+    ...pending,
+    seq: res.seq | 0,
+    retries: retryCount + 1,
+    lastSentAtMs: Date.now()
+  };
+}
+
 function installMultiplayerWorldSync(worldRef) {
   if (!isMultiplayerMatchEnabled()) return;
   if (!worldRef || typeof worldRef !== "object") return;
@@ -873,6 +971,28 @@ function installMultiplayerWorldSync(worldRef) {
     worldRef[methodName] = (...args) => {
       const sent = sendMultiplayerMatchInput(rule.cmd, args);
       if (!sent.ok) {
+        if (methodName === "pickSpawn") {
+          try {
+            const predicted = original(...args);
+            if (predicted && typeof predicted === "object" && predicted.ok) {
+              multiplayerPendingSpawnPick = {
+                x: Number(predicted.x) | 0,
+                y: Number(predicted.y) | 0,
+                seq: 0,
+                retries: 0,
+                lastSentAtMs: 0
+              };
+              clearPendingSpawnRetry();
+              multiplayerPendingSpawnRetryTimer = setTimeout(() => {
+                multiplayerPendingSpawnRetryTimer = 0;
+                retryPendingSpawnPick();
+              }, MULTIPLAYER_SPAWN_RETRY_DELAY_MS);
+              return { ...predicted, queued: true, predicted: true };
+            }
+          } catch {
+            // Ignore local spawn prediction failure and fall through to error return.
+          }
+        }
         return multiplayerDisconnectedReturnForMethod(methodName, sent.reason);
       }
       if (methodName === "pickSpawn") {
@@ -1623,6 +1743,10 @@ function handleMultiplayerCommandAck(msg) {
   const ackSeq = Math.max(0, Number(msg?.ackSeq) | 0);
   if (ackSeq > 0) {
     multiplayerLastAckSeq = Math.max(multiplayerLastAckSeq, ackSeq);
+    if (multiplayerPendingSpawnPick && (ackSeq | 0) >= (Number(multiplayerPendingSpawnPick.seq) | 0)) {
+      multiplayerPendingSpawnPick = null;
+      clearPendingSpawnRetry();
+    }
   }
   const tick = Math.max(0, Number(msg?.serverTickProcessed) | 0);
   if (activeMultiplayerSession && tick > 0) {
@@ -1729,6 +1853,12 @@ function connectMultiplayerMatchSocket() {
     } catch {
       // Ignore ping send errors.
     }
+    try {
+      ws.send(JSON.stringify({ type: "lobby_state_request" }));
+    } catch {
+      // Ignore send errors.
+    }
+    requestMultiplayerFullSync("socket_open");
     multiplayerAwaitingFullSync = true;
     if (hud && typeof hud.setOpMessage === "function") {
       hud.setOpMessage("Multiplayer link connected. Waiting for authoritative sync...");
@@ -1814,6 +1944,21 @@ function connectMultiplayerMatchSocket() {
 
     if (type === "cmd_reject") {
       const reason = String(msg?.reason || "Command rejected.").trim();
+      const rejectSeq = Math.max(0, Number(msg?.ackSeq) | 0);
+      if (
+        multiplayerPendingSpawnPick &&
+        (rejectSeq | 0) > 0 &&
+        (rejectSeq | 0) === (Number(multiplayerPendingSpawnPick.seq) | 0) &&
+        spawnRejectLooksLikeIdentityMismatch(reason)
+      ) {
+        try { ws.send(JSON.stringify({ type: "lobby_state_request" })); } catch {}
+        requestMultiplayerFullSync("spawn_identity_reject");
+        clearPendingSpawnRetry();
+        multiplayerPendingSpawnRetryTimer = setTimeout(() => {
+          multiplayerPendingSpawnRetryTimer = 0;
+          retryPendingSpawnPick();
+        }, MULTIPLAYER_SPAWN_RETRY_DELAY_MS);
+      }
       if (hud && typeof hud.setOpMessage === "function" && reason) {
         hud.setOpMessage(reason);
       }
@@ -2512,12 +2657,15 @@ function getMultiplayerSyncLagStatusNow() {
     multiplayerCatchupEpisodeMaxGap = 0;
     multiplayerCatchupLastGap = 0;
     multiplayerCatchupLastActiveAtMs = 0;
+    multiplayerCatchupVisibleSinceMs = 0;
     return { active: false, progress01: 1, label: "" };
   }
   if (isSpawnPhaseActiveNow()) {
+    multiplayerCatchupVisibleSinceMs = 0;
     return { active: false, progress01: 1, label: "" };
   }
   if (!multiplayerHasAuthoritativeSync) {
+    multiplayerCatchupVisibleSinceMs = 0;
     return { active: false, progress01: 0, label: "" };
   }
 
@@ -2530,9 +2678,23 @@ function getMultiplayerSyncLagStatusNow() {
     multiplayerCatchupLastActiveAtMs = now;
     if (gapTicks > multiplayerCatchupEpisodeMaxGap) multiplayerCatchupEpisodeMaxGap = gapTicks;
 
+    if (gapTicks >= MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS) {
+      if (!(multiplayerCatchupVisibleSinceMs > 0)) multiplayerCatchupVisibleSinceMs = now;
+    } else {
+      multiplayerCatchupVisibleSinceMs = 0;
+    }
+
     const denom = Math.max(1, multiplayerCatchupEpisodeMaxGap | 0);
     const progress01 = clamp01(1 - (gapTicks / denom));
-    if (gapTicks < MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS) {
+    const severeGap = gapTicks >= MULTIPLAYER_CATCHUP_HARD_GAP_TICKS;
+    const showPersisted = severeGap || (
+      (multiplayerCatchupVisibleSinceMs > 0) &&
+      ((now - multiplayerCatchupVisibleSinceMs) >= MULTIPLAYER_CATCHUP_SHOW_MIN_MS)
+    );
+    if (gapTicks <= MULTIPLAYER_CATCHUP_HIDE_GAP_TICKS) {
+      return { active: false, progress01, label: "" };
+    }
+    if (gapTicks < MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS || !showPersisted) {
       return { active: false, progress01, label: "" };
     }
     const pct = clampInt(Math.round(progress01 * 100), 0, 100);
@@ -2540,13 +2702,18 @@ function getMultiplayerSyncLagStatusNow() {
     return { active: true, progress01, label };
   }
 
-  if (multiplayerCatchupLastGap > 0 && (now - multiplayerCatchupLastActiveAtMs) <= MULTIPLAYER_CATCHUP_STICKY_MS) {
+  if (
+    (multiplayerCatchupVisibleSinceMs > 0) &&
+    (multiplayerCatchupLastGap >= MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS) &&
+    (now - multiplayerCatchupLastActiveAtMs) <= MULTIPLAYER_CATCHUP_STICKY_MS
+  ) {
     return { active: true, progress01: 1, label: "Synced" };
   }
 
   multiplayerCatchupEpisodeMaxGap = 0;
   multiplayerCatchupLastGap = 0;
   multiplayerCatchupLastActiveAtMs = 0;
+  multiplayerCatchupVisibleSinceMs = 0;
   return { active: false, progress01: 1, label: "" };
 }
 

@@ -18,9 +18,9 @@ import {
 import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
 
-// PF_BUILD: v23 2026-02-21
-window.__PF_BUILD = "v23";
-console.info("[PixelFront] BUILD v1.5 Beta loaded (v23)");
+// PF_BUILD: v24 2026-02-21
+window.__PF_BUILD = "v24";
+console.info("[PixelFront] BUILD v1.5 Beta loaded (v24)");
 document.title = "PixelFront | Beta";
 
 const canvas = document.getElementById("game");
@@ -651,10 +651,10 @@ let multiplayerCatchupVisibleSinceMs = 0;
 let multiplayerPendingSpawnPick = null;
 let multiplayerPendingSpawnRetryTimer = 0;
 
-const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 2;
+const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 1;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 5000;
-const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 1800;
-const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 1200;
+const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 2300;
+const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 2200;
 const MULTIPLAYER_HUD_STATUS_COOLDOWN_MS = 1200;
 const MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS = 120;
 const MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS = 12;
@@ -664,12 +664,16 @@ const MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS = 16;
 const MULTIPLAYER_CATCHUP_HARD_GAP_TICKS = 34;
 const MULTIPLAYER_CATCHUP_STICKY_MS = 240;
 const MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS = 160;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 2.9;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 4.8;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 7.0;
-const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 16;
-const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 30;
-const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 54;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 3.4;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 6.2;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 9.2;
+const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 24;
+const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 42;
+const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 72;
+const MULTIPLAYER_BUFFER_SOFT_CAP = 200;
+const MULTIPLAYER_BUFFER_HARD_CAP = 320;
+const MULTIPLAYER_BUFFER_KEEP_RECENT_SOFT = 140;
+const MULTIPLAYER_BUFFER_KEEP_RECENT_HARD = 72;
 const MULTIPLAYER_SPAWN_RETRY_DELAY_MS = 220;
 const MULTIPLAYER_SPAWN_MAX_RETRIES = 3;
 
@@ -1211,34 +1215,29 @@ function applyMultiplayerEntities(worldRef, changedEntities) {
   if (!worldRef || !changedEntities || typeof changedEntities !== "object") return;
 
   if (Array.isArray(changedEntities.structures)) {
-    const structures = cloneMultiplayerPayload(changedEntities.structures);
-    worldRef.structures = Array.isArray(structures) ? structures : [];
+    worldRef.structures = changedEntities.structures;
     rebuildMultiplayerStructureIndexes(worldRef);
     rebuildMultiplayerStructureCaches(worldRef);
     rebuildMultiplayerBuildQueues(worldRef);
   }
 
   if (Array.isArray(changedEntities.ships)) {
-    const ships = cloneMultiplayerPayload(changedEntities.ships);
-    worldRef.ships = Array.isArray(ships) ? ships : [];
+    worldRef.ships = changedEntities.ships;
     worldRef._nextShipId = maxEntityId(worldRef.ships, worldRef._nextShipId || 1);
   }
 
   if (Array.isArray(changedEntities.nukeFlights)) {
-    const flights = cloneMultiplayerPayload(changedEntities.nukeFlights);
-    worldRef.nukeFlights = Array.isArray(flights) ? flights : [];
+    worldRef.nukeFlights = changedEntities.nukeFlights;
     worldRef._nextNukeFlightId = maxEntityId(worldRef.nukeFlights, worldRef._nextNukeFlightId || 1);
   }
 
   if (Array.isArray(changedEntities.airborneMissions)) {
-    const missions = cloneMultiplayerPayload(changedEntities.airborneMissions);
-    worldRef.airborneMissions = Array.isArray(missions) ? missions : [];
+    worldRef.airborneMissions = changedEntities.airborneMissions;
     worldRef._nextAirborneMissionId = maxEntityId(worldRef.airborneMissions, worldRef._nextAirborneMissionId || 1);
   }
 
   if (Array.isArray(changedEntities.operations)) {
-    const ops = cloneMultiplayerPayload(changedEntities.operations);
-    worldRef.operations = Array.isArray(ops) ? ops : [];
+    worldRef.operations = changedEntities.operations;
     worldRef._nextOpId = maxEntityId(worldRef.operations, worldRef._nextOpId || 1);
   }
 }
@@ -1255,9 +1254,7 @@ function applyMultiplayerNationStats(worldRef, nationStats) {
     const cur = (worldRef.nation[id] && typeof worldRef.nation[id] === "object")
       ? worldRef.nation[id]
       : { id };
-    const clone = cloneMultiplayerPayload(row) || {};
-    clone.id = id;
-    worldRef.nation[id] = { ...cur, ...clone };
+    worldRef.nation[id] = { ...cur, ...row, id };
   }
 
   worldRef.player = worldRef.nation[OWNER.PLAYER] || worldRef.player || null;
@@ -1331,7 +1328,7 @@ function applyMultiplayerRelations(worldRef, rel) {
 
 function applyMultiplayerEvents(worldRef, eventsRaw) {
   if (!worldRef) return;
-  const events = Array.isArray(eventsRaw) ? (cloneMultiplayerPayload(eventsRaw) || []) : [];
+  const events = Array.isArray(eventsRaw) ? eventsRaw : [];
   worldRef.globalEvents = Array.isArray(events) ? events : [];
   worldRef.events = Array.isArray(events) ? events.slice() : [];
 }
@@ -1566,6 +1563,8 @@ function setMultiplayerHudStatus(messageRaw) {
 function maybeHandleMultiplayerStateHashMismatch(packet) {
   const expected = String(packet?.stateHash || "").trim();
   if (!expected) return;
+  const gap = Math.max(0, (multiplayerLatestServerTick | 0) - (multiplayerLastAppliedTick | 0));
+  if (gap >= MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS) return;
   const actual = computeMultiplayerStateHashFromWorld(multiplayerWorldSyncWorld, Number(packet?.tick) | 0);
   if (!actual || actual === expected) return;
   const now = Date.now();
@@ -1605,7 +1604,7 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false) {
   maybeRefreshMultiplayerDerivedState(worldRef, isFullSync);
 
   if (Array.isArray(packet.leaderboard)) {
-    worldRef._serverLeaderboard = cloneMultiplayerPayload(packet.leaderboard) || [];
+    worldRef._serverLeaderboard = packet.leaderboard;
   }
 
   flushMultiplayerPixelWrites(worldRef);
@@ -1628,24 +1627,30 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false) {
   return true;
 }
 
+function trimMultiplayerSnapshotBufferTo(keepCountRaw) {
+  const keepCount = Math.max(8, Number(keepCountRaw) | 0);
+  if (multiplayerSnapshotBuffer.size <= keepCount) return;
+  const sorted = Array.from(multiplayerSnapshotBuffer.keys()).sort((a, b) => a - b);
+  while (sorted.length > keepCount) {
+    const dropTick = sorted.shift();
+    multiplayerSnapshotBuffer.delete(dropTick);
+  }
+}
+
 function queueMultiplayerSnapshotPacket(packet) {
   if (!packet || typeof packet !== "object") return;
   const tick = Math.max(0, Number(packet.tick) | 0);
   if (tick <= 0) return;
   if (tick <= multiplayerLastAppliedTick) return;
   if (multiplayerSnapshotBuffer.has(tick)) return;
-  const cloned = cloneMultiplayerPayload(packet);
-  if (!cloned) return;
-  multiplayerSnapshotBuffer.set(tick, cloned);
+  multiplayerSnapshotBuffer.set(tick, packet);
   multiplayerLatestServerTick = Math.max(multiplayerLatestServerTick, tick);
   multiplayerLastSnapshotAtMs = Date.now();
 
-  if (multiplayerSnapshotBuffer.size > 240) {
-    const sorted = Array.from(multiplayerSnapshotBuffer.keys()).sort((a, b) => a - b);
-    while (sorted.length > 220) {
-      const oldTick = sorted.shift();
-      multiplayerSnapshotBuffer.delete(oldTick);
-    }
+  if (multiplayerSnapshotBuffer.size > MULTIPLAYER_BUFFER_HARD_CAP) {
+    trimMultiplayerSnapshotBufferTo(MULTIPLAYER_BUFFER_KEEP_RECENT_HARD);
+  } else if (multiplayerSnapshotBuffer.size > MULTIPLAYER_BUFFER_SOFT_CAP) {
+    trimMultiplayerSnapshotBufferTo(MULTIPLAYER_BUFFER_KEEP_RECENT_SOFT);
   }
 }
 
@@ -1682,6 +1687,14 @@ function drainMultiplayerSnapshotBuffer(force = false) {
   const hardCatchup = force || (gapTicks >= MULTIPLAYER_CATCHUP_HARD_GAP_TICKS);
   const softCatchup = !hardCatchup && (gapTicks >= MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS);
 
+  if (hardCatchup && multiplayerSnapshotBuffer.size > MULTIPLAYER_BUFFER_KEEP_RECENT_SOFT) {
+    trimMultiplayerSnapshotBufferTo(
+      gapTicks >= MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS
+        ? MULTIPLAYER_BUFFER_KEEP_RECENT_HARD
+        : MULTIPLAYER_BUFFER_KEEP_RECENT_SOFT
+    );
+  }
+
   const targetTick = hardCatchup
     ? latestTick
     : softCatchup
@@ -1698,31 +1711,32 @@ function drainMultiplayerSnapshotBuffer(force = false) {
 
   let progressed = false;
   let processedPackets = 0;
-  let guard = 0;
-  const guardLimit = hardCatchup ? 320 : (softCatchup ? 220 : 140);
   const packetCap = hardCatchup
     ? MULTIPLAYER_DRAIN_PACKET_CAP_HARD
     : softCatchup
       ? MULTIPLAYER_DRAIN_PACKET_CAP_SOFT
       : MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL;
-  while (guard < guardLimit) {
+
+  let candidateTicks = [];
+  for (const tick of multiplayerSnapshotBuffer.keys()) {
+    const t = Math.max(0, Number(tick) | 0);
+    if (t <= (multiplayerLastAppliedTick | 0)) continue;
+    if (t > targetTick) continue;
+    candidateTicks.push(t);
+  }
+  if (candidateTicks.length > 1) candidateTicks.sort((a, b) => a - b);
+  if (hardCatchup && candidateTicks.length > (packetCap * 2)) {
+    const tailCount = Math.max(packetCap + 6, Math.min(packetCap * 2, 64));
+    candidateTicks = candidateTicks.slice(Math.max(0, candidateTicks.length - tailCount));
+  }
+
+  for (let i = 0; i < candidateTicks.length; i++) {
     if (processedPackets >= packetCap) break;
     if (hasPerfNow && (performance.now() - drainStartMs) >= drainBudgetMs) break;
-    guard++;
-    let nextTick = -1;
-    for (const tick of multiplayerSnapshotBuffer.keys()) {
-      const t = Math.max(0, Number(tick) | 0);
-      if (t <= (multiplayerLastAppliedTick | 0)) continue;
-      if (t > targetTick) continue;
-      if (nextTick <= 0 || t < nextTick) nextTick = t;
-    }
-    if (nextTick <= 0) break;
+    const nextTick = candidateTicks[i] | 0;
     const packet = multiplayerSnapshotBuffer.get(nextTick);
-    if (!packet) {
-      multiplayerSnapshotBuffer.delete(nextTick);
-      continue;
-    }
     multiplayerSnapshotBuffer.delete(nextTick);
+    if (!packet) continue;
     applyMultiplayerSnapshotPacket(packet, false);
     progressed = true;
     processedPackets++;

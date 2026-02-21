@@ -10,32 +10,37 @@ const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
 const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 60 * 6));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
-const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(35, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 66));
-const MATCH_SNAPSHOT_INTERVAL_MIN_MS = Math.max(30, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MIN_MS || 40));
+const MB = 1024 * 1024;
+const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(32, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 50));
+const MATCH_SNAPSHOT_INTERVAL_MIN_MS = Math.max(24, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MIN_MS || 34));
 const MATCH_SNAPSHOT_INTERVAL_MAX_MS = Math.max(
   MATCH_SNAPSHOT_INTERVAL_MIN_MS,
-  Number(process.env.MATCH_SNAPSHOT_INTERVAL_MAX_MS || 150)
+  Number(process.env.MATCH_SNAPSHOT_INTERVAL_MAX_MS || 140)
 );
 const MATCH_MAX_STEPS_PER_PUMP = Math.max(2, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 8));
 const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERVAL_MS || 16));
 const MATCH_MAX_BACKLOG_MS = Math.max(100, Number(process.env.MATCH_MAX_BACKLOG_MS || 250));
-const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(110, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 170));
+const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(90, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 150));
 const MATCH_STATE_HASH_EVERY_TICKS = Math.max(4, Number(process.env.MATCH_STATE_HASH_EVERY_TICKS || 24));
+const MATCH_STATE_HASH_EVERY_TICKS_MAX = Math.max(
+  MATCH_STATE_HASH_EVERY_TICKS,
+  Number(process.env.MATCH_STATE_HASH_EVERY_TICKS_MAX || 192)
+);
 const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 14000));
 const MATCH_TILE_DELTA_DRAIN_MIN = Math.max(500, Number(process.env.MATCH_TILE_DELTA_DRAIN_MIN || 1800));
 const MATCH_TILE_DELTA_BACKLOG_CAP = Math.max(MATCH_TILE_DELTA_CAP, Number(process.env.MATCH_TILE_DELTA_BACKLOG_CAP || 180000));
-const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(50, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 80));
+const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(40, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 68));
 const MATCH_ENTITY_DELTA_INTERVAL_MAX_MS = Math.max(
   MATCH_ENTITY_DELTA_INTERVAL_MS,
   Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MAX_MS || 280)
 );
-const MATCH_STRUCTURE_DELTA_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_STRUCTURE_DELTA_INTERVAL_MS || 420));
+const MATCH_STRUCTURE_DELTA_INTERVAL_MS = Math.max(90, Number(process.env.MATCH_STRUCTURE_DELTA_INTERVAL_MS || 320));
 const MATCH_STRUCTURE_DELTA_INTERVAL_MAX_MS = Math.max(
   MATCH_STRUCTURE_DELTA_INTERVAL_MS,
   Number(process.env.MATCH_STRUCTURE_DELTA_INTERVAL_MAX_MS || 1100)
 );
-const MATCH_OPERATIONS_DELTA_INTERVAL_MS = Math.max(45, Number(process.env.MATCH_OPERATIONS_DELTA_INTERVAL_MS || 85));
-const MATCH_MOBILE_DELTA_INTERVAL_MS = Math.max(45, Number(process.env.MATCH_MOBILE_DELTA_INTERVAL_MS || 70));
+const MATCH_OPERATIONS_DELTA_INTERVAL_MS = Math.max(36, Number(process.env.MATCH_OPERATIONS_DELTA_INTERVAL_MS || 68));
+const MATCH_MOBILE_DELTA_INTERVAL_MS = Math.max(30, Number(process.env.MATCH_MOBILE_DELTA_INTERVAL_MS || 56));
 const MATCH_BACKPRESSURE_SOFT_BYTES = Math.max(64 * 1024, Number(process.env.MATCH_BACKPRESSURE_SOFT_BYTES || (1536 * 1024)));
 const MATCH_BACKPRESSURE_HARD_BYTES = Math.max(MATCH_BACKPRESSURE_SOFT_BYTES, Number(process.env.MATCH_BACKPRESSURE_HARD_BYTES || (6 * 1024 * 1024)));
 const MATCH_BACKPRESSURE_DISCONNECT_MS = Math.max(1000, Number(process.env.MATCH_BACKPRESSURE_DISCONNECT_MS || 8000));
@@ -50,6 +55,11 @@ const MATCH_LAG_WARN_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_LAG_W
 const MATCH_SNAPSHOT_STATS_INTERVAL_MS = Math.max(200, Number(process.env.MATCH_SNAPSHOT_STATS_INTERVAL_MS || 420));
 const MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS = Math.max(280, Number(process.env.MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS || 650));
 const MATCH_SNAPSHOT_EVENTS_INTERVAL_MS = Math.max(420, Number(process.env.MATCH_SNAPSHOT_EVENTS_INTERVAL_MS || 900));
+const MATCH_MEMORY_SOFT_LIMIT_MB = Math.max(768, Number(process.env.MATCH_MEMORY_SOFT_LIMIT_MB || 6144));
+const MATCH_MEMORY_HARD_LIMIT_MB = Math.max(MATCH_MEMORY_SOFT_LIMIT_MB + 256, Number(process.env.MATCH_MEMORY_HARD_LIMIT_MB || 7424));
+const MATCH_MEMORY_HEADROOM_MB = Math.max(128, Number(process.env.MATCH_MEMORY_HEADROOM_MB || 320));
+const MATCH_MEMORY_SAMPLE_INTERVAL_MS = Math.max(200, Number(process.env.MATCH_MEMORY_SAMPLE_INTERVAL_MS || 1200));
+const MATCH_MEMORY_WARN_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_MEMORY_WARN_INTERVAL_MS || 6000));
 const WS_DEBUG_LOGS = /^(1|true|yes|on)$/i.test(String(process.env.WS_DEBUG_LOGS || "").trim());
 const MATCH_MAX_WORLD_WIDTH_DEFAULT = 12000;
 const MATCH_MAX_WORLD_HEIGHT_DEFAULT = 6000;
@@ -81,7 +91,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v24");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v25");
 const SERVER_INSTANCE_ID = randomUUID().slice(0, 8);
 
 const SERVER_WORLD_SIZE_PRESETS = Object.freeze({
@@ -541,6 +551,47 @@ function sanitizeWorldSpec(raw) {
   return { width: w, height: h, aiCount: ai, mapMode };
 }
 
+function estimateRuntimeWorldBytes(worldSpecRaw) {
+  const spec = sanitizeWorldSpec(worldSpecRaw);
+  if (!spec) return 0;
+  const area = Math.max(1, (Number(spec.width) | 0) * (Number(spec.height) | 0));
+  const ai = Math.max(1, Number(spec.aiCount) | 0);
+  // Approximate authoritative world footprint for admission checks.
+  const bytesPerTile = 74;
+  const bytesPerAi = 220_000;
+  const baseBytes = 72 * MB;
+  return Math.max(0, Math.round((area * bytesPerTile) + (ai * bytesPerAi) + baseBytes));
+}
+
+function ensureLobbyStartFitsMemoryBudget(lobby, worldSpecRaw) {
+  const spec = sanitizeWorldSpec(worldSpecRaw);
+  if (!spec) return;
+  const hardLimitBytes = Math.max(0, MATCH_MEMORY_HARD_LIMIT_MB) * MB;
+  const headroomBytes = Math.max(0, MATCH_MEMORY_HEADROOM_MB) * MB;
+  const budgetBytes = Math.max(0, hardLimitBytes - headroomBytes);
+  if (budgetBytes <= 0) return;
+  let rssBytes = 0;
+  try {
+    rssBytes = Math.max(0, Number(process.memoryUsage?.().rss) || 0);
+  } catch {
+    rssBytes = 0;
+  }
+  const existingSpec = sanitizeWorldSpec(lobby?.matchWorldSpec);
+  const existingBytes = (lobby?.runtime?.world && existingSpec)
+    ? estimateRuntimeWorldBytes(existingSpec)
+    : 0;
+  const requestedBytes = estimateRuntimeWorldBytes(spec);
+  const projectedBytes = Math.max(0, rssBytes - existingBytes) + requestedBytes;
+  if (projectedBytes <= budgetBytes) return;
+
+  const projectedMb = Math.round(projectedBytes / MB);
+  const budgetMb = Math.round(budgetBytes / MB);
+  throw new Error(
+    `Server memory guard rejected world ${spec.width}x${spec.height} ai=${spec.aiCount}. ` +
+    `Projected memory ${projectedMb}MB exceeds safe budget ${budgetMb}MB.`
+  );
+}
+
 function touchLobby(lobby) {
   lobby.updatedAt = nowMs();
 }
@@ -661,8 +712,10 @@ function maybeLogRuntimeNetStats(lobby, runtime, now) {
   const last = Number(stats.lastLogAtMs) || 0;
   if ((now - last) < MATCH_NET_STATS_LOG_INTERVAL_MS) return;
   stats.lastLogAtMs = now;
+  const rssMb = Math.max(0, Math.round(Number(runtime?.lastRssMb) || 0));
+  const memScale = Math.max(1, Number(runtime?.memoryLoadScale) || 1);
   console.log(
-    `[runtime-net] lobby=${String(lobby?.code || "")} droppedSnapshots=${stats.droppedSnapshots | 0} skippedDueToBackpressure=${stats.skippedDueToBackpressure | 0} avgSnapshotBytes=${Math.max(0, Number(stats.avgSnapshotBytes) | 0)} maxBufferedAmountSeen=${Math.max(0, Number(stats.maxBufferedAmountSeen) | 0)} tileBacklog=${Math.max(0, Number(runtime?.tileDeltaBacklog?.size) | 0)}`
+    `[runtime-net] lobby=${String(lobby?.code || "")} droppedSnapshots=${stats.droppedSnapshots | 0} skippedDueToBackpressure=${stats.skippedDueToBackpressure | 0} avgSnapshotBytes=${Math.max(0, Number(stats.avgSnapshotBytes) | 0)} maxBufferedAmountSeen=${Math.max(0, Number(stats.maxBufferedAmountSeen) | 0)} tileBacklog=${Math.max(0, Number(runtime?.tileDeltaBacklog?.size) | 0)} rssMb=${rssMb} memScale=${memScale.toFixed(2)}`
   );
 }
 
@@ -802,6 +855,7 @@ function resolveLobbyStartSpec(lobby, bodyRaw) {
 async function startLobbyMatch(lobby, body) {
   const resolvedStart = resolveLobbyStartSpec(lobby, body);
   if (!resolvedStart.effectiveSpec) throw new Error("Lobby world spec is missing.");
+  ensureLobbyStartFitsMemoryBudget(lobby, resolvedStart.effectiveSpec);
   const prevState = {
     matchConfig: sanitizeMatchConfig(lobby?.matchConfig) || null,
     matchWorldSpec: sanitizeWorldSpec(lobby?.matchWorldSpec),
@@ -1113,6 +1167,11 @@ async function ensureLobbyRuntime(lobby) {
       lastOperationsSnapshotAtMs: 0,
       lastMobileSnapshotAtMs: 0,
       snapshotLoadScale: 1,
+      memoryLoadScale: 1,
+      lastMemorySampleAtMs: 0,
+      lastMemoryWarnAtMs: 0,
+      lastRssMb: 0,
+      lastHeapMb: 0,
       backpressuredSockets: 0,
       netStats: createRuntimeNetStats(),
       tileDeltaBacklog: new Map(),
@@ -1541,8 +1600,11 @@ function deriveSessionMatchOutcome(packet) {
 
 function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
   const assigned = Number(assignedNationIdRaw) | 0;
+  if (assigned <= 1) {
+    if (!packetRaw || typeof packetRaw !== "object") return {};
+    return { ...packetRaw };
+  }
   const packet = cloneWire(packetRaw) || {};
-  if (assigned <= 1) return packet;
 
   if (Array.isArray(packet.changedTiles)) {
     for (let i = 0; i < packet.changedTiles.length; i++) {
@@ -1861,6 +1923,29 @@ function broadcastFullSync(lobby, runtime, reason = "resync") {
   runtime.backpressuredSockets = backpressured;
 }
 
+function resolveRuntimeStateHashEveryTicks(runtime) {
+  let every = Math.max(1, MATCH_STATE_HASH_EVERY_TICKS | 0);
+  const loadScale = Math.max(
+    1,
+    Number(runtime?.snapshotLoadScale) || 1,
+    Number(runtime?.memoryLoadScale) || 1
+  );
+  if (loadScale > 1) {
+    every = Math.round(every * (1 + ((loadScale - 1) * 1.45)));
+  }
+  if ((Number(runtime?.backpressuredSockets) | 0) > 0) {
+    every = Math.round(every * 1.6);
+  }
+  const backlogSize = Math.max(0, Number(runtime?.tileDeltaBacklog?.size) | 0);
+  if (backlogSize > (MATCH_TILE_DELTA_CAP * 2)) {
+    every = Math.round(every * 1.35);
+  }
+  return Math.max(
+    MATCH_STATE_HASH_EVERY_TICKS,
+    Math.min(MATCH_STATE_HASH_EVERY_TICKS_MAX, every | 0)
+  );
+}
+
 function broadcastSnapshotDelta(lobby, runtime) {
   const base = buildSnapshotPacket(lobby, runtime, { fullSync: false });
   if (base._ownerOverflow) {
@@ -1870,7 +1955,8 @@ function broadcastSnapshotDelta(lobby, runtime) {
       return;
     }
   }
-  const includeStateHash = ((runtime.simTick | 0) % MATCH_STATE_HASH_EVERY_TICKS) === 0;
+  const stateHashEveryTicks = resolveRuntimeStateHashEveryTicks(runtime);
+  const includeStateHash = ((runtime.simTick | 0) % Math.max(1, stateHashEveryTicks | 0)) === 0;
   const hasTileDelta = Array.isArray(base.changedTiles) && base.changedTiles.length > 0;
   const hasEntityDelta = !!(base.changedEntities && typeof base.changedEntities === "object" && Object.keys(base.changedEntities).length > 0);
   const hasStats = Array.isArray(base.nationStats) || Array.isArray(base.leaderboard);
@@ -1951,6 +2037,57 @@ function applySpawnPhaseFailsafe(lobby, runtime, now) {
   return changed;
 }
 
+function updateRuntimeMemoryPressure(lobby, runtime, now) {
+  const prevScale = Math.max(1, Number(runtime?.memoryLoadScale) || 1);
+  const lastSampleAtMs = Number(runtime?.lastMemorySampleAtMs) || 0;
+  if ((now - lastSampleAtMs) < MATCH_MEMORY_SAMPLE_INTERVAL_MS) return prevScale;
+
+  runtime.lastMemorySampleAtMs = now;
+  let rssMb = 0;
+  let heapMb = 0;
+  try {
+    const mem = process.memoryUsage();
+    rssMb = Math.max(0, Number(mem?.rss) || 0) / MB;
+    heapMb = Math.max(0, Number(mem?.heapUsed) || 0) / MB;
+  } catch {
+    rssMb = 0;
+    heapMb = 0;
+  }
+  runtime.lastRssMb = rssMb;
+  runtime.lastHeapMb = heapMb;
+
+  const softMb = Math.max(1, MATCH_MEMORY_SOFT_LIMIT_MB);
+  const hardMb = Math.max(softMb + 1, MATCH_MEMORY_HARD_LIMIT_MB);
+  let memoryScale = 1;
+  if (rssMb > softMb) {
+    const ratio = Math.min(1.8, Math.max(0, (rssMb - softMb) / Math.max(1, hardMb - softMb)));
+    memoryScale = 1 + (ratio * 1.35);
+  }
+  runtime.memoryLoadScale = Math.max(1, memoryScale);
+
+  if (rssMb >= hardMb) {
+    const backlog = ensureTileDeltaBacklog(runtime);
+    const trimTarget = Math.max(MATCH_TILE_DELTA_DRAIN_MIN, Math.round(MATCH_TILE_DELTA_CAP * 0.35));
+    while ((backlog.size | 0) > trimTarget) {
+      const first = backlog.keys().next();
+      if (first.done) break;
+      backlog.delete(first.value);
+    }
+  }
+
+  if (rssMb > softMb) {
+    const lastWarn = Number(runtime?.lastMemoryWarnAtMs) || 0;
+    if ((now - lastWarn) >= MATCH_MEMORY_WARN_INTERVAL_MS) {
+      runtime.lastMemoryWarnAtMs = now;
+      console.warn(
+        `[runtime-mem] lobby=${String(lobby?.code || "")} rssMb=${Math.round(rssMb)} heapMb=${Math.round(heapMb)} memScale=${runtime.memoryLoadScale.toFixed(2)} tileBacklog=${Math.max(0, Number(runtime?.tileDeltaBacklog?.size) | 0)}`
+      );
+    }
+  }
+
+  return runtime.memoryLoadScale;
+}
+
 function flushRuntimeTick(lobby, runtime, now) {
   enforceHumanNationRuntimeState(runtime);
   const stepMs = simDtMs();
@@ -2001,6 +2138,7 @@ function flushRuntimeTick(lobby, runtime, now) {
   }
   runtime.backpressuredSockets = bufferedSockets;
 
+  const memoryScale = updateRuntimeMemoryPressure(lobby, runtime, now);
   let snapshotIntervalMs = MATCH_SNAPSHOT_INTERVAL_MS;
   const areaScale = worldArea > MATCH_RUNTIME_SAFE_MAX_WORLD_TILES
     ? Math.min(4, worldArea / Math.max(1, MATCH_RUNTIME_SAFE_MAX_WORLD_TILES))
@@ -2009,9 +2147,10 @@ function flushRuntimeTick(lobby, runtime, now) {
     ? Math.min(4, aiCountApprox / Math.max(1, MATCH_RUNTIME_SAFE_MAX_AI_COUNT))
     : 1;
   const rawLoadScale = Math.max(1, areaScale, aiScale);
-  const loadScale = rawLoadScale > 1
+  const worldLoadScale = rawLoadScale > 1
     ? (1 + ((Math.sqrt(rawLoadScale) - 1) * 0.85))
     : 1;
+  const loadScale = Math.max(1, worldLoadScale, memoryScale);
   if (loadScale > 1) snapshotIntervalMs = Math.round(snapshotIntervalMs * loadScale);
   if (runtime.simAccMs > (stepMs * 1.25)) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.35);
   if ((runtime.backpressuredSockets | 0) > 0) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.55);
@@ -2407,7 +2546,10 @@ const server = createServer(async (req, res) => {
           maxAiCount: MATCH_MAX_AI_COUNT,
           runtimeSafeMaxWorldTiles: MATCH_RUNTIME_SAFE_MAX_WORLD_TILES,
           runtimeSafeMaxAiCount: MATCH_RUNTIME_SAFE_MAX_AI_COUNT,
-          runtimeSafeMinTilesPerAi: MATCH_RUNTIME_SAFE_MIN_TILES_PER_AI
+          runtimeSafeMinTilesPerAi: MATCH_RUNTIME_SAFE_MIN_TILES_PER_AI,
+          memorySoftLimitMb: MATCH_MEMORY_SOFT_LIMIT_MB,
+          memoryHardLimitMb: MATCH_MEMORY_HARD_LIMIT_MB,
+          memoryHeadroomMb: MATCH_MEMORY_HEADROOM_MB
         }
       });
       return;

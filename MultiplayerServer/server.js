@@ -29,8 +29,8 @@ const MATCH_STATE_HASH_EVERY_TICKS_MAX = Math.max(
 const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 7000));
 const MATCH_TILE_DELTA_DRAIN_MIN = Math.max(500, Number(process.env.MATCH_TILE_DELTA_DRAIN_MIN || 700));
 const MATCH_TILE_DELTA_BACKLOG_CAP = Math.max(MATCH_TILE_DELTA_CAP, Number(process.env.MATCH_TILE_DELTA_BACKLOG_CAP || 180000));
-const MATCH_OWNER_SWEEP_CHUNK_MIN = Math.max(300, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MIN || 1200));
-const MATCH_OWNER_SWEEP_CHUNK_MAX = Math.max(MATCH_OWNER_SWEEP_CHUNK_MIN, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MAX || 7000));
+const MATCH_OWNER_SWEEP_CHUNK_MIN = Math.max(300, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MIN || 700));
+const MATCH_OWNER_SWEEP_CHUNK_MAX = Math.max(MATCH_OWNER_SWEEP_CHUNK_MIN, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MAX || 2600));
 const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(40, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 68));
 const MATCH_ENTITY_DELTA_INTERVAL_MAX_MS = Math.max(
   MATCH_ENTITY_DELTA_INTERVAL_MS,
@@ -57,6 +57,10 @@ const MATCH_BACKPRESSURE_RECOVERY_SYNC_BUFFER_BYTES = Math.max(
 const MATCH_FULL_SYNC_MIN_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_FULL_SYNC_MIN_INTERVAL_MS || 900));
 const MATCH_FULL_SYNC_RETRY_INTERVAL_MS = Math.max(100, Number(process.env.MATCH_FULL_SYNC_RETRY_INTERVAL_MS || 450));
 const MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES = Math.max(120000, Number(process.env.MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES || 9500000));
+const MATCH_FULL_SYNC_OWNER_PACKED_SAFE_TILES = Math.max(
+  120000,
+  Number(process.env.MATCH_FULL_SYNC_OWNER_PACKED_SAFE_TILES || 3200000)
+);
 const MATCH_NET_STATS_LOG_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_NET_STATS_LOG_INTERVAL_MS || 10000));
 const MATCH_SNAPSHOT_TARGET_BYTES = Math.max(24000, Number(process.env.MATCH_SNAPSHOT_TARGET_BYTES || 90000));
 const MATCH_SNAPSHOT_TARGET_BYTES_HARD = Math.max(MATCH_SNAPSHOT_TARGET_BYTES, Number(process.env.MATCH_SNAPSHOT_TARGET_BYTES_HARD || 180000));
@@ -728,6 +732,41 @@ function downshiftSnapshotPayloadForWire(payloadRaw) {
   }
 
   return out;
+}
+
+function shouldUseLightweightFullSync(runtime, reasonRaw = "") {
+  const reason = String(reasonRaw || "").trim().toLowerCase();
+  const worldTiles = Math.max(0, Number(runtime?.world?.owner?.length) | 0);
+  const safeTiles = Math.max(120000, Number(MATCH_FULL_SYNC_OWNER_PACKED_SAFE_TILES) | 0);
+
+  if (worldTiles > safeTiles) return true;
+
+  if (!reason) return false;
+  if (reason === "lobby_state_request" || reason === "runtime_ready") return false;
+  if (reason.includes("backpressure")) return true;
+  if (reason.includes("repair")) return true;
+  if (reason.includes("resync")) return true;
+  if (reason.includes("gap")) return true;
+  if (reason.includes("overflow")) return true;
+  if (reason.includes("desync")) return true;
+  return false;
+}
+
+function applyLightweightFullSyncOwner(runtime, packet) {
+  if (!runtime || !packet || typeof packet !== "object") return;
+  if (Object.prototype.hasOwnProperty.call(packet, "ownerPacked")) delete packet.ownerPacked;
+  if (Object.prototype.hasOwnProperty.call(packet, "ownerPackedFormat")) delete packet.ownerPackedFormat;
+  packet.ownerPackedOmitted = true;
+  if (!Array.isArray(packet.changedTiles)) packet.changedTiles = [];
+  packet.changedTiles.length = 0;
+
+  // Stage owner convergence using sweep chunks instead of huge one-shot owner payloads.
+  activateOwnerSweep(runtime, "lightweight_full_sync");
+  const chunkTarget = Math.max(
+    MATCH_OWNER_SWEEP_CHUNK_MIN,
+    Math.min(MATCH_OWNER_SWEEP_CHUNK_MAX, Math.round(MATCH_TILE_DELTA_DRAIN_MIN * 1.3))
+  );
+  appendOwnerSweepChunk(runtime.world, runtime, packet.changedTiles, chunkTarget);
 }
 
 function sendSnapshotPayload(lobby, runtime, sessionId, ws, payload, { critical = false } = {}) {
@@ -2024,7 +2063,11 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
     }
     const ownerTileCount = Math.max(0, Number(world?.owner?.length) | 0);
     const nationCount = Math.max(1, Number(world?._nationCount) | 0);
-    const allowOwnerPacked = ownerTileCount > 0 && ownerTileCount <= MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES;
+    const safeOwnerPackedTiles = Math.min(
+      MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES,
+      Math.max(120000, Number(MATCH_FULL_SYNC_OWNER_PACKED_SAFE_TILES) | 0)
+    );
+    const allowOwnerPacked = ownerTileCount > 0 && ownerTileCount <= safeOwnerPackedTiles;
     // Join-time full syncs during untouched spawn phase are huge and redundant.
     if (allowOwnerPacked && (!spawnActive || claimedTiles > 0)) {
       if (nationCount <= 255) {
@@ -2036,8 +2079,15 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
       }
     } else if (!allowOwnerPacked && claimedTiles > 0) {
       packet.ownerPackedOmitted = true;
+      if (!Array.isArray(packet.changedTiles)) packet.changedTiles = [];
+      activateOwnerSweep(runtime, "full_sync_owner_omitted_large_world");
+      const chunkTarget = Math.max(
+        MATCH_OWNER_SWEEP_CHUNK_MIN,
+        Math.min(MATCH_OWNER_SWEEP_CHUNK_MAX, Math.round(MATCH_TILE_DELTA_DRAIN_MIN * 1.3))
+      );
+      appendOwnerSweepChunk(world, runtime, packet.changedTiles, chunkTarget);
     }
-    packet.changedTiles = [];
+    if (!Array.isArray(packet.changedTiles)) packet.changedTiles = [];
   } else {
     const consumeResult = consumeChangedTiles(world, runtime);
     runtime.ownerDeltaOverflowed = !!consumeResult.overflow;
@@ -2094,14 +2144,17 @@ function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual")
 
   const assignment = runtime.assignmentsBySession.get(String(sessionId || ""));
   if (!assignment) return { sent: false, backpressured: false, disconnected: false, throttled: true };
+  const reasonStr = String(reason || "manual");
   const base = buildSnapshotPacket(lobby, runtime, { fullSync: true });
+  const lightweight = shouldUseLightweightFullSync(runtime, reasonStr);
+  if (lightweight) applyLightweightFullSyncOwner(runtime, base);
   const mapped = remapSnapshotForSession(base, assignment.nationId);
   mapped.type = "full_sync";
-  mapped.reason = String(reason || "manual");
+  mapped.reason = reasonStr;
   const hashMuted = !!mapped.ownerPackedOmitted;
   ws._stateHashMuted = hashMuted;
   if (!hashMuted) mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
-  const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped, { critical: true });
+  const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped, { critical: !lightweight });
   if (sent.sent) {
     ws._lastFullSyncAtMs = now;
     ws._nextFullSyncAttemptAtMs = now + MATCH_FULL_SYNC_MIN_INTERVAL_MS;
@@ -2117,18 +2170,21 @@ function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual")
 }
 
 function broadcastFullSync(lobby, runtime, reason = "resync") {
+  const reasonStr = String(reason || "resync");
   const base = buildSnapshotPacket(lobby, runtime, { fullSync: true });
+  const lightweight = shouldUseLightweightFullSync(runtime, reasonStr);
+  if (lightweight) applyLightweightFullSyncOwner(runtime, base);
   let backpressured = 0;
   for (const [sessionId, ws] of lobby.sockets.entries()) {
     const assignment = runtime.assignmentsBySession.get(sessionId);
     if (!assignment) continue;
     const mapped = remapSnapshotForSession(base, assignment.nationId);
     mapped.type = "full_sync";
-    mapped.reason = String(reason || "resync");
+    mapped.reason = reasonStr;
     const hashMuted = !!mapped.ownerPackedOmitted;
     ws._stateHashMuted = hashMuted;
     if (!hashMuted) mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
-    const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped, { critical: false });
+    const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped, { critical: !lightweight });
     if (sent.sent) ws._desyncedSinceBackpressure = false;
     if (sent.backpressured) {
       backpressured++;
@@ -2165,10 +2221,12 @@ function broadcastSnapshotDelta(lobby, runtime) {
   const base = buildSnapshotPacket(lobby, runtime, { fullSync: false });
   if (base._ownerOverflow) {
     const worldTiles = Math.max(0, Number(runtime?.world?.owner?.length) | 0);
-    if (worldTiles <= MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES) {
+    const safeTiles = Math.max(120000, Number(MATCH_FULL_SYNC_OWNER_PACKED_SAFE_TILES) | 0);
+    if (worldTiles <= Math.min(MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES, safeTiles)) {
       broadcastFullSync(lobby, runtime, "owner_overflow");
       return;
     }
+    activateOwnerSweep(runtime, "owner_overflow_large_world");
   }
   const stateHashEveryTicks = resolveRuntimeStateHashEveryTicks(runtime);
   const includeStateHash = ((runtime.simTick | 0) % Math.max(1, stateHashEveryTicks | 0)) === 0;

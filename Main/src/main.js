@@ -624,7 +624,9 @@ let activeMultiplayerSession = null;
 let multiplayerMatchSocket = null;
 let multiplayerMatchConnected = false;
 let multiplayerMatchReconnectTimer = 0;
+let multiplayerMatchPingTimer = 0;
 let multiplayerMatchRttMs = 0;
+let multiplayerMatchLastPongAtMs = 0;
 let multiplayerServerOffsetMs = 0;
 let multiplayerPendingInputSeq = 1;
 let multiplayerLastAckSeq = 0;
@@ -676,6 +678,8 @@ const MULTIPLAYER_BUFFER_KEEP_RECENT_SOFT = 140;
 const MULTIPLAYER_BUFFER_KEEP_RECENT_HARD = 72;
 const MULTIPLAYER_SPAWN_RETRY_DELAY_MS = 220;
 const MULTIPLAYER_SPAWN_MAX_RETRIES = 3;
+const MULTIPLAYER_MATCH_PING_INTERVAL_MS = 2500;
+const MULTIPLAYER_MATCH_PING_STALE_MS = 9000;
 
 const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   setAttackRatio: Object.freeze({ cmd: "set_attack_ratio" }),
@@ -767,6 +771,10 @@ function clearMultiplayerMatchSocket() {
     clearTimeout(multiplayerMatchReconnectTimer);
     multiplayerMatchReconnectTimer = 0;
   }
+  if (multiplayerMatchPingTimer) {
+    clearInterval(multiplayerMatchPingTimer);
+    multiplayerMatchPingTimer = 0;
+  }
   multiplayerMatchConnected = false;
   if (multiplayerPendingSpawnRetryTimer) {
     clearTimeout(multiplayerPendingSpawnRetryTimer);
@@ -785,10 +793,33 @@ function clearMultiplayerMatchSocket() {
   multiplayerMatchSocket = null;
 }
 
+function sendMultiplayerMatchPing(ws = multiplayerMatchSocket) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  try {
+    ws.send(JSON.stringify({ type: "ping", clientTime: Date.now() }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function startMultiplayerMatchPingLoop(ws) {
+  if (multiplayerMatchPingTimer) {
+    clearInterval(multiplayerMatchPingTimer);
+    multiplayerMatchPingTimer = 0;
+  }
+  sendMultiplayerMatchPing(ws);
+  multiplayerMatchPingTimer = setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    sendMultiplayerMatchPing(ws);
+  }, MULTIPLAYER_MATCH_PING_INTERVAL_MS);
+}
+
 function setActiveMultiplayerSession(raw) {
   const next = normalizeMultiplayerSession(raw);
   activeMultiplayerSession = next;
   multiplayerMatchRttMs = 0;
+  multiplayerMatchLastPongAtMs = 0;
   multiplayerServerOffsetMs = 0;
   multiplayerConnectFailureStreak = 0;
   multiplayerSessionProbeInFlight = false;
@@ -1872,12 +1903,7 @@ function connectMultiplayerMatchSocket() {
     multiplayerConnectFailureStreak = 0;
     multiplayerSessionProbeInFlight = false;
     multiplayerSessionTerminated = false;
-    try {
-      const t = Date.now();
-      ws.send(JSON.stringify({ type: "ping", clientTime: t }));
-    } catch {
-      // Ignore ping send errors.
-    }
+    startMultiplayerMatchPingLoop(ws);
     try {
       ws.send(JSON.stringify({ type: "lobby_state_request" }));
     } catch {
@@ -1902,6 +1928,7 @@ function connectMultiplayerMatchSocket() {
     if (type === "pong") {
       const ct = Number(msg?.clientTime) || 0;
       const st = Number(msg?.serverTime) || 0;
+      multiplayerMatchLastPongAtMs = Date.now();
       if (ct > 0) {
         multiplayerMatchRttMs = Math.max(0, Date.now() - ct);
       }
@@ -2018,7 +2045,13 @@ function connectMultiplayerMatchSocket() {
   };
 
   ws.onclose = () => {
+    if (multiplayerMatchPingTimer) {
+      clearInterval(multiplayerMatchPingTimer);
+      multiplayerMatchPingTimer = 0;
+    }
     multiplayerMatchConnected = false;
+    multiplayerMatchRttMs = 0;
+    multiplayerMatchLastPongAtMs = 0;
     multiplayerMatchSocket = null;
     if (!isMultiplayerMatchEnabled()) return;
     multiplayerConnectFailureStreak = Math.max(1, (multiplayerConnectFailureStreak | 0) + 1);
@@ -6476,8 +6509,15 @@ function boot() {
     if (perfHudAcc >= 0.25 || resized) {
       perfHudAcc = 0;
       if (hud && typeof hud.setPerfReadout === "function") {
+        const pingFresh = (
+          isMultiplayerMatchEnabled() &&
+          multiplayerMatchConnected &&
+          multiplayerMatchLastPongAtMs > 0 &&
+          (Date.now() - multiplayerMatchLastPongAtMs) <= MULTIPLAYER_MATCH_PING_STALE_MS
+        );
         hud.setPerfReadout({
-          fps: debugPerf.fpsAvg
+          fps: debugPerf.fpsAvg,
+          pingMs: pingFresh ? Math.max(0, Number(multiplayerMatchRttMs) || 0) : undefined
         });
       }
     }

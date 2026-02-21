@@ -1134,13 +1134,21 @@ export function createHUD() {
         rowRef.msgNode.nodeValue = String(ev?.text || "");
 
         let actions = Array.isArray(ev.actions) ? ev.actions : [];
+        const eventKind = String(ev?.kind || "").toLowerCase();
+        const incomingDiplomacyRequest = (
+          (eventKind === "ally_request" || eventKind === "ceasefire_request") &&
+          ((Number(ev?.to) | 0) === PLAYER_ID)
+        );
         if ((!actions || actions.length === 0) && !ev?.handled) {
-          if (ev?.kind === "ally_request" || ev?.kind === "ceasefire_request") {
+          if (incomingDiplomacyRequest) {
             actions = [
               { id: "accept", label: "Accept", style: "primary" },
               { id: "reject", label: "Reject", style: "danger" }
             ];
           }
+        }
+        if (!incomingDiplomacyRequest && (eventKind === "ally_request" || eventKind === "ceasefire_request")) {
+          actions = [];
         }
         const expired = Number.isFinite(ev.expiresAt) && (Number(now) >= Number(ev.expiresAt));
         const handled = Boolean(ev.handled);

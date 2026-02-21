@@ -58,8 +58,9 @@ export function installAI(World) {
             if (until > 0 && until <= this.time) {
               const from = this._pendingFrom[pAB] | 0;
               const to = from === A ? B : A;
+              const toIsHuman = !!(to === OWNER.PLAYER || this.nation[to]?.isHuman);
 
-              if (to === OWNER.PLAYER) {
+              if (toIsHuman) {
                 this._clearPending(from, to);
                 this._pushEvent(`${this._nameOf(from)}'s alliance request expired.`);
               } else {
@@ -126,8 +127,9 @@ export function installAI(World) {
             if (until > 0 && until <= this.time) {
               const from = this._ceasefirePendingFrom[pAB] | 0;
               const to = from === A ? B : A;
+              const toIsHuman = !!(to === OWNER.PLAYER || this.nation[to]?.isHuman);
 
-              if (to === OWNER.PLAYER) {
+              if (toIsHuman) {
                 this._clearCeasefirePending(from, to);
                 this._pushEvent(`${this._nameOf(from)}'s ceasefire request expired.`);
               } else {

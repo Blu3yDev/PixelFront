@@ -6156,13 +6156,14 @@ function boot() {
       res = world.respondAllianceRequest(ev.from, ev.to, accept);
     }
 
-    ev.handled = true;
-    ev.actions = null;
-
     if (res && typeof res === "object") {
       if (isQueuedActionResult(res)) {
+        ev.handled = true;
+        ev.actions = null;
         hud.setOpMessage("Decision queued.");
       } else if (res.ok) {
+        ev.handled = true;
+        ev.actions = null;
         if (voiceLines && typeof voiceLines.playDecision === "function") {
           voiceLines.playDecision();
         }

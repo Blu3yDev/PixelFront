@@ -4196,26 +4196,29 @@ placeStructure(type, ownerId, x, y) {
     if (this._countAllies(A) >= MAX_ALLIES) return { ok: false, reason: `Alliance cap reached (${MAX_ALLIES}).` };
     if (this._countAllies(B) >= MAX_ALLIES) return { ok: false, reason: `That nation is at the alliance cap (${MAX_ALLIES}).` };
 
+    const recipientIsHuman = !!(B === OWNER.PLAYER || this.nation[B]?.isHuman);
     if (B === OWNER.PLAYER) {
       const cd = Number(this._playerAllianceRequestCooldownUntil || 0);
       if (this.time < cd) {
         return { ok: false, reason: "Player diplomacy inbox cooling down." };
       }
+    }
 
-      // Keep only one active incoming alliance request to the player at a time.
+    if (recipientIsHuman) {
+      // Keep only one active incoming alliance request to this human at a time.
       for (let from = 1; from <= this._nationCount; from++) {
-        if (from === OWNER.PLAYER) continue;
-        const p = this._pair(from, OWNER.PLAYER);
+        if (from === B) continue;
+        const p = this._pair(from, B);
         const pending = (this._pendingUntil[p] || 0) > this.time;
         const pendingFrom = (this._pendingFrom[p] | 0);
         if (pending && pendingFrom === from) {
-          return { ok: false, reason: "Player already has a pending alliance request." };
+          return { ok: false, reason: "Target already has a pending alliance request." };
         }
       }
     }
 
     const to = B;
-    const until = (to === OWNER.PLAYER)
+    const until = recipientIsHuman
       ? (this.time + ALLY_DECISION_PLAYER_S)
       : (this.time + (ALLY_DECISION_MIN_S + (ALLY_DECISION_MAX_S - ALLY_DECISION_MIN_S) * this._rng()));
     this._setPending(A, B, A, until);
@@ -4223,7 +4226,7 @@ placeStructure(type, ownerId, x, y) {
       this._playerAllianceRequestCooldownUntil = this.time + 12.0;
     }
 
-    if (to === OWNER.PLAYER) {
+    if (recipientIsHuman) {
       this._pushEvent(`${this._nameOf(A)} has sent you an alliance request.`, {
         kind: "ally_request",
         from: A,
@@ -4290,7 +4293,8 @@ placeStructure(type, ownerId, x, y) {
     const until = this.time + CEASEFIRE_DECISION_S;
     this._setCeasefirePending(A, B, A, until);
 
-    if (B === OWNER.PLAYER) {
+    const recipientIsHuman = !!(B === OWNER.PLAYER || this.nation[B]?.isHuman);
+    if (recipientIsHuman) {
       this._pushEvent(`${this._nameOf(A)} has sent you a ceasefire request.`, {
         kind: "ceasefire_request",
         from: A,

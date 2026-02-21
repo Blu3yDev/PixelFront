@@ -1064,9 +1064,10 @@ function cloneMultiplayerPayload(value) {
   }
 }
 
-function decodeOwnerPackedBase64(base64Raw) {
+function decodeOwnerPackedBase64(base64Raw, formatRaw = "u16") {
   const b64 = String(base64Raw || "").trim();
   if (!b64) return null;
+  const format = String(formatRaw || "u16").trim().toLowerCase();
   let binary = "";
   try {
     binary = globalThis.atob(b64);
@@ -1075,6 +1076,15 @@ function decodeOwnerPackedBase64(base64Raw) {
   }
   const byteLen = binary.length | 0;
   if (byteLen <= 0) return null;
+
+  if (format === "u8") {
+    const out = new Uint16Array(byteLen);
+    for (let i = 0; i < byteLen; i++) {
+      out[i] = binary.charCodeAt(i) & 0xFF;
+    }
+    return out;
+  }
+
   const evenLen = byteLen - (byteLen % 2);
   const out = new Uint16Array(evenLen >> 1);
   let oi = 0;
@@ -1117,9 +1127,9 @@ function applyOwnerChangesFromList(worldRef, changedTiles) {
   return applied;
 }
 
-function applyPackedOwnerSnapshot(worldRef, ownerPackedRaw) {
+function applyPackedOwnerSnapshot(worldRef, ownerPackedRaw, formatRaw = "u16") {
   if (!worldRef) return 0;
-  const incoming = decodeOwnerPackedBase64(ownerPackedRaw);
+  const incoming = decodeOwnerPackedBase64(ownerPackedRaw, formatRaw);
   if (!incoming) return 0;
   const ownerArr = worldRef.owner;
   const landArr = worldRef.land;
@@ -1422,6 +1432,32 @@ function applyMultiplayerWorldMeta(worldRef, packet) {
       worldRef._spawnPos[id] = { x, y };
     }
   }
+
+  // Keep local spawn marker stable while authoritative ack is still in flight.
+  const pending = multiplayerPendingSpawnPick;
+  if (
+    pending &&
+    spawnRaw.active &&
+    Number.isFinite(Number(pending.x)) &&
+    Number.isFinite(Number(pending.y))
+  ) {
+    const cap = Math.max(1, Number(worldRef._nationCount) | 0);
+    if (!Array.isArray(worldRef._spawnPos) || worldRef._spawnPos.length < (cap + 1)) {
+      worldRef._spawnPos = new Array(cap + 1).fill(null);
+    }
+    const px = Math.max(0, Number(pending.x) | 0);
+    const py = Math.max(0, Number(pending.y) | 0);
+    worldRef._spawnPos[OWNER.PLAYER] = { x: px, y: py };
+
+    if (!(spawnRaw.picked instanceof Uint8Array)) {
+      spawnRaw.picked = new Uint8Array(cap + 1);
+    }
+    if ((spawnRaw.picked[OWNER.PLAYER] | 0) === 0) {
+      spawnRaw.picked[OWNER.PLAYER] = 1;
+      spawnRaw.pickedCount = (Math.max(0, Number(spawnRaw.pickedCount) | 0) + 1) | 0;
+    }
+  }
+
   worldRef._spawnPhase = spawnRaw;
 }
 
@@ -1619,15 +1655,20 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false) {
   const worldRef = multiplayerWorldSyncWorld;
   if (!worldRef || !packet || typeof packet !== "object") return false;
   const tick = Math.max(0, Number(packet.tick) | 0);
+  let ownerApplied = 0;
 
   if (isFullSync) {
     if (packet.ownerPacked) {
-      applyPackedOwnerSnapshot(worldRef, packet.ownerPacked);
+      ownerApplied = applyPackedOwnerSnapshot(
+        worldRef,
+        packet.ownerPacked,
+        String(packet?.ownerPackedFormat || "u16")
+      );
     } else if (Array.isArray(packet.changedTiles)) {
-      applyOwnerChangesFromList(worldRef, packet.changedTiles);
+      ownerApplied = applyOwnerChangesFromList(worldRef, packet.changedTiles);
     }
   } else if (Array.isArray(packet.changedTiles) && packet.changedTiles.length > 0) {
-    applyOwnerChangesFromList(worldRef, packet.changedTiles);
+    ownerApplied = applyOwnerChangesFromList(worldRef, packet.changedTiles);
   }
 
   if (packet.changedEntities && typeof packet.changedEntities === "object") {
@@ -1644,6 +1685,15 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false) {
   }
   applyMultiplayerWorldMeta(worldRef, packet);
   maybeRefreshMultiplayerDerivedState(worldRef, isFullSync);
+
+  if (isFullSync && ownerApplied > 0 && typeof worldRef._rebuildAllPixels === "function") {
+    try {
+      worldRef._rebuildAllPixels();
+      if (typeof worldRef._rebuildAllBorders === "function") worldRef._rebuildAllBorders();
+    } catch {
+      // Keep full sync resilient; incremental pixel flush still runs below.
+    }
+  }
 
   if (Array.isArray(packet.leaderboard)) {
     worldRef._serverLeaderboard = packet.leaderboard;
@@ -1997,10 +2047,13 @@ function connectMultiplayerMatchSocket() {
     if (type === "cmd_reject") {
       const reason = String(msg?.reason || "Command rejected.").trim();
       const rejectSeq = Math.max(0, Number(msg?.ackSeq) | 0);
-      if (
+      const pendingSpawnReject = !!(
         multiplayerPendingSpawnPick &&
         (rejectSeq | 0) > 0 &&
-        (rejectSeq | 0) === (Number(multiplayerPendingSpawnPick.seq) | 0) &&
+        (rejectSeq | 0) === (Number(multiplayerPendingSpawnPick.seq) | 0)
+      );
+      if (
+        pendingSpawnReject &&
         spawnRejectLooksLikeIdentityMismatch(reason)
       ) {
         try { ws.send(JSON.stringify({ type: "lobby_state_request" })); } catch {}
@@ -2010,6 +2063,9 @@ function connectMultiplayerMatchSocket() {
           multiplayerPendingSpawnRetryTimer = 0;
           retryPendingSpawnPick();
         }, MULTIPLAYER_SPAWN_RETRY_DELAY_MS);
+      } else if (pendingSpawnReject) {
+        multiplayerPendingSpawnPick = null;
+        clearPendingSpawnRetry();
       }
       if (hud && typeof hud.setOpMessage === "function" && reason) {
         hud.setOpMessage(reason);

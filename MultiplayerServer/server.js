@@ -49,7 +49,7 @@ const MATCH_BACKPRESSURE_DISCONNECT_MS = Math.max(1000, Number(process.env.MATCH
 const MATCH_BACKPRESSURE_HEARTBEAT_MS = Math.max(200, Number(process.env.MATCH_BACKPRESSURE_HEARTBEAT_MS || 1500));
 const MATCH_FULL_SYNC_MIN_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_FULL_SYNC_MIN_INTERVAL_MS || 900));
 const MATCH_FULL_SYNC_RETRY_INTERVAL_MS = Math.max(100, Number(process.env.MATCH_FULL_SYNC_RETRY_INTERVAL_MS || 450));
-const MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES = Math.max(120000, Number(process.env.MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES || 1800000));
+const MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES = Math.max(120000, Number(process.env.MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES || 9500000));
 const MATCH_NET_STATS_LOG_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_NET_STATS_LOG_INTERVAL_MS || 10000));
 const MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS = Math.max(4000, Number(process.env.MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS || 22000));
 const MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS = Math.max(MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS, Number(process.env.MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS || 45000));
@@ -763,6 +763,16 @@ function encodeOwnerPackedBase64(ownerArr) {
   return buf.toString("base64");
 }
 
+function encodeOwnerPackedBase64U8(ownerArr) {
+  if (!ownerArr || typeof ownerArr.length !== "number" || ownerArr.length <= 0) return "";
+  const n = ownerArr.length | 0;
+  const buf = Buffer.allocUnsafe(n);
+  for (let i = 0; i < n; i++) {
+    buf[i] = Number(ownerArr[i]) & 0xFF;
+  }
+  return buf.toString("base64");
+}
+
 function remapOwnerPackedBase64(base64Raw, assignedNationId) {
   const src = String(base64Raw || "").trim();
   if (!src || (assignedNationId | 0) <= 1) return src;
@@ -777,6 +787,23 @@ function remapOwnerPackedBase64(base64Raw, assignedNationId) {
     const mapped = mapCanonicalToLocalNationId(cur, assignedNationId) & 0xFFFF;
     buf[i] = mapped & 0xFF;
     buf[i + 1] = (mapped >> 8) & 0xFF;
+  }
+  return buf.toString("base64");
+}
+
+function remapOwnerPackedBase64U8(base64Raw, assignedNationId) {
+  const src = String(base64Raw || "").trim();
+  if (!src || (assignedNationId | 0) <= 1) return src;
+  let buf = null;
+  try {
+    buf = Buffer.from(src, "base64");
+  } catch {
+    return src;
+  }
+  for (let i = 0; i < buf.length; i++) {
+    const cur = buf[i] & 0xFF;
+    const mapped = mapCanonicalToLocalNationId(cur, assignedNationId) & 0xFF;
+    buf[i] = mapped;
   }
   return buf.toString("base64");
 }
@@ -1008,8 +1035,10 @@ function removeRuntimeAssignmentForSession(lobby, sessionIdRaw) {
 
 function enforceHumanNationRuntimeState(runtime) {
   if (!runtime?.world || !runtime.assignmentsBySession) return;
+  const humanNationIds = new Set();
   for (const assignment of runtime.assignmentsBySession.values()) {
     const nationId = Math.max(1, Number(assignment?.nationId) | 0);
+    humanNationIds.add(nationId);
     if (nationId >= 2 && Array.isArray(runtime.world._ai) && nationId < runtime.world._ai.length) {
       runtime.world._ai[nationId] = null;
     }
@@ -1017,6 +1046,24 @@ function enforceHumanNationRuntimeState(runtime) {
     if (nation && typeof nation === "object") {
       nation.isHuman = true;
       nation.isAiControlled = false;
+    }
+  }
+
+  const phase = runtime.world?._spawnPhase;
+  if (phase && phase.active && Array.isArray(phase.aiQueue) && humanNationIds.size > 0) {
+    let changed = false;
+    const nextQueue = [];
+    for (let i = 0; i < phase.aiQueue.length; i++) {
+      const id = Math.max(1, Number(phase.aiQueue[i]) | 0);
+      if (humanNationIds.has(id)) {
+        changed = true;
+        continue;
+      }
+      nextQueue.push(id);
+    }
+    if (changed) {
+      phase.aiQueue = nextQueue;
+      phase.aiCursor = Math.min(Math.max(0, Number(phase.aiCursor) | 0), phase.aiQueue.length);
     }
   }
 }
@@ -1670,7 +1717,12 @@ function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
     }
   }
 
-  if (packet.ownerPacked) packet.ownerPacked = remapOwnerPackedBase64(packet.ownerPacked, assigned);
+  if (packet.ownerPacked) {
+    const fmt = String(packet.ownerPackedFormat || "u16").trim().toLowerCase();
+    packet.ownerPacked = fmt === "u8"
+      ? remapOwnerPackedBase64U8(packet.ownerPacked, assigned)
+      : remapOwnerPackedBase64(packet.ownerPacked, assigned);
+  }
 
   const idKeys = new Set(["owner", "attacker", "defender", "from", "to", "targetOwner", "nationId", "winner", "winnerId", "loser", "loserId", "missionDefender", "launchTargetOwner"]);
 
@@ -1906,10 +1958,17 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
       }
     }
     const ownerTileCount = Math.max(0, Number(world?.owner?.length) | 0);
+    const nationCount = Math.max(1, Number(world?._nationCount) | 0);
     const allowOwnerPacked = ownerTileCount > 0 && ownerTileCount <= MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES;
     // Join-time full syncs during untouched spawn phase are huge and redundant.
     if (allowOwnerPacked && (!spawnActive || claimedTiles > 0)) {
-      packet.ownerPacked = encodeOwnerPackedBase64(world.owner);
+      if (nationCount <= 255) {
+        packet.ownerPacked = encodeOwnerPackedBase64U8(world.owner);
+        packet.ownerPackedFormat = "u8";
+      } else {
+        packet.ownerPacked = encodeOwnerPackedBase64(world.owner);
+        packet.ownerPackedFormat = "u16";
+      }
     } else if (!allowOwnerPacked && claimedTiles > 0) {
       packet.ownerPackedOmitted = true;
     }
@@ -2355,6 +2414,61 @@ function applyAuthoritativeCommand(world, cmdRaw, argsRaw) {
   }
 }
 
+function applySpawnPickFallback(world, assignedNationIdRaw, argsRaw) {
+  if (!world || typeof world !== "object") return { ok: false, reason: "World unavailable." };
+  const nationId = Math.max(1, Number(assignedNationIdRaw) | 0);
+  const args = Array.isArray(argsRaw) ? argsRaw : [];
+  const reqX = Number(args[1]);
+  const reqY = Number(args[2]);
+  const planned = world?._spawnPos?.[nationId] || null;
+
+  let pick = null;
+  if (Number.isFinite(reqX) && Number.isFinite(reqY) && typeof world._findNearestSpawnTile === "function") {
+    pick = world._findNearestSpawnTile(reqX | 0, reqY | 0, nationId, 14, {
+      requireDensity: false,
+      allowAnyBiome: true,
+      minDistanceScale: 0.25
+    });
+  }
+  if (!pick && typeof world._findFallbackSpawnTile === "function") {
+    pick = world._findFallbackSpawnTile(nationId, planned);
+  }
+  if (!pick && typeof world._findRandomSpawnTile === "function") {
+    pick = world._findRandomSpawnTile(nationId, {
+      requireDensity: false,
+      allowAnyBiome: true,
+      minDistanceScale: 0
+    });
+  }
+  if (!pick || !Number.isFinite(pick.x) || !Number.isFinite(pick.y)) {
+    return { ok: false, reason: "Unable to find a valid spawn tile." };
+  }
+
+  if (typeof world._lockSpawnSelection === "function") {
+    const lock = world._lockSpawnSelection(nationId, pick.x | 0, pick.y | 0, { allowRepick: true });
+    if (lock && lock.ok) {
+      return {
+        ok: true,
+        x: pick.x | 0,
+        y: pick.y | 0,
+        snapped: true
+      };
+    }
+  }
+
+  if (typeof world.pickSpawn === "function") {
+    const viaPick = world.pickSpawn(nationId, pick.x | 0, pick.y | 0);
+    if (viaPick && viaPick.ok) {
+      return {
+        ...viaPick,
+        snapped: true
+      };
+    }
+  }
+
+  return { ok: false, reason: "Spawn fallback failed." };
+}
+
 async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
   if (!lobby.started) {
     wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: 0, serverTickProcessed: 0, reason: "Match has not started." });
@@ -2427,7 +2541,11 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
   }
 
   assignment.lastSeq = input.seq | 0;
-  const result = applyAuthoritativeCommand(runtime.world, input.cmd, args);
+  let result = applyAuthoritativeCommand(runtime.world, input.cmd, args);
+  if (!result?.ok && isSpawnPickCmd) {
+    const fallback = applySpawnPickFallback(runtime.world, assignment.nationId, args);
+    if (fallback?.ok) result = fallback;
+  }
   touchLobby(lobby);
 
   if (!result?.ok) {

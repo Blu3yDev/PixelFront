@@ -126,6 +126,7 @@ export function installBorders(World) {
       else if (qLenStart >= 80000) maxChecks = Math.min(maxChecks, 3400);
       else if (qLenStart >= 40000) maxChecks = Math.min(maxChecks, 4600);
       else maxChecks = Math.min(maxChecks, 7000);
+      const retryLater = [];
       let counts = this._speckleNeighborCounts;
       let touched = this._speckleNeighborTouched;
       const wantLen = (this._nationCount | 0) + 1;
@@ -146,8 +147,8 @@ export function installBorders(World) {
 
         const age = this.time - (this.ownerStamp[idx] || 0);
         if (age < SPECKLE_MIN_AGE_S) {
-          // Keep the queue bounded under heavy combat; nearby future ownership changes can requeue this tile.
-          this._speckleSet.delete(idx);
+          // Keep candidate for a later pass once ownership is old enough to stabilize.
+          retryLater.push(idx);
           continue;
         }
 
@@ -190,13 +191,30 @@ export function installBorders(World) {
           continue;
         }
 
-        if (bestC >= 5 && curCount <= 2) {
+        const neutralHoleFill = (cur === OWNER.NONE && bestO > OWNER.NONE && bestC >= 5);
+        const enclaveFlip = (bestC >= 5 && curCount <= 3);
+        if (neutralHoleFill || enclaveFlip) {
           this._speckleSet.delete(idx);
           this._setOwner(idx, bestO);
           continue;
         }
 
         this._speckleSet.delete(idx);
+      }
+
+      if (retryLater.length > 0) {
+        const cap = 180000;
+        const q = this._speckleQueue;
+        const room = Math.max(0, cap - (q.length | 0));
+        const keep = Math.min(room, retryLater.length | 0);
+        for (let i = 0; i < keep; i++) {
+          q.push(retryLater[i] | 0);
+        }
+        if (keep < (retryLater.length | 0)) {
+          for (let i = keep; i < retryLater.length; i++) {
+            this._speckleSet.delete(retryLater[i] | 0);
+          }
+        }
       }
     }
 
@@ -439,7 +457,7 @@ export function installBorders(World) {
       }
 
       const setSize = set.size | 0;
-      const speckleBudget = setSize >= 30000 ? 1800 : (setSize >= 12000 ? 3000 : (setSize >= 5000 ? 5000 : 9000));
+      const speckleBudget = setSize >= 30000 ? 5200 : (setSize >= 12000 ? 7600 : (setSize >= 5000 ? 9800 : 12000));
       if (setSize <= speckleBudget) {
         for (const idx0 of set) {
           const idx = idx0 | 0;

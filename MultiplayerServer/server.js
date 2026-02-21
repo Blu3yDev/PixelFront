@@ -21,7 +21,9 @@ const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERV
 const MATCH_MAX_BACKLOG_MS = Math.max(100, Number(process.env.MATCH_MAX_BACKLOG_MS || 250));
 const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(110, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 170));
 const MATCH_STATE_HASH_EVERY_TICKS = Math.max(4, Number(process.env.MATCH_STATE_HASH_EVERY_TICKS || 24));
-const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 22000));
+const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 14000));
+const MATCH_TILE_DELTA_DRAIN_MIN = Math.max(500, Number(process.env.MATCH_TILE_DELTA_DRAIN_MIN || 1800));
+const MATCH_TILE_DELTA_BACKLOG_CAP = Math.max(MATCH_TILE_DELTA_CAP, Number(process.env.MATCH_TILE_DELTA_BACKLOG_CAP || 180000));
 const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(50, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 80));
 const MATCH_ENTITY_DELTA_INTERVAL_MAX_MS = Math.max(
   MATCH_ENTITY_DELTA_INTERVAL_MS,
@@ -40,6 +42,7 @@ const MATCH_BACKPRESSURE_DISCONNECT_MS = Math.max(1000, Number(process.env.MATCH
 const MATCH_BACKPRESSURE_HEARTBEAT_MS = Math.max(200, Number(process.env.MATCH_BACKPRESSURE_HEARTBEAT_MS || 1500));
 const MATCH_FULL_SYNC_MIN_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_FULL_SYNC_MIN_INTERVAL_MS || 900));
 const MATCH_FULL_SYNC_RETRY_INTERVAL_MS = Math.max(100, Number(process.env.MATCH_FULL_SYNC_RETRY_INTERVAL_MS || 450));
+const MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES = Math.max(120000, Number(process.env.MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES || 1800000));
 const MATCH_NET_STATS_LOG_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_NET_STATS_LOG_INTERVAL_MS || 10000));
 const MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS = Math.max(4000, Number(process.env.MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS || 22000));
 const MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS = Math.max(MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS, Number(process.env.MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS || 45000));
@@ -78,7 +81,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v23");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v24");
 const SERVER_INSTANCE_ID = randomUUID().slice(0, 8);
 
 const SERVER_WORLD_SIZE_PRESETS = Object.freeze({
@@ -659,7 +662,7 @@ function maybeLogRuntimeNetStats(lobby, runtime, now) {
   if ((now - last) < MATCH_NET_STATS_LOG_INTERVAL_MS) return;
   stats.lastLogAtMs = now;
   console.log(
-    `[runtime-net] lobby=${String(lobby?.code || "")} droppedSnapshots=${stats.droppedSnapshots | 0} skippedDueToBackpressure=${stats.skippedDueToBackpressure | 0} avgSnapshotBytes=${Math.max(0, Number(stats.avgSnapshotBytes) | 0)} maxBufferedAmountSeen=${Math.max(0, Number(stats.maxBufferedAmountSeen) | 0)}`
+    `[runtime-net] lobby=${String(lobby?.code || "")} droppedSnapshots=${stats.droppedSnapshots | 0} skippedDueToBackpressure=${stats.skippedDueToBackpressure | 0} avgSnapshotBytes=${Math.max(0, Number(stats.avgSnapshotBytes) | 0)} maxBufferedAmountSeen=${Math.max(0, Number(stats.maxBufferedAmountSeen) | 0)} tileBacklog=${Math.max(0, Number(runtime?.tileDeltaBacklog?.size) | 0)}`
   );
 }
 
@@ -1112,6 +1115,8 @@ async function ensureLobbyRuntime(lobby) {
       snapshotLoadScale: 1,
       backpressuredSockets: 0,
       netStats: createRuntimeNetStats(),
+      tileDeltaBacklog: new Map(),
+      ownerDeltaOverflowed: false,
       assignmentsBySession: new Map(),
       nationToSession: new Map()
     };
@@ -1319,27 +1324,62 @@ function serializeEvents(world) {
   return cloneWire(events.slice(-180)) || [];
 }
 
-function consumeChangedTiles(world) {
-  if (!world || typeof world._consumeOwnerDirty !== "function") return { full: true, changedTiles: [] };
-  const consumed = world._consumeOwnerDirty();
-  if (consumed?.full) return { full: true, changedTiles: [] };
-  const items = Array.isArray(consumed?.items) ? consumed.items : [];
-  if (items.length <= 0) return { full: false, changedTiles: [] };
+function ensureTileDeltaBacklog(runtime) {
+  if (!runtime || typeof runtime !== "object") return new Map();
+  if (!runtime.tileDeltaBacklog || typeof runtime.tileDeltaBacklog.set !== "function") {
+    runtime.tileDeltaBacklog = new Map();
+  }
+  return runtime.tileDeltaBacklog;
+}
 
-  const dedupe = new Map();
+function trimTileDeltaBacklog(backlog) {
+  if (!backlog || typeof backlog.size !== "number") return 0;
+  const cap = Math.max(MATCH_TILE_DELTA_CAP, MATCH_TILE_DELTA_BACKLOG_CAP);
+  let trimmed = 0;
+  while ((backlog.size | 0) > cap) {
+    const first = backlog.keys().next();
+    if (first.done) break;
+    backlog.delete(first.value);
+    trimmed++;
+  }
+  return trimmed;
+}
+
+function consumeChangedTiles(world, runtime) {
+  if (!world || typeof world._consumeOwnerDirty !== "function") return { overflow: true, merged: 0, trimmed: 0 };
+  const consumed = world._consumeOwnerDirty();
+  if (consumed?.full) return { overflow: true, merged: 0, trimmed: 0 };
+  const items = Array.isArray(consumed?.items) ? consumed.items : [];
+  if (items.length <= 0) return { overflow: false, merged: 0, trimmed: 0 };
+  const ownerArr = world.owner;
+  if (!ownerArr || typeof ownerArr.length !== "number" || ownerArr.length <= 0) {
+    return { overflow: true, merged: 0, trimmed: 0 };
+  }
+  const backlog = ensureTileDeltaBacklog(runtime);
+  let merged = 0;
   for (let i = 0; i < items.length; i++) {
     const idx = Number(items[i]) | 0;
-    if (idx < 0 || idx >= world.owner.length) continue;
-    dedupe.set(idx, Number(world.owner[idx]) | 0);
-    if ((dedupe.size | 0) > MATCH_TILE_DELTA_CAP) {
-      return { full: true, changedTiles: [] };
-    }
+    if (idx < 0 || idx >= ownerArr.length) continue;
+    backlog.set(idx, Number(ownerArr[idx]) | 0);
+    merged++;
   }
+  const trimmed = trimTileDeltaBacklog(backlog);
+  return { overflow: false, merged, trimmed };
+}
 
+function drainRuntimeTileDeltaBacklog(runtime, maxItemsRaw) {
+  const backlog = ensureTileDeltaBacklog(runtime);
+  if ((backlog.size | 0) <= 0) return [];
+  const maxItems = Math.max(1, Number(maxItemsRaw) | 0);
   const changedTiles = [];
-  // Compact tuple format reduces snapshot JSON size for large ownership deltas.
-  for (const [idx, owner] of dedupe.entries()) changedTiles.push([idx | 0, owner | 0]);
-  return { full: false, changedTiles };
+  while ((changedTiles.length | 0) < maxItems) {
+    const next = backlog.entries().next();
+    if (next.done) break;
+    const [idx, owner] = next.value;
+    backlog.delete(idx);
+    changedTiles.push([Number(idx) | 0, Number(owner) | 0]);
+  }
+  return changedTiles;
 }
 
 function serializeEntitiesDelta(world, runtime, forceFull = false) {
@@ -1750,15 +1790,28 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
         claimedTiles += Math.max(0, Number(world?.landOwnedCount?.[id]) | 0);
       }
     }
+    const ownerTileCount = Math.max(0, Number(world?.owner?.length) | 0);
+    const allowOwnerPacked = ownerTileCount > 0 && ownerTileCount <= MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES;
     // Join-time full syncs during untouched spawn phase are huge and redundant.
-    if (!spawnActive || claimedTiles > 0) {
+    if (allowOwnerPacked && (!spawnActive || claimedTiles > 0)) {
       packet.ownerPacked = encodeOwnerPackedBase64(world.owner);
+    } else if (!allowOwnerPacked && claimedTiles > 0) {
+      packet.ownerPackedOmitted = true;
     }
     packet.changedTiles = [];
   } else {
-    const delta = consumeChangedTiles(world);
-    packet.changedTiles = delta.changedTiles;
-    packet._ownerOverflow = !!delta.full;
+    const consumeResult = consumeChangedTiles(world, runtime);
+    runtime.ownerDeltaOverflowed = !!consumeResult.overflow;
+    let tileDeltaCap = MATCH_TILE_DELTA_CAP;
+    if (loadScale > 1) {
+      tileDeltaCap = Math.round(tileDeltaCap / Math.min(2.25, 1 + ((loadScale - 1) * 0.72)));
+    }
+    if ((Number(runtime?.backpressuredSockets) | 0) > 0) {
+      tileDeltaCap = Math.round(tileDeltaCap * 0.58);
+    }
+    tileDeltaCap = Math.max(MATCH_TILE_DELTA_DRAIN_MIN, Math.min(MATCH_TILE_DELTA_CAP, tileDeltaCap));
+    packet.changedTiles = drainRuntimeTileDeltaBacklog(runtime, tileDeltaCap);
+    packet._ownerOverflow = !!consumeResult.overflow;
   }
 
   return packet;
@@ -1776,7 +1829,9 @@ function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual")
   const mapped = remapSnapshotForSession(base, assignment.nationId);
   mapped.type = "full_sync";
   mapped.reason = String(reason || "manual");
-  mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
+  const hashMuted = !!mapped.ownerPackedOmitted;
+  ws._stateHashMuted = hashMuted;
+  if (!hashMuted) mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
   const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped, { critical: true });
   if (sent.sent) {
     ws._lastFullSyncAtMs = now;
@@ -1797,7 +1852,9 @@ function broadcastFullSync(lobby, runtime, reason = "resync") {
     const mapped = remapSnapshotForSession(base, assignment.nationId);
     mapped.type = "full_sync";
     mapped.reason = String(reason || "resync");
-    mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
+    const hashMuted = !!mapped.ownerPackedOmitted;
+    ws._stateHashMuted = hashMuted;
+    if (!hashMuted) mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
     const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped, { critical: false });
     if (sent.backpressured) backpressured++;
   }
@@ -1807,8 +1864,11 @@ function broadcastFullSync(lobby, runtime, reason = "resync") {
 function broadcastSnapshotDelta(lobby, runtime) {
   const base = buildSnapshotPacket(lobby, runtime, { fullSync: false });
   if (base._ownerOverflow) {
-    broadcastFullSync(lobby, runtime, "owner_overflow");
-    return;
+    const worldTiles = Math.max(0, Number(runtime?.world?.owner?.length) | 0);
+    if (worldTiles <= MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES) {
+      broadcastFullSync(lobby, runtime, "owner_overflow");
+      return;
+    }
   }
   const includeStateHash = ((runtime.simTick | 0) % MATCH_STATE_HASH_EVERY_TICKS) === 0;
   const hasTileDelta = Array.isArray(base.changedTiles) && base.changedTiles.length > 0;
@@ -1827,7 +1887,7 @@ function broadcastSnapshotDelta(lobby, runtime) {
     if (!assignment) continue;
     const mapped = remapSnapshotForSession(base, assignment.nationId);
     mapped.type = "snapshot_delta";
-    if (includeStateHash) {
+    if (includeStateHash && !ws?._stateHashMuted) {
       mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
     }
     const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, mapped);
@@ -2202,6 +2262,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
   ws._maxBufferedAmountSeen = 0;
   ws._lastFullSyncAtMs = 0;
   ws._nextFullSyncAttemptAtMs = 0;
+  ws._stateHashMuted = false;
 
   ws.on("pong", () => {
     ws.isAlive = true;

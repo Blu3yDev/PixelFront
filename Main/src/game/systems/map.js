@@ -2910,7 +2910,7 @@ World.prototype._initNations = function() {
       if (!phase || !phase.active) return { ok: false, reason: "Spawn phase is over." };
       if (id <= 0 || id > self._nationCount) return { ok: false, reason: "Invalid nation." };
       if (!self.nation[id]?.alive) return { ok: false, reason: "Nation is not active." };
-      const canRepick = (id === OWNER.PLAYER);
+      const canRepick = !!(id === OWNER.PLAYER || self.nation?.[id]?.isHuman);
       if (phase.picked[id] && !canRepick) return { ok: false, reason: "Nation already spawned." };
 
       const tx = clampInt(x | 0, 0, self.w - 1);

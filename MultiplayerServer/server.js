@@ -10,14 +10,23 @@ const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
 const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 60 * 6));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
-const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(45, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 80));
+const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(35, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 66));
+const MATCH_SNAPSHOT_INTERVAL_MIN_MS = Math.max(30, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MIN_MS || 40));
+const MATCH_SNAPSHOT_INTERVAL_MAX_MS = Math.max(
+  MATCH_SNAPSHOT_INTERVAL_MIN_MS,
+  Number(process.env.MATCH_SNAPSHOT_INTERVAL_MAX_MS || 180)
+);
 const MATCH_MAX_STEPS_PER_PUMP = Math.max(2, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 8));
 const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERVAL_MS || 16));
 const MATCH_MAX_BACKLOG_MS = Math.max(100, Number(process.env.MATCH_MAX_BACKLOG_MS || 250));
-const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(160, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 240));
+const MATCH_SNAPSHOT_FORCE_INTERVAL_MS = Math.max(120, Number(process.env.MATCH_SNAPSHOT_FORCE_INTERVAL_MS || 190));
 const MATCH_STATE_HASH_EVERY_TICKS = Math.max(4, Number(process.env.MATCH_STATE_HASH_EVERY_TICKS || 24));
 const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 9000));
-const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(60, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 90));
+const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(50, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 80));
+const MATCH_ENTITY_DELTA_INTERVAL_MAX_MS = Math.max(
+  MATCH_ENTITY_DELTA_INTERVAL_MS,
+  Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MAX_MS || 280)
+);
 const MATCH_BACKPRESSURE_SOFT_BYTES = Math.max(64 * 1024, Number(process.env.MATCH_BACKPRESSURE_SOFT_BYTES || (1536 * 1024)));
 const MATCH_BACKPRESSURE_HARD_BYTES = Math.max(MATCH_BACKPRESSURE_SOFT_BYTES, Number(process.env.MATCH_BACKPRESSURE_HARD_BYTES || (6 * 1024 * 1024)));
 const MATCH_BACKPRESSURE_DISCONNECT_MS = Math.max(1000, Number(process.env.MATCH_BACKPRESSURE_DISCONNECT_MS || 8000));
@@ -62,7 +71,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v19");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v20");
 const SERVER_INSTANCE_ID = randomUUID().slice(0, 8);
 
 const SERVER_WORLD_SIZE_PRESETS = Object.freeze({
@@ -1086,6 +1095,7 @@ async function ensureLobbyRuntime(lobby) {
       lastRelationsSnapshotAtMs: 0,
       lastEventsSnapshotAtMs: 0,
       lastEntitySnapshotAtMs: 0,
+      entityDeltaIntervalMs: MATCH_ENTITY_DELTA_INTERVAL_MS,
       backpressuredSockets: 0,
       netStats: createRuntimeNetStats(),
       assignmentsBySession: new Map(),
@@ -1171,16 +1181,36 @@ function broadcastLobby(lobby, type = "lobby_update") {
   }
 }
 
-function serializeSpawnPhase(raw) {
+function serializeSpawnPhase(raw, world = null) {
   const src = (raw && typeof raw === "object") ? raw : null;
   if (!src) return null;
   const out = cloneWire(src) || {};
+  let pickedIds = [];
   if (src.picked && typeof src.picked.length === "number") {
-    const ids = [];
     for (let i = 1; i < src.picked.length; i++) {
-      if (src.picked[i]) ids.push(i | 0);
+      if (src.picked[i]) pickedIds.push(i | 0);
     }
-    out.pickedIds = ids;
+    out.pickedIds = pickedIds;
+  } else if (Array.isArray(out.pickedIds)) {
+    pickedIds = out.pickedIds
+      .map((id) => Math.max(1, Number(id) | 0))
+      .filter((id, idx, arr) => arr.indexOf(id) === idx);
+    out.pickedIds = pickedIds;
+  }
+
+  const spawnPos = Array.isArray(world?._spawnPos) ? world._spawnPos : null;
+  if (spawnPos && pickedIds.length > 0) {
+    const pickedSpawns = [];
+    for (let i = 0; i < pickedIds.length; i++) {
+      const id = pickedIds[i] | 0;
+      const s = spawnPos[id];
+      if (!s) continue;
+      const x = Number(s.x) | 0;
+      const y = Number(s.y) | 0;
+      if (x < 0 || y < 0) continue;
+      pickedSpawns.push([id, x, y]);
+    }
+    if (pickedSpawns.length > 0) out.pickedSpawns = pickedSpawns;
   }
   delete out.picked;
   return out;
@@ -1195,7 +1225,7 @@ function serializeWorldMeta(lobby, runtime) {
     gameOver: cloneWire(world.gameOver) || null,
     matchOutcome: cloneWire(world.matchOutcome) || null,
     focusOpId: Number(world.focusOpId) | 0,
-    spawnPhase: serializeSpawnPhase(world._spawnPhase)
+    spawnPhase: serializeSpawnPhase(world._spawnPhase, world)
   };
 }
 
@@ -1293,15 +1323,20 @@ function consumeChangedTiles(world) {
   }
 
   const changedTiles = [];
-  for (const [idx, owner] of dedupe.entries()) changedTiles.push({ idx, owner });
+  // Compact tuple format reduces snapshot JSON size for large ownership deltas.
+  for (const [idx, owner] of dedupe.entries()) changedTiles.push([idx | 0, owner | 0]);
   return { full: false, changedTiles };
 }
 
 function serializeEntitiesDelta(world, runtime, forceFull = false) {
   const now = nowMs();
+  const dynamicIntervalMs = Math.max(
+    MATCH_ENTITY_DELTA_INTERVAL_MS,
+    Number(runtime?.entityDeltaIntervalMs) || MATCH_ENTITY_DELTA_INTERVAL_MS
+  );
   if (!forceFull) {
     const lastAt = Number(runtime?.lastEntitySnapshotAtMs) || 0;
-    if ((now - lastAt) < MATCH_ENTITY_DELTA_INTERVAL_MS) return undefined;
+    if ((now - lastAt) < dynamicIntervalMs) return undefined;
   }
 
   if (runtime && typeof runtime === "object") {
@@ -1420,6 +1455,10 @@ function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
   if (Array.isArray(packet.changedTiles)) {
     for (let i = 0; i < packet.changedTiles.length; i++) {
       const row = packet.changedTiles[i];
+      if (Array.isArray(row)) {
+        if (row.length >= 2) row[1] = mapCanonicalToLocalNationId(Number(row[1]) | 0, assigned);
+        continue;
+      }
       if (row && typeof row === "object") row.owner = mapCanonicalToLocalNationId(Number(row.owner) | 0, assigned);
     }
   }
@@ -1483,9 +1522,19 @@ function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
   if (packet.worldMeta && typeof packet.worldMeta === "object") {
     remapDeepNationKeys(packet.worldMeta.gameOver, assigned, idKeys);
     remapDeepNationKeys(packet.worldMeta.matchOutcome, assigned, idKeys);
-    if (packet.worldMeta.spawnPhase && Array.isArray(packet.worldMeta.spawnPhase.pickedIds)) {
-      for (let i = 0; i < packet.worldMeta.spawnPhase.pickedIds.length; i++) {
-        packet.worldMeta.spawnPhase.pickedIds[i] = mapCanonicalToLocalNationId(Number(packet.worldMeta.spawnPhase.pickedIds[i]) | 0, assigned);
+    const spawnPhase = packet.worldMeta.spawnPhase;
+    if (spawnPhase && typeof spawnPhase === "object") {
+      if (Array.isArray(spawnPhase.pickedIds)) {
+        for (let i = 0; i < spawnPhase.pickedIds.length; i++) {
+          spawnPhase.pickedIds[i] = mapCanonicalToLocalNationId(Number(spawnPhase.pickedIds[i]) | 0, assigned);
+        }
+      }
+      if (Array.isArray(spawnPhase.pickedSpawns)) {
+        for (let i = 0; i < spawnPhase.pickedSpawns.length; i++) {
+          const row = spawnPhase.pickedSpawns[i];
+          if (!Array.isArray(row) || row.length < 3) continue;
+          row[0] = mapCanonicalToLocalNationId(Number(row[0]) | 0, assigned);
+        }
       }
     }
     packet.worldMeta.matchOutcome = deriveSessionMatchOutcome(packet);
@@ -1709,7 +1758,8 @@ function broadcastSnapshotDelta(lobby, runtime) {
   const hasStats = Array.isArray(base.nationStats) || Array.isArray(base.leaderboard);
   const hasRelations = !!(base.relations && typeof base.relations === "object");
   const hasEvents = Array.isArray(base.events);
-  if (!hasTileDelta && !hasEntityDelta && !hasStats && !hasRelations && !hasEvents && !includeStateHash) {
+  const hasActiveSpawnPhase = !!(base.worldMeta && base.worldMeta.spawnPhase && base.worldMeta.spawnPhase.active);
+  if (!hasTileDelta && !hasEntityDelta && !hasStats && !hasRelations && !hasEvents && !hasActiveSpawnPhase && !includeStateHash) {
     return;
   }
   let backpressured = 0;
@@ -1840,17 +1890,33 @@ function flushRuntimeTick(lobby, runtime, now) {
   const aiScale = aiCountApprox > MATCH_RUNTIME_SAFE_MAX_AI_COUNT
     ? Math.min(4, aiCountApprox / Math.max(1, MATCH_RUNTIME_SAFE_MAX_AI_COUNT))
     : 1;
-  const loadScale = Math.max(1, areaScale, aiScale);
+  const rawLoadScale = Math.max(1, areaScale, aiScale);
+  const loadScale = rawLoadScale > 1
+    ? (1 + ((Math.sqrt(rawLoadScale) - 1) * 0.85))
+    : 1;
   if (loadScale > 1) snapshotIntervalMs = Math.round(snapshotIntervalMs * loadScale);
-  if (runtime.simAccMs > (stepMs * 1.25)) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.75);
-  if ((runtime.backpressuredSockets | 0) > 0) snapshotIntervalMs = Math.round(snapshotIntervalMs * 2.0);
-  snapshotIntervalMs = Math.max(45, Math.min(260, snapshotIntervalMs));
+  if (runtime.simAccMs > (stepMs * 1.25)) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.35);
+  if ((runtime.backpressuredSockets | 0) > 0) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.55);
+  snapshotIntervalMs = Math.max(MATCH_SNAPSHOT_INTERVAL_MIN_MS, Math.min(MATCH_SNAPSHOT_INTERVAL_MAX_MS, snapshotIntervalMs));
+
+  let entityDeltaIntervalMs = MATCH_ENTITY_DELTA_INTERVAL_MS;
+  if (loadScale > 1) entityDeltaIntervalMs = Math.round(entityDeltaIntervalMs * loadScale);
+  if (runtime.simAccMs > (stepMs * 1.25)) entityDeltaIntervalMs = Math.round(entityDeltaIntervalMs * 1.25);
+  if ((runtime.backpressuredSockets | 0) > 0) entityDeltaIntervalMs = Math.round(entityDeltaIntervalMs * 1.45);
+  runtime.entityDeltaIntervalMs = Math.max(
+    MATCH_ENTITY_DELTA_INTERVAL_MS,
+    Math.min(MATCH_ENTITY_DELTA_INTERVAL_MAX_MS, entityDeltaIntervalMs)
+  );
 
   const lastSnapshotAtMs = Number(runtime.lastSnapshotAtMs) || 0;
   const due = (now - lastSnapshotAtMs) >= snapshotIntervalMs;
-  const forceIntervalMs = Math.max(120, Math.min(420, Math.round(MATCH_SNAPSHOT_FORCE_INTERVAL_MS * Math.max(1, loadScale))));
+  const forceIntervalMs = Math.max(100, Math.min(280, Math.round(MATCH_SNAPSHOT_FORCE_INTERVAL_MS * Math.max(1, loadScale))));
   const forceDue = (now - lastSnapshotAtMs) >= forceIntervalMs;
-  if (due || forceDue) {
+  const accelIntervalMs = Math.max(MATCH_SNAPSHOT_INTERVAL_MIN_MS, Math.round(snapshotIntervalMs * 0.72));
+  const acceleratedDue = (runtime.backpressuredSockets | 0) <= 0
+    && runtime.simAccMs <= (stepMs * 1.1)
+    && (now - lastSnapshotAtMs) >= accelIntervalMs;
+  if (due || forceDue || acceleratedDue) {
     runtime.lastSnapshotAtMs = now;
     broadcastSnapshotDelta(lobby, runtime);
   }
@@ -2020,6 +2086,13 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
 
   // Push an authoritative delta immediately after accepted input to reduce visible input latency.
   try {
+    const cmd = String(input.cmd || "").trim().toLowerCase();
+    if (cmd === "pick_spawn") {
+      runtime.lastSnapshotAtMs = nowMs();
+      broadcastSnapshotDelta(lobby, runtime);
+      return;
+    }
+
     const stepMs = simDtMs();
     const backlogMs = Math.max(0, Number(runtime.simAccMs) || 0);
     const worldW = Math.max(0, Number(runtime?.world?.w ?? runtime?.world?.W) | 0);
@@ -2398,7 +2471,15 @@ const server = createServer(async (req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: {
+    threshold: 1024,
+    clientNoContextTakeover: true,
+    serverNoContextTakeover: true,
+    concurrencyLimit: 6
+  }
+});
 console.log(`[multiplayer-server] build=${SERVER_BUILD_ID} instance=${SERVER_INSTANCE_ID}`);
 
 server.on("upgrade", (req, socket, head) => {

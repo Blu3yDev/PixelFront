@@ -31,6 +31,9 @@ export function createHUD() {
   const spawnProgressWrap = maybe("spawnProgressWrap");
   const spawnProgressFill = maybe("spawnProgressFill");
   const spawnProgressText = maybe("spawnProgressText");
+  const syncLagProgressWrap = maybe("syncLagProgressWrap");
+  const syncLagProgressFill = maybe("syncLagProgressFill");
+  const syncLagProgressText = maybe("syncLagProgressText");
 
   // Dock
   const dock = must("events");
@@ -1664,6 +1667,22 @@ export function createHUD() {
       const pct = clampInt(Math.round(clamp01(Number(st.progress01) || 0) * 100), 0, 100);
       spawnProgressFill.style.width = `${pct}%`;
       spawnProgressText.textContent = String(st.label || `Spawn Selection ${st.picked | 0}/${st.total | 0}`);
+    },
+    setSyncLagProgress: (status) => {
+      if (!syncLagProgressWrap || !syncLagProgressFill || !syncLagProgressText) return;
+
+      const st = (status && typeof status === "object") ? status : null;
+      const active = !!st?.active;
+      syncLagProgressWrap.hidden = !active;
+      if (!active) {
+        syncLagProgressFill.style.width = "0%";
+        syncLagProgressText.textContent = "";
+        return;
+      }
+
+      const pct = clampInt(Math.round(clamp01(Number(st.progress01) || 0) * 100), 0, 100);
+      syncLagProgressFill.style.width = `${pct}%`;
+      syncLagProgressText.textContent = String(st.label || `Syncing ${pct}%`);
     },
     setPerfReadout: ({ fps, pingMs } = {}) => {
       const fpsNum = Number(fps);

@@ -942,6 +942,23 @@ export function installBorders(World) {
         if (this.nation[id]?.alive) alive.push(id);
       }
 
+      // In authoritative multiplayer, outcome is session-scoped and derived server-side.
+      // Keep global hard-stop only for true last-nation-standing.
+      const humanIds = (this._humanNationIds instanceof Set)
+        ? Array.from(this._humanNationIds.values())
+            .map((id) => Math.max(1, Number(id) | 0))
+            .filter((id, idx, arr) => id <= (this._nationCount | 0) && arr.indexOf(id) === idx)
+        : [];
+      const multiplayerSessionScoped = humanIds.length > 1;
+      if (multiplayerSessionScoped) {
+        this.matchOutcome = null;
+        if (!this.gameOver && alive.length <= 1) {
+          const finalWinner = alive.length === 1 ? (alive[0] | 0) : 0;
+          if (finalWinner > 0) this.gameOver = { winner: finalWinner };
+        }
+        return;
+      }
+
       const playerAlive = !!this.nation[OWNER.PLAYER]?.alive;
       if (!playerAlive) {
         // Pick a reasonable leader while the player is defeated.

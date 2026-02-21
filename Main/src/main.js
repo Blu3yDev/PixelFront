@@ -18,9 +18,9 @@ import {
 import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
 
-// PF_BUILD: v20 2026-02-21
-window.__PF_BUILD = "v20";
-console.info("[PixelFront] BUILD v1.5 Beta loaded (v20)");
+// PF_BUILD: v21 2026-02-21
+window.__PF_BUILD = "v21";
+console.info("[PixelFront] BUILD v1.5 Beta loaded (v21)");
 document.title = "PixelFront | Beta";
 
 const canvas = document.getElementById("game");
@@ -644,6 +644,9 @@ let multiplayerHasAuthoritativeSync = false;
 let multiplayerIdentityRefreshAtMs = 0;
 let multiplayerNextHudStatusAtMs = 0;
 let multiplayerLastLabelRecomputeAtMs = 0;
+let multiplayerCatchupEpisodeMaxGap = 0;
+let multiplayerCatchupLastGap = 0;
+let multiplayerCatchupLastActiveAtMs = 0;
 
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 2;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 5000;
@@ -651,6 +654,17 @@ const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 1800;
 const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 1200;
 const MULTIPLAYER_HUD_STATUS_COOLDOWN_MS = 1200;
 const MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS = 120;
+const MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS = 4;
+const MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS = 10;
+const MULTIPLAYER_CATCHUP_HARD_GAP_TICKS = 24;
+const MULTIPLAYER_CATCHUP_STICKY_MS = 600;
+const MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS = 160;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 3.0;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 4.8;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 7.0;
+const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 18;
+const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 34;
+const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 60;
 
 const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   setAttackRatio: Object.freeze({ cmd: "set_attack_ratio" }),
@@ -726,6 +740,9 @@ function resetMultiplayerSnapshotState() {
   multiplayerLastHashMismatchAtMs = 0;
   multiplayerNextHudStatusAtMs = 0;
   multiplayerLastLabelRecomputeAtMs = 0;
+  multiplayerCatchupEpisodeMaxGap = 0;
+  multiplayerCatchupLastGap = 0;
+  multiplayerCatchupLastActiveAtMs = 0;
 }
 
 function clearMultiplayerMatchSocket() {
@@ -851,11 +868,22 @@ function installMultiplayerWorldSync(worldRef) {
   for (const [methodName, rule] of Object.entries(MULTIPLAYER_WORLD_METHOD_SYNC)) {
     const fn = worldRef[methodName];
     if (typeof fn !== "function") continue;
-    multiplayerWorldSyncOriginals.set(methodName, fn.bind(worldRef));
+    const original = fn.bind(worldRef);
+    multiplayerWorldSyncOriginals.set(methodName, original);
     worldRef[methodName] = (...args) => {
       const sent = sendMultiplayerMatchInput(rule.cmd, args);
       if (!sent.ok) {
         return multiplayerDisconnectedReturnForMethod(methodName, sent.reason);
+      }
+      if (methodName === "pickSpawn") {
+        try {
+          const predicted = original(...args);
+          if (predicted && typeof predicted === "object" && predicted.ok) {
+            return { ...predicted, queued: true, predicted: true };
+          }
+        } catch {
+          // Keep spawn pick resilient; authoritative snapshots will correct local state.
+        }
       }
       return multiplayerQueuedReturnForMethod(methodName, args);
     };
@@ -903,10 +931,11 @@ function applyOwnerChangesFromList(worldRef, changedTiles) {
   try {
     for (let i = 0; i < changedTiles.length; i++) {
       const row = changedTiles[i];
-      const idx = Number(row?.idx) | 0;
+      const tuple = Array.isArray(row);
+      const idx = Number(tuple ? row[0] : row?.idx) | 0;
       if (idx < 0 || idx >= ownerArr.length) continue;
       if (!landArr[idx]) continue;
-      const nextOwner = Math.max(0, Number(row?.owner) | 0);
+      const nextOwner = Math.max(0, Number(tuple ? row[1] : row?.owner) | 0);
       if ((ownerArr[idx] | 0) === nextOwner) continue;
       if (typeof worldRef._setOwner === "function") {
         worldRef._setOwner(idx, nextOwner);
@@ -1217,6 +1246,23 @@ function applyMultiplayerWorldMeta(worldRef, packet) {
     spawnRaw.picked = picked;
     spawnRaw.pickedCount = spawnRaw.pickedIds.length | 0;
   }
+
+  if (Array.isArray(spawnRaw.pickedSpawns)) {
+    const cap = Math.max(1, Number(worldRef._nationCount) | 0);
+    if (!Array.isArray(worldRef._spawnPos) || worldRef._spawnPos.length < (cap + 1)) {
+      worldRef._spawnPos = new Array(cap + 1).fill(null);
+    }
+    for (let i = 0; i < spawnRaw.pickedSpawns.length; i++) {
+      const row = spawnRaw.pickedSpawns[i];
+      if (!Array.isArray(row) || row.length < 3) continue;
+      const id = Math.max(1, Number(row[0]) | 0);
+      if (id > cap) continue;
+      const x = Number(row[1]) | 0;
+      const y = Number(row[2]) | 0;
+      if (x < 0 || y < 0) continue;
+      worldRef._spawnPos[id] = { x, y };
+    }
+  }
   worldRef._spawnPhase = spawnRaw;
 }
 
@@ -1509,13 +1555,39 @@ function drainMultiplayerSnapshotBuffer(force = false) {
     return;
   }
 
-  const targetTick = force
-    ? multiplayerLatestServerTick
-    : Math.max(0, multiplayerLatestServerTick - MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS);
+  const latestTick = multiplayerLatestServerTick | 0;
+  const appliedTick = multiplayerLastAppliedTick | 0;
+  const rawGap = Math.max(0, latestTick - appliedTick);
+  const gapTicks = Math.max(0, rawGap - MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS);
+  const hardCatchup = force || (gapTicks >= MULTIPLAYER_CATCHUP_HARD_GAP_TICKS);
+  const softCatchup = !hardCatchup && (gapTicks >= MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS);
+
+  const targetTick = hardCatchup
+    ? latestTick
+    : softCatchup
+      ? Math.max(0, latestTick - 1)
+      : Math.max(0, latestTick - MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS);
+
+  const hasPerfNow = (typeof performance !== "undefined" && typeof performance.now === "function");
+  const drainStartMs = hasPerfNow ? performance.now() : 0;
+  const drainBudgetMs = hardCatchup
+    ? MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS
+    : softCatchup
+      ? MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS
+      : MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS;
 
   let progressed = false;
+  let processedPackets = 0;
   let guard = 0;
-  while (guard < 256) {
+  const guardLimit = hardCatchup ? 320 : (softCatchup ? 220 : 140);
+  const packetCap = hardCatchup
+    ? MULTIPLAYER_DRAIN_PACKET_CAP_HARD
+    : softCatchup
+      ? MULTIPLAYER_DRAIN_PACKET_CAP_SOFT
+      : MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL;
+  while (guard < guardLimit) {
+    if (processedPackets >= packetCap) break;
+    if (hasPerfNow && (performance.now() - drainStartMs) >= drainBudgetMs) break;
     guard++;
     let nextTick = -1;
     for (const tick of multiplayerSnapshotBuffer.keys()) {
@@ -1533,12 +1605,16 @@ function drainMultiplayerSnapshotBuffer(force = false) {
     multiplayerSnapshotBuffer.delete(nextTick);
     applyMultiplayerSnapshotPacket(packet, false);
     progressed = true;
+    processedPackets++;
   }
 
   if (!progressed) {
     if ((multiplayerLatestServerTick | 0) > (multiplayerLastAppliedTick | 0) && (now - multiplayerLastSnapshotAtMs) > MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS) {
       setMultiplayerHudStatus("Server delayed... attempting resync.");
       requestMultiplayerFullSync("gap_or_stale");
+    } else if (gapTicks >= MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS && (now - multiplayerLastSnapshotAtMs) > 1400) {
+      setMultiplayerHudStatus("Large desync detected... requesting full sync.");
+      requestMultiplayerFullSync("large_gap_catchup");
     }
   }
 }
@@ -2361,12 +2437,28 @@ const matchSummary = createMatchSummaryOverlay();
 const matchProgress = createMatchProgressTracker();
 let handledRealOutcomeSig = "";
 let matchSummaryState = null;
+let realLossSummaryDismissed = false;
 let debugMatchOutcomeTestPending = DEBUG_MATCH_OUTCOME_TEST_DEFAULT;
 let debugAbmNextSpawnAt = Number.POSITIVE_INFINITY;
 const playerAlertState = createPlayerAlertState();
 
 function playerAliveNow() {
   return !!world?.nation?.[OWNER.PLAYER]?.alive;
+}
+
+function currentSessionOutcomeResult() {
+  const raw = String(world?.matchOutcome?.result || "").trim().toLowerCase();
+  if (raw === "win" || raw === "victory") return "win";
+  if (raw === "loss" || raw === "lose" || raw === "defeat") return "loss";
+  return "";
+}
+
+function isSessionTerminalStateNow() {
+  if (!world) return false;
+  const outcome = currentSessionOutcomeResult();
+  if (outcome) return true;
+  if (!isMultiplayerMatchEnabled()) return !!world.gameOver;
+  return !!(world.gameOver && !playerAliveNow());
 }
 
 const BUILD_HOTKEY_BUTTON_IDS = Object.freeze({
@@ -2415,6 +2507,54 @@ function syncSpawnProgressUI() {
   hud.setSpawnProgress(getSpawnPhaseStatusNow());
 }
 
+function getMultiplayerSyncLagStatusNow() {
+  if (!isMultiplayerMatchEnabled()) {
+    multiplayerCatchupEpisodeMaxGap = 0;
+    multiplayerCatchupLastGap = 0;
+    multiplayerCatchupLastActiveAtMs = 0;
+    return { active: false, progress01: 1, label: "" };
+  }
+  if (isSpawnPhaseActiveNow()) {
+    return { active: false, progress01: 1, label: "" };
+  }
+  if (!multiplayerHasAuthoritativeSync) {
+    return { active: false, progress01: 0, label: "" };
+  }
+
+  const now = Date.now();
+  const rawGap = Math.max(0, (multiplayerLatestServerTick | 0) - (multiplayerLastAppliedTick | 0));
+  const gapTicks = Math.max(0, rawGap - MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS);
+
+  if (gapTicks > 0) {
+    multiplayerCatchupLastGap = gapTicks;
+    multiplayerCatchupLastActiveAtMs = now;
+    if (gapTicks > multiplayerCatchupEpisodeMaxGap) multiplayerCatchupEpisodeMaxGap = gapTicks;
+
+    const denom = Math.max(1, multiplayerCatchupEpisodeMaxGap | 0);
+    const progress01 = clamp01(1 - (gapTicks / denom));
+    if (gapTicks < MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS) {
+      return { active: false, progress01, label: "" };
+    }
+    const pct = clampInt(Math.round(progress01 * 100), 0, 100);
+    const label = `Syncing ${pct}% • ${gapTicks} ticks behind`;
+    return { active: true, progress01, label };
+  }
+
+  if (multiplayerCatchupLastGap > 0 && (now - multiplayerCatchupLastActiveAtMs) <= MULTIPLAYER_CATCHUP_STICKY_MS) {
+    return { active: true, progress01: 1, label: "Synced" };
+  }
+
+  multiplayerCatchupEpisodeMaxGap = 0;
+  multiplayerCatchupLastGap = 0;
+  multiplayerCatchupLastActiveAtMs = 0;
+  return { active: false, progress01: 1, label: "" };
+}
+
+function syncMultiplayerSyncLagUI() {
+  if (!hud || typeof hud.setSyncLagProgress !== "function") return;
+  hud.setSyncLagProgress(getMultiplayerSyncLagStatusNow());
+}
+
 function syncPauseAvailability() {
   const allowPause = !isMultiplayerMatchEnabled();
   if (hud && typeof hud.setPauseEnabled === "function") {
@@ -2448,7 +2588,7 @@ function canPlayerIssueOrders(showReason = true) {
     if (showReason) hud.setOpMessage("Pick your spawn location before issuing orders.");
     return false;
   }
-  if (world.gameOver) {
+  if (isSessionTerminalStateNow()) {
     if (showReason) hud.setOpMessage("Match already ended.");
     return false;
   }
@@ -5378,7 +5518,11 @@ function boot() {
     matchSummary.hide();
     const state = matchSummaryState || {};
     const wasTest = !!state.isTest;
+    const wasLoss = state.result === "loss";
     matchSummaryState = null;
+    if (!wasTest && wasLoss) {
+      realLossSummaryDismissed = true;
+    }
     if (!wasTest && !world.gameOver) {
       paused = false;
       hud.setPaused(false);
@@ -6063,6 +6207,7 @@ function boot() {
       hud.setGameTime(world.time);
       hud.setSelectedStructure(getSelectedStructure());
       syncSpawnProgressUI();
+      syncMultiplayerSyncLagUI();
       uiMs += performance.now() - hudStart;
     }
 
@@ -6173,6 +6318,7 @@ function createMatchProgressTracker() {
 function resetMatchSessionTracking() {
   handledRealOutcomeSig = "";
   matchSummaryState = null;
+  realLossSummaryDismissed = false;
   matchSummary.hide();
   debugMatchOutcomeTestPending = DEBUG_MATCH_OUTCOME_TEST_DEFAULT;
   resetDebugAbmSpawner();
@@ -6422,7 +6568,13 @@ function checkForRealMatchOutcome() {
   const at = Number(rawOutcome.at);
   const endedAt = Number.isFinite(at) ? at : (Number(world.time) || 0);
   const winnerId = rawOutcome.winner | 0;
-  const sig = `${outcome}|${winnerId}|${Math.round(endedAt * 100)}`;
+  if (outcome === "loss" && realLossSummaryDismissed) return;
+  if (matchSummaryState && !matchSummaryState.isTest && matchSummaryState.result === outcome) return;
+
+  // Loss outcomes can stream with drifting timestamps while spectating; keep this stable.
+  const sig = outcome === "loss"
+    ? `${outcome}|${winnerId}`
+    : `${outcome}|${winnerId}|${Math.round(endedAt * 100)}`;
   if (handledRealOutcomeSig === sig) return;
   handledRealOutcomeSig = sig;
 
@@ -7030,13 +7182,16 @@ function bindInput() {
   _inputHandlersInstalled = true;
 
   input.onClick((cell) => {
-    if (world.gameOver) return;
+    if (isSessionTerminalStateNow()) return;
 
     if (isSpawnPhaseActiveNow()) {
       const res = (typeof world.pickSpawn === "function")
         ? world.pickSpawn(OWNER.PLAYER, cell.x | 0, cell.y | 0)
         : { ok: false, reason: "Spawn selection API unavailable." };
-      if (isQueuedActionResult(res)) {
+      if (res && typeof res === "object" && res.ok && res.predicted) {
+        const snapped = res.snapped ? ` (nearest valid tile: ${res.x}, ${res.y})` : "";
+        hud.setOpMessage(`Spawn set to ${res.x}, ${res.y}${snapped}. Syncing with server...`);
+      } else if (isQueuedActionResult(res)) {
         hud.setOpMessage(`Spawn pick queued (${res.x}, ${res.y}).`);
       } else if (res.ok) {
         const snapped = res.snapped ? ` (nearest valid tile: ${res.x}, ${res.y})` : "";
@@ -9064,7 +9219,7 @@ function installCameraControls() {
 }
 
 function openContextMenuAt(clientX, clientY, offsetX, offsetY) {
-  if (world.gameOver || !playerAliveNow()) return;
+  if (isSessionTerminalStateNow() || !playerAliveNow()) return;
 
   const vp = renderer.getViewport();
   const px = offsetX * vp.dpr;

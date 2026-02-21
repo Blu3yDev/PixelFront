@@ -652,13 +652,17 @@ let multiplayerCatchupLastActiveAtMs = 0;
 let multiplayerCatchupVisibleSinceMs = 0;
 let multiplayerPendingSpawnPick = null;
 let multiplayerPendingSpawnRetryTimer = 0;
+let multiplayerLastDrainAtMs = 0;
+let multiplayerDeferredVisualSyncPending = false;
+let multiplayerDeferredUiSyncAtMs = 0;
+let multiplayerLastHashVerifyAtMs = 0;
 
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 5000;
 const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 2300;
 const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 2200;
 const MULTIPLAYER_HUD_STATUS_COOLDOWN_MS = 1200;
-const MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS = 120;
+const MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS = 240;
 const MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS = 12;
 const MULTIPLAYER_CATCHUP_HIDE_GAP_TICKS = 7;
 const MULTIPLAYER_CATCHUP_SHOW_MIN_MS = 700;
@@ -666,12 +670,18 @@ const MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS = 16;
 const MULTIPLAYER_CATCHUP_HARD_GAP_TICKS = 34;
 const MULTIPLAYER_CATCHUP_STICKY_MS = 240;
 const MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS = 160;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 3.4;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 6.2;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 9.2;
-const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 24;
-const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 42;
-const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 72;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 1.8;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 2.8;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 3.8;
+const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 4;
+const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 8;
+const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 12;
+const MULTIPLAYER_DRAIN_MIN_INTERVAL_MS = 10;
+const MULTIPLAYER_CATCHUP_SKIP_TO_LATEST_GAP_TICKS = 42;
+const MULTIPLAYER_DEFERRED_UI_SYNC_INTERVAL_MS = 90;
+const MULTIPLAYER_HASH_VERIFY_MIN_INTERVAL_MS = 900;
+const MULTIPLAYER_HASH_VERIFY_MAX_WORLD_TILES = 1_800_000;
+const MULTIPLAYER_HASH_VERIFY_MAX_ENTITIES = 1200;
 const MULTIPLAYER_BUFFER_SOFT_CAP = 200;
 const MULTIPLAYER_BUFFER_HARD_CAP = 320;
 const MULTIPLAYER_BUFFER_KEEP_RECENT_SOFT = 140;
@@ -759,6 +769,10 @@ function resetMultiplayerSnapshotState() {
   multiplayerCatchupLastGap = 0;
   multiplayerCatchupLastActiveAtMs = 0;
   multiplayerCatchupVisibleSinceMs = 0;
+  multiplayerLastDrainAtMs = 0;
+  multiplayerDeferredVisualSyncPending = false;
+  multiplayerDeferredUiSyncAtMs = 0;
+  multiplayerLastHashVerifyAtMs = 0;
   multiplayerPendingSpawnPick = null;
   if (multiplayerPendingSpawnRetryTimer) {
     clearTimeout(multiplayerPendingSpawnRetryTimer);
@@ -1463,9 +1477,12 @@ function applyMultiplayerWorldMeta(worldRef, packet) {
 
 function flushMultiplayerPixelWrites(worldRef) {
   if (!worldRef || typeof worldRef._flushQueuedPixelWrites !== "function") return;
-  for (let i = 0; i < 8; i++) {
+  const hasPerfNow = (typeof performance !== "undefined" && performance && typeof performance.now === "function");
+  const startMs = hasPerfNow ? performance.now() : 0;
+  for (let i = 0; i < 3; i++) {
     worldRef._flushQueuedPixelWrites();
     if (!Array.isArray(worldRef._pixelWriteList) || worldRef._pixelWriteList.length <= 0) break;
+    if (hasPerfNow && (performance.now() - startMs) >= 2.2) break;
   }
 }
 
@@ -1641,20 +1658,35 @@ function setMultiplayerHudStatus(messageRaw) {
 function maybeHandleMultiplayerStateHashMismatch(packet) {
   const expected = String(packet?.stateHash || "").trim();
   if (!expected) return;
+  const now = Date.now();
+  if ((now - multiplayerLastHashVerifyAtMs) < MULTIPLAYER_HASH_VERIFY_MIN_INTERVAL_MS) return;
+  const worldRef = multiplayerWorldSyncWorld;
+  const area = Math.max(0, (Number(worldRef?.w) | 0) * (Number(worldRef?.h) | 0));
+  if (area > MULTIPLAYER_HASH_VERIFY_MAX_WORLD_TILES) return;
+  const entityCount = (
+    (Array.isArray(worldRef?.structures) ? worldRef.structures.length : 0) +
+    (Array.isArray(worldRef?.ships) ? worldRef.ships.length : 0) +
+    (Array.isArray(worldRef?.nukeFlights) ? worldRef.nukeFlights.length : 0) +
+    (Array.isArray(worldRef?.airborneMissions) ? worldRef.airborneMissions.length : 0) +
+    (Array.isArray(worldRef?.operations) ? worldRef.operations.length : 0)
+  ) | 0;
+  if (entityCount > MULTIPLAYER_HASH_VERIFY_MAX_ENTITIES) return;
+  multiplayerLastHashVerifyAtMs = now;
   const gap = Math.max(0, (multiplayerLatestServerTick | 0) - (multiplayerLastAppliedTick | 0));
   if (gap >= MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS) return;
   const actual = computeMultiplayerStateHashFromWorld(multiplayerWorldSyncWorld, Number(packet?.tick) | 0);
   if (!actual || actual === expected) return;
-  const now = Date.now();
   if (now < multiplayerLastHashMismatchAtMs) return;
   multiplayerLastHashMismatchAtMs = now + MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS;
   requestMultiplayerFullSync("hash_mismatch");
 }
 
-function applyMultiplayerSnapshotPacket(packet, isFullSync = false) {
+function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw = null) {
   const worldRef = multiplayerWorldSyncWorld;
   if (!worldRef || !packet || typeof packet !== "object") return false;
   const tick = Math.max(0, Number(packet.tick) | 0);
+  const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : null;
+  const deferVisualSync = !!options?.deferVisualSync;
   const hadAuthoritativeSync = multiplayerHasAuthoritativeSync;
   let ownerApplied = 0;
 
@@ -1701,8 +1733,12 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false) {
     worldRef._serverLeaderboard = packet.leaderboard;
   }
 
-  flushMultiplayerPixelWrites(worldRef);
-  worldRef.dirty = true;
+  if (deferVisualSync) {
+    multiplayerDeferredVisualSyncPending = true;
+  } else {
+    flushMultiplayerPixelWrites(worldRef);
+    worldRef.dirty = true;
+  }
 
   multiplayerLastAppliedTick = Math.max(multiplayerLastAppliedTick, tick);
   multiplayerLatestServerTick = Math.max(multiplayerLatestServerTick, tick);
@@ -1717,7 +1753,7 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false) {
   }
 
   maybeHandleMultiplayerStateHashMismatch(packet);
-  refreshAllUI();
+  if (!deferVisualSync) refreshAllUI();
   return true;
 }
 
@@ -1748,6 +1784,20 @@ function queueMultiplayerSnapshotPacket(packet) {
   }
 }
 
+function flushDeferredMultiplayerVisualSync() {
+  if (!multiplayerDeferredVisualSyncPending) return;
+  multiplayerDeferredVisualSyncPending = false;
+  const worldRef = multiplayerWorldSyncWorld;
+  if (!worldRef) return;
+  flushMultiplayerPixelWrites(worldRef);
+  worldRef.dirty = true;
+  const now = Date.now();
+  if (now >= multiplayerDeferredUiSyncAtMs) {
+    multiplayerDeferredUiSyncAtMs = now + MULTIPLAYER_DEFERRED_UI_SYNC_INTERVAL_MS;
+    refreshAllUI();
+  }
+}
+
 function drainMultiplayerSnapshotBuffer(force = false) {
   if (!isMultiplayerMatchEnabled()) return;
   if (!multiplayerWorldSyncWorld) return;
@@ -1773,6 +1823,8 @@ function drainMultiplayerSnapshotBuffer(force = false) {
     }
     return;
   }
+  if (!force && (now - multiplayerLastDrainAtMs) < MULTIPLAYER_DRAIN_MIN_INTERVAL_MS) return;
+  multiplayerLastDrainAtMs = now;
 
   const latestTick = multiplayerLatestServerTick | 0;
   const appliedTick = multiplayerLastAppliedTick | 0;
@@ -1811,29 +1863,52 @@ function drainMultiplayerSnapshotBuffer(force = false) {
       ? MULTIPLAYER_DRAIN_PACKET_CAP_SOFT
       : MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL;
 
-  let candidateTicks = [];
-  for (const tick of multiplayerSnapshotBuffer.keys()) {
-    const t = Math.max(0, Number(tick) | 0);
-    if (t <= (multiplayerLastAppliedTick | 0)) continue;
-    if (t > targetTick) continue;
-    candidateTicks.push(t);
-  }
-  if (candidateTicks.length > 1) candidateTicks.sort((a, b) => a - b);
-  if (hardCatchup && candidateTicks.length > (packetCap * 2)) {
-    const tailCount = Math.max(packetCap + 6, Math.min(packetCap * 2, 64));
-    candidateTicks = candidateTicks.slice(Math.max(0, candidateTicks.length - tailCount));
+  if (hardCatchup && gapTicks >= MULTIPLAYER_CATCHUP_SKIP_TO_LATEST_GAP_TICKS && multiplayerSnapshotBuffer.size > 1) {
+    let newestTick = 0;
+    let newestPacket = null;
+    for (const [tickRaw, packet] of multiplayerSnapshotBuffer.entries()) {
+      const tick = Math.max(0, Number(tickRaw) | 0);
+      if (tick <= newestTick) continue;
+      newestTick = tick;
+      newestPacket = packet;
+    }
+    multiplayerSnapshotBuffer.clear();
+    if (newestPacket) {
+      applyMultiplayerSnapshotPacket(newestPacket, false, { deferVisualSync: true });
+      progressed = true;
+      processedPackets = 1;
+    }
   }
 
-  for (let i = 0; i < candidateTicks.length; i++) {
-    if (processedPackets >= packetCap) break;
-    if (hasPerfNow && (performance.now() - drainStartMs) >= drainBudgetMs) break;
-    const nextTick = candidateTicks[i] | 0;
-    const packet = multiplayerSnapshotBuffer.get(nextTick);
-    multiplayerSnapshotBuffer.delete(nextTick);
-    if (!packet) continue;
-    applyMultiplayerSnapshotPacket(packet, false);
-    progressed = true;
-    processedPackets++;
+  if (!progressed) {
+    let candidateTicks = [];
+    for (const tick of multiplayerSnapshotBuffer.keys()) {
+      const t = Math.max(0, Number(tick) | 0);
+      if (t <= (multiplayerLastAppliedTick | 0)) continue;
+      if (t > targetTick) continue;
+      candidateTicks.push(t);
+    }
+    if (candidateTicks.length > 1) candidateTicks.sort((a, b) => a - b);
+    if (hardCatchup && candidateTicks.length > (packetCap * 2)) {
+      const tailCount = Math.max(packetCap + 4, Math.min(packetCap * 2, 20));
+      candidateTicks = candidateTicks.slice(Math.max(0, candidateTicks.length - tailCount));
+    }
+
+    for (let i = 0; i < candidateTicks.length; i++) {
+      if (processedPackets >= packetCap) break;
+      if (hasPerfNow && (performance.now() - drainStartMs) >= drainBudgetMs) break;
+      const nextTick = candidateTicks[i] | 0;
+      const packet = multiplayerSnapshotBuffer.get(nextTick);
+      multiplayerSnapshotBuffer.delete(nextTick);
+      if (!packet) continue;
+      applyMultiplayerSnapshotPacket(packet, false, { deferVisualSync: true });
+      progressed = true;
+      processedPackets++;
+    }
+  }
+
+  if (progressed) {
+    flushDeferredMultiplayerVisualSync();
   }
 
   if (!progressed) {
@@ -2081,7 +2156,6 @@ function connectMultiplayerMatchSocket() {
         return;
       }
       queueMultiplayerSnapshotPacket(msg);
-      drainMultiplayerSnapshotBuffer(false);
       return;
     }
 

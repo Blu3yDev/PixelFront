@@ -26,9 +26,9 @@ export const BUILD_COST = Object.freeze({
   barracks: 150000,
   port: 175000,
   defence_post: 75000,
-  missile_silo: 650000,
-  abm_launcher: 500000,
-  airbase: 7500000
+  missile_silo: 1200000,
+  abm_launcher: 750000,
+  airbase: 1500000
 });
 
 export const STRUCT_COST_MAX = 5000000;
@@ -101,7 +101,7 @@ export const ABM_MISSILE_SPEED_TILES_PER_S = 150;
 export const ABM_MISSILE_BASE_TIME_S = 0.85;
 
 // ===== Airbase / Airborne transport =====
-export const AIRBASE_TRANSPORT_BUILD_GOLD_COST = 7500000;
+export const AIRBASE_TRANSPORT_BUILD_GOLD_COST = 3500000;
 export const AIRBASE_TRANSPORT_BUILD_TIME_S = 75;
 export const AIRBASE_LAUNCH_RADIUS_TILES = 240;
 export const AIRBORNE_PLANE_SPEED_TILES_PER_S = 8.5;

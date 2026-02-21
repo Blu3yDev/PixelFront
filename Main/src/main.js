@@ -18,9 +18,9 @@ import {
 import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
 
-// PF_BUILD: v17 2026-02-20
-window.__PF_BUILD = "v17";
-console.info("[PixelFront] BUILD v1.5 Beta loaded (v17)");
+// PF_BUILD: v19 2026-02-21
+window.__PF_BUILD = "v19";
+console.info("[PixelFront] BUILD v1.5 Beta loaded (v19)");
 document.title = "PixelFront | Beta";
 
 const canvas = document.getElementById("game");
@@ -646,8 +646,8 @@ let multiplayerNextHudStatusAtMs = 0;
 let multiplayerLastLabelRecomputeAtMs = 0;
 
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
-const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 2200;
-const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 900;
+const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 5000;
+const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 1800;
 const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 1200;
 const MULTIPLAYER_HUD_STATUS_COOLDOWN_MS = 1200;
 const MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS = 120;
@@ -2758,6 +2758,146 @@ function triggerPlayerEliminationVictoryFx(ev) {
   renderer.triggerVictoryEliminationFx(ev || null);
 }
 
+let bootUiAssetWarmupDone = false;
+let bootUiAssetWarmupPromise = null;
+
+function waitForImageUrl(url, timeoutMs = 2600) {
+  return new Promise((resolve) => {
+    const src = String(url || "").trim();
+    if (!src || typeof Image !== "function") return resolve();
+    const img = new Image();
+    img.decoding = "async";
+    img.loading = "eager";
+    let finished = false;
+    let timer = 0;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      if (timer) clearTimeout(timer);
+      try { img.removeEventListener("load", done); } catch {}
+      try { img.removeEventListener("error", done); } catch {}
+      resolve();
+    };
+    try { img.addEventListener("load", done); } catch {}
+    try { img.addEventListener("error", done); } catch {}
+    timer = setTimeout(done, Math.max(600, timeoutMs | 0));
+    img.src = src;
+  });
+}
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+async function warmupBootUiAssets(onProgress = null) {
+  if (bootUiAssetWarmupDone) {
+    if (typeof onProgress === "function") onProgress(1, 1, "Assets");
+    return;
+  }
+  if (bootUiAssetWarmupPromise) {
+    await bootUiAssetWarmupPromise;
+    if (typeof onProgress === "function") onProgress(1, 1, "Assets");
+    return;
+  }
+  const urls = [
+    "/UI_Icons/gold.png",
+    "/UI_Icons/population.png",
+    "/UI_Icons/infantry.png",
+    "/VoiceLines/OldRadio.png"
+  ];
+  bootUiAssetWarmupPromise = (async () => {
+    const total = Math.max(1, urls.length);
+    let done = 0;
+    if (typeof onProgress === "function") onProgress(done, total, "Assets");
+    await Promise.all(urls.map((url) => waitForImageUrl(url).then(() => {
+      done++;
+      if (typeof onProgress === "function") onProgress(done, total, "Assets");
+    })));
+    bootUiAssetWarmupDone = true;
+  })();
+  try {
+    await bootUiAssetWarmupPromise;
+  } finally {
+    bootUiAssetWarmupPromise = null;
+  }
+}
+
+async function warmupRendererStartupFrame(rendererRef, onProgress = null) {
+  if (!rendererRef || typeof rendererRef.render !== "function") {
+    if (typeof onProgress === "function") onProgress(1, 1, "Frame");
+    return;
+  }
+  if (typeof onProgress === "function") onProgress(0, 1, "Frame");
+
+  try { rendererRef.resizeToDisplay?.(); } catch {}
+  try {
+    rendererRef.render({
+      selectedStructureId: 0,
+      selectedShipId: 0,
+      rubberLine: null,
+      brushGhost: null,
+      intentArrows: null,
+      nukePreview: null,
+      nukeFlights: null,
+      airborneMissions: null
+    });
+  } catch (err) {
+    console.warn("[Boot] Initial frame warmup render failed.", err);
+  }
+
+  await new Promise((resolve) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => resolve());
+      return;
+    }
+    setTimeout(resolve, 0);
+  });
+
+  if (typeof onProgress === "function") onProgress(1, 1, "Frame");
+}
+
+async function waitForMultiplayerInitialSync(onProgress = null) {
+  if (!isMultiplayerMatchEnabled()) {
+    if (typeof onProgress === "function") onProgress(1, 1, "Sync");
+    return { ok: true, timedOut: false };
+  }
+
+  const startedAt = Date.now();
+  const maxWaitMs = 20_000;
+  let done = 0;
+  const total = Math.max(1, Math.floor(maxWaitMs / 120));
+  const notify = (text) => {
+    if (typeof onProgress === "function") onProgress(done, total, text);
+  };
+
+  notify("Connecting server...");
+  while ((Date.now() - startedAt) <= maxWaitMs) {
+    if (!isMultiplayerMatchEnabled()) {
+      if (typeof onProgress === "function") onProgress(total, total, "Ready");
+      return { ok: true, timedOut: false };
+    }
+
+    if (multiplayerHasAuthoritativeSync && ((multiplayerLastAppliedTick | 0) > 0 || (multiplayerLatestServerTick | 0) > 0)) {
+      if (typeof onProgress === "function") onProgress(total, total, "Synced");
+      return { ok: true, timedOut: false };
+    }
+
+    done = Math.min(total, done + 1);
+    if (!multiplayerMatchConnected) {
+      notify("Connecting server...");
+    } else if (multiplayerAwaitingFullSync || !multiplayerHasAuthoritativeSync) {
+      notify("Syncing server...");
+    } else {
+      notify("Final sync...");
+    }
+
+    await sleepMs(120);
+  }
+
+  if (typeof onProgress === "function") onProgress(total, total, "Server delayed");
+  return { ok: false, timedOut: true };
+}
+
 function isPlayerUnderAttackNow() {
   if (!world || !Array.isArray(world.operations)) return false;
   for (let i = 0; i < world.operations.length; i++) {
@@ -2853,7 +2993,7 @@ async function initAndBoot(matchConfig = null, opts = null) {
   ).toLowerCase();
   const configuredMode = rawMode === MAP_MODE.WORLD_MAP ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
 
-  if (onLoading) onLoading(12, "Loading map data...");
+  if (onLoading) onLoading(12, "Loading map...");
   if (configuredMode === MAP_MODE.WORLD_MAP) {
     try {
       earthData = await loadEarthData();
@@ -2885,32 +3025,71 @@ async function initAndBoot(matchConfig = null, opts = null) {
   const worldW = worldSize.width;
   const worldH = worldSize.height;
 
-  if (onLoading) onLoading(62, "Generating nations...");
+  if (onLoading) onLoading(62, "Preparing nations...");
   seed = forcedSeed || ((Date.now() >>> 0) || 1);
   world = new World(worldW, worldH, seed, { mapMode: activeMapMode, earthData, aiCount: worldSize.aiCount });
   applyMatchWorldRestrictions(world, cfg);
   applyMatchStartModifiers(world, cfg, playerName);
-  if (onLoading) onLoading(70, "Designing nation flags...");
+  if (onLoading) onLoading(70, "Preparing flags...");
   activeNationFlagsById = await generateNationFlagsById(world, activePlayerFlag, (done, total) => {
     if (!onLoading) return;
     const frac = total > 0 ? (done / total) : 1;
-    const pct = 70 + Math.round(frac * 14);
-    onLoading(pct, `Designing nation flags (${done}/${total})...`);
+    const pct = 70 + Math.round(frac * 12);
+    onLoading(pct, "Preparing flags...");
   });
-  if (onLoading) onLoading(82, "Initializing renderer...");
+  if (onLoading) onLoading(82, "Preparing renderer...");
   renderer = new Renderer(ctx, canvas, world);
+  if (renderer && typeof renderer.setClientSettings === "function") {
+    renderer.setClientSettings({
+      showAIStructures: clientSettings.showAIStructures,
+      showAIFlags: clientSettings.showAIFlags,
+      showNationLabels: clientSettings.showNationLabels,
+      showShips: clientSettings.showShips,
+      highlightNation: clientSettings.highlightNation,
+      showHatchOverlay: clientSettings.showHatchOverlay,
+      showHeatmap: clientSettings.showHeatmap,
+      nukeDestinationOverlay: clientSettings.nukeDestinationOverlay,
+      politicalMapMode: clientSettings.politicalMapMode,
+      atmosphereEnabled: !clientSettings.disableAtmosphere,
+      reduceMotion: clientSettings.reduceMotion
+    });
+  }
   if (renderer && typeof renderer.setPlayerFlag === "function") {
     renderer.setPlayerFlag(activePlayerFlag);
   }
   if (renderer && typeof renderer.setNationFlags === "function") {
     renderer.setNationFlags(activeNationFlagsById);
   }
+  if (onLoading) onLoading(86, "Loading assets...");
+  await warmupBootUiAssets((done, total) => {
+    if (!onLoading) return;
+    const frac = total > 0 ? (done / total) : 1;
+    const pct = 86 + Math.round(frac * 4);
+    onLoading(pct, "Loading assets...");
+  });
+  if (renderer && typeof renderer.warmupStaticAssets === "function") {
+    await renderer.warmupStaticAssets((done, total) => {
+      if (!onLoading) return;
+      const frac = total > 0 ? (done / total) : 1;
+      const pct = 90 + Math.round(frac * 6);
+      onLoading(pct, "Loading assets...");
+    });
+  }
+  if (ensureBgmAudio()) {
+    try { menuBgm?.load?.(); } catch {}
+    try { warBgm?.load?.(); } catch {}
+  }
+  if (onLoading) onLoading(96, "Preparing view...");
+  await warmupRendererStartupFrame(renderer, () => {
+    if (!onLoading) return;
+    onLoading(97, "Preparing view...");
+  });
   input = new PaintInput(canvas);
   resetPlayerAlertState();
   resetDebugAbmSpawner();
   liveModifierAccS = 0;
 
-  if (onLoading) onLoading(96, "Finalizing...");
+  if (onLoading) onLoading(97, "Finalizing...");
   console.info(`[World] ${worldW}x${worldH} (${worldSize.totalTiles} tiles) | AIs: ${worldSize.aiCount} | preset: ${worldSize.sizePreset} | mode: ${activeMapMode} | diff: ${cfg.difficulty}`);
   boot();
   if (onLoading) onLoading(100, "Ready");
@@ -2957,6 +3136,14 @@ async function startGameFromMainMenu(payload = null) {
         }
       }
     });
+    if (multiplayerSession) {
+      await waitForMultiplayerInitialSync((done, total, text) => {
+        if (!mainMenuLoadingController) return;
+        const frac = total > 0 ? (done / total) : 1;
+        const pct = 97 + Math.round(frac * 3);
+        mainMenuLoadingController.setProgress(pct, String(text || "Syncing server..."));
+      });
+    }
     if (mainMenuLoadingController) {
       mainMenuLoadingController.setProgress(100, "Ready");
       mainMenuLoadingController.hideSoon(260);

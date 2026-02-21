@@ -148,6 +148,60 @@ function frontlineWidthMul(frontlineCount, baseline = 8) {
 }
 
 export function installWar(World) {
+  World.prototype._capitalSiegeReady = function(attackerId, defenderId, capIdx, overrun = 0) {
+    const A = attackerId | 0;
+    const D = defenderId | 0;
+    const idx = capIdx | 0;
+    if (A <= 0 || D <= 0 || A === D || idx < 0) return false;
+    if (!this.land[idx]) return false;
+    if ((this.owner[idx] | 0) !== D) return false;
+
+    const w = this.w | 0;
+    const h = this.h | 0;
+    const x = idx % w;
+    const y = (idx / w) | 0;
+
+    let atk4 = 0;
+    if (x > 0 && this.land[idx - 1] && ((this.owner[idx - 1] | 0) === A)) atk4++;
+    if (x + 1 < w && this.land[idx + 1] && ((this.owner[idx + 1] | 0) === A)) atk4++;
+    if (y > 0 && this.land[idx - w] && ((this.owner[idx - w] | 0) === A)) atk4++;
+    if (y + 1 < h && this.land[idx + w] && ((this.owner[idx + w] | 0) === A)) atk4++;
+
+    let landLocal = 0;
+    let atkLocal = 0;
+    let defLocal = 0;
+    const r = 2;
+    for (let dy = -r; dy <= r; dy++) {
+      const yy = y + dy;
+      if (yy < 0 || yy >= h) continue;
+      for (let dx = -r; dx <= r; dx++) {
+        const xx = x + dx;
+        if (xx < 0 || xx >= w) continue;
+        const ii = yy * w + xx;
+        if (!this.land[ii]) continue;
+        landLocal++;
+        const o = this.owner[ii] | 0;
+        if (o === A) atkLocal++;
+        else if (o === D) defLocal++;
+      }
+    }
+
+    const over = clamp01(Number(overrun) || 0);
+    const minAtk4 = over >= 0.86 ? 1 : 2;
+    if (atk4 < minAtk4) return false;
+
+    const minAtkLocalStatic = Math.max(4, Math.ceil(9 - over * 4));
+    if (atkLocal < minAtkLocalStatic) return false;
+
+    const minAtkShare = Math.max(0.18, 0.34 - over * 0.14);
+    if (atkLocal < Math.ceil(landLocal * minAtkShare)) return false;
+
+    const maxDefMul = over >= 0.92 ? 2.0 : 1.4;
+    if (defLocal > Math.ceil(atkLocal * maxDefMul)) return false;
+
+    return true;
+  };
+
   // Larger maps need a higher simulation pace so full-conquest games don't drag.
   World.prototype._worldPaceScale = function() {
     const n = Math.max(1, this._nationCount | 0);
@@ -1519,6 +1573,9 @@ score -= def4 * 0.06;
       picksScratch
     );
     if (!picks.length) return { captured: 0, effort: 0 };
+    const capStructId = this.nation?.[defender]?.capital | 0;
+    const capStruct = capStructId ? this._structureById?.get(capStructId) : null;
+    const capAnchorIdx = capStruct ? (((capStruct.y | 0) * (this.w | 0)) + (capStruct.x | 0)) : -1;
 
     let got = 0;
     let effort = 0;
@@ -1550,6 +1607,7 @@ score -= def4 * 0.06;
         if (!this.land[idx]) continue;
         if ((this.owner[idx] | 0) !== defender) continue;
         if (!this._touchesOwner4(idx, attacker)) continue;
+        if (idx === capAnchorIdx && !this._capitalSiegeReady(attacker, defender, capAnchorIdx, overrun)) continue;
 
         let weakness = bestWeakness;
         if (!(weakness >= 0)) weakness = this._enemyTileWeakness(attacker, defender, idx);

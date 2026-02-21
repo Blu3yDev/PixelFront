@@ -45,13 +45,16 @@ const MATCH_MAX_WORLD_WIDTH = readBoundedEnvInt("MATCH_MAX_WORLD_WIDTH", MATCH_M
 const MATCH_MAX_WORLD_HEIGHT = readBoundedEnvInt("MATCH_MAX_WORLD_HEIGHT", MATCH_MAX_WORLD_HEIGHT_DEFAULT, 240);
 const MATCH_MAX_WORLD_TILES = readBoundedEnvInt("MATCH_MAX_WORLD_TILES", MATCH_MAX_WORLD_TILES_DEFAULT, 120000);
 const MATCH_MAX_AI_COUNT = readBoundedEnvInt("MATCH_MAX_AI_COUNT", MATCH_MAX_AI_COUNT_DEFAULT, 2);
+const MATCH_RUNTIME_SAFE_MAX_WORLD_TILES = readBoundedEnvInt("MATCH_RUNTIME_SAFE_MAX_WORLD_TILES", 450000, 120000);
+const MATCH_RUNTIME_SAFE_MAX_AI_COUNT = readBoundedEnvInt("MATCH_RUNTIME_SAFE_MAX_AI_COUNT", 48, 2);
+const MATCH_RUNTIME_SAFE_MIN_TILES_PER_AI = readBoundedEnvInt("MATCH_RUNTIME_SAFE_MIN_TILES_PER_AI", 5000, 1200);
 
 const MAP_MODE_WORLD = "earth";
 const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-20-authoritative-runtime-v16");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-20-authoritative-runtime-v17");
 const SERVER_INSTANCE_ID = randomUUID().slice(0, 8);
 
 const SERVER_WORLD_SIZE_PRESETS = Object.freeze({
@@ -445,6 +448,34 @@ function coerceWorldSpecFromWire(rawSpec, matchConfigRaw = null) {
   return sanitizeWorldSpec({ width, height, aiCount, mapMode });
 }
 
+function enforceRuntimeSafeWorldSpec(specRaw, lobby, matchConfigRaw = null) {
+  const spec = sanitizeWorldSpec(specRaw);
+  if (!spec) return null;
+  const cfg = sanitizeMatchConfig(matchConfigRaw) || {};
+  const mapMode = resolveMatchMapMode(spec, cfg);
+  let width = Math.max(480, Number(spec.width) | 0);
+  let height = Math.max(240, Number(spec.height) | 0);
+  const areaCap = Math.max(120000, Number(MATCH_RUNTIME_SAFE_MAX_WORLD_TILES) | 0);
+  const area = Math.max(1, width * height);
+  if (area > areaCap) {
+    const scale = Math.sqrt(areaCap / area);
+    width = Math.max(480, Math.floor(width * scale));
+    height = Math.max(240, Math.floor(height * scale));
+    while ((width * height) > areaCap && (width > 480 || height > 240)) {
+      if (width >= height && width > 480) width--;
+      else if (height > 240) height--;
+      else break;
+    }
+  }
+  const safeArea = Math.max(1, width * height);
+  const maxAiByTiles = Math.max(1, ((safeArea / Math.max(1200, MATCH_RUNTIME_SAFE_MIN_TILES_PER_AI)) | 0) - 1);
+  const requiredAi = Math.max(1, (Number(lobby?.players?.length) | 0) - 1);
+  let aiCount = Math.max(1, Number(spec.aiCount) | 0);
+  aiCount = Math.min(aiCount, Math.max(1, MATCH_RUNTIME_SAFE_MAX_AI_COUNT), maxAiByTiles);
+  if (aiCount < requiredAi) aiCount = requiredAi;
+  return sanitizeWorldSpec({ width, height, aiCount, mapMode });
+}
+
 function sanitizeWorldSpec(raw) {
   if (!raw || typeof raw !== "object") return null;
   const hasPositiveNumber = (value) => {
@@ -732,7 +763,8 @@ function resolveLobbyStartSpec(lobby, bodyRaw) {
     requestedSpec,
     computedSpec,
     existingSpec,
-    effectiveSpec: normalizedPreferredSpec || fallbackSpec || null
+    effectiveSpec: enforceRuntimeSafeWorldSpec(normalizedPreferredSpec || fallbackSpec || null, lobby, cfg),
+    preSafetySpec: normalizedPreferredSpec || fallbackSpec || null
   };
 }
 
@@ -768,7 +800,7 @@ async function startLobbyMatch(lobby, body) {
   }
 
   console.log(
-    `[lobby-start] code=${lobby.code} requested=${JSON.stringify(resolvedStart.requestedSpec || null)} computed=${JSON.stringify(resolvedStart.computedSpec || null)} existing=${JSON.stringify(resolvedStart.existingSpec || null)} effective=${JSON.stringify(lobby.matchWorldSpec || null)} cfg=${JSON.stringify(lobby.matchConfig || null)}`
+    `[lobby-start] code=${lobby.code} requested=${JSON.stringify(resolvedStart.requestedSpec || null)} computed=${JSON.stringify(resolvedStart.computedSpec || null)} existing=${JSON.stringify(resolvedStart.existingSpec || null)} preSafety=${JSON.stringify(resolvedStart.preSafetySpec || null)} effective=${JSON.stringify(lobby.matchWorldSpec || null)} cfg=${JSON.stringify(lobby.matchConfig || null)}`
   );
   touchLobby(lobby);
   broadcastLobby(lobby, "started");
@@ -1676,6 +1708,10 @@ function applySpawnPhaseFailsafe(lobby, runtime, now) {
 function flushRuntimeTick(lobby, runtime, now) {
   enforceHumanNationRuntimeState(runtime);
   const stepMs = simDtMs();
+  const worldW = Math.max(0, Number(runtime?.world?.w ?? runtime?.world?.W) | 0);
+  const worldH = Math.max(0, Number(runtime?.world?.h ?? runtime?.world?.H) | 0);
+  const worldArea = Math.max(1, worldW * worldH);
+  const aiCountApprox = Math.max(0, Number(runtime?.world?._ai?.length || 0) - 1);
   const lastPumpAt = Number(runtime.lastPumpAtMs) || now;
   const deltaRawMs = Math.max(0, now - lastPumpAt);
   runtime.lastPumpAtMs = now;
@@ -1701,11 +1737,8 @@ function flushRuntimeTick(lobby, runtime, now) {
     const lastWarn = Number(runtime.lastLagWarnAtMs) || 0;
     if ((now - lastWarn) >= MATCH_LAG_WARN_INTERVAL_MS) {
       runtime.lastLagWarnAtMs = now;
-      const world = runtime.world;
-      const area = Math.max(0, (Number(world?.W) | 0) * (Number(world?.H) | 0));
-      const aiCount = Math.max(0, Number(world?._ai?.length || 0) - 1);
       console.warn(
-        `[runtime-lag] lobby=${String(lobby?.code || "")} backlogMs=${Math.round(runtime.simAccMs)} stepMs=${Math.round(stepMs)} area=${area} ai=${aiCount}`
+        `[runtime-lag] lobby=${String(lobby?.code || "")} backlogMs=${Math.round(runtime.simAccMs)} stepMs=${Math.round(stepMs)} area=${worldArea} ai=${aiCountApprox}`
       );
     }
   }
@@ -1723,12 +1756,21 @@ function flushRuntimeTick(lobby, runtime, now) {
   runtime.backpressuredSockets = bufferedSockets;
 
   let snapshotIntervalMs = MATCH_SNAPSHOT_INTERVAL_MS;
+  const areaScale = worldArea > MATCH_RUNTIME_SAFE_MAX_WORLD_TILES
+    ? Math.min(4, worldArea / Math.max(1, MATCH_RUNTIME_SAFE_MAX_WORLD_TILES))
+    : 1;
+  const aiScale = aiCountApprox > MATCH_RUNTIME_SAFE_MAX_AI_COUNT
+    ? Math.min(4, aiCountApprox / Math.max(1, MATCH_RUNTIME_SAFE_MAX_AI_COUNT))
+    : 1;
+  const loadScale = Math.max(1, areaScale, aiScale);
+  if (loadScale > 1) snapshotIntervalMs = Math.round(snapshotIntervalMs * loadScale);
   if (runtime.simAccMs > (stepMs * 1.25)) snapshotIntervalMs = Math.round(snapshotIntervalMs * 1.75);
   if ((runtime.backpressuredSockets | 0) > 0) snapshotIntervalMs = Math.round(snapshotIntervalMs * 2.0);
 
   const lastSnapshotAtMs = Number(runtime.lastSnapshotAtMs) || 0;
   const due = (now - lastSnapshotAtMs) >= snapshotIntervalMs;
-  const forceDue = (now - lastSnapshotAtMs) >= MATCH_SNAPSHOT_FORCE_INTERVAL_MS;
+  const forceIntervalMs = Math.round(MATCH_SNAPSHOT_FORCE_INTERVAL_MS * Math.max(1, loadScale));
+  const forceDue = (now - lastSnapshotAtMs) >= forceIntervalMs;
   if (due || forceDue) {
     runtime.lastSnapshotAtMs = now;
     broadcastSnapshotDelta(lobby, runtime);
@@ -1901,7 +1943,12 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
   try {
     const stepMs = simDtMs();
     const backlogMs = Math.max(0, Number(runtime.simAccMs) || 0);
-    if (backlogMs <= (stepMs * 1.5)) {
+    const worldW = Math.max(0, Number(runtime?.world?.w ?? runtime?.world?.W) | 0);
+    const worldH = Math.max(0, Number(runtime?.world?.h ?? runtime?.world?.H) | 0);
+    const area = Math.max(1, worldW * worldH);
+    const aiCount = Math.max(0, Number(runtime?.world?._ai?.length || 0) - 1);
+    const heavyWorld = area > MATCH_RUNTIME_SAFE_MAX_WORLD_TILES || aiCount > MATCH_RUNTIME_SAFE_MAX_AI_COUNT;
+    if (!heavyWorld && backlogMs <= (stepMs * 1.5)) {
       runtime.lastSnapshotAtMs = nowMs();
       broadcastSnapshotDelta(lobby, runtime);
     }
@@ -2063,7 +2110,10 @@ const server = createServer(async (req, res) => {
           maxWorldWidth: MATCH_MAX_WORLD_WIDTH,
           maxWorldHeight: MATCH_MAX_WORLD_HEIGHT,
           maxWorldTiles: MATCH_MAX_WORLD_TILES,
-          maxAiCount: MATCH_MAX_AI_COUNT
+          maxAiCount: MATCH_MAX_AI_COUNT,
+          runtimeSafeMaxWorldTiles: MATCH_RUNTIME_SAFE_MAX_WORLD_TILES,
+          runtimeSafeMaxAiCount: MATCH_RUNTIME_SAFE_MAX_AI_COUNT,
+          runtimeSafeMinTilesPerAi: MATCH_RUNTIME_SAFE_MIN_TILES_PER_AI
         }
       });
       return;

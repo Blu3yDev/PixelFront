@@ -393,6 +393,8 @@ export class Renderer {
     this._relationIconGapPx = 8;
     this._relationIconSpacingPx = 8;
     this._relationIconLiftPx = 0;
+    this._staticAssetWarmupDone = false;
+    this._staticAssetWarmupPromise = null;
 
     // ===== Ship icons (screen-space) =====
     // Put PNGs in `public/Structures/ShipIcons/`:
@@ -1244,6 +1246,86 @@ export class Renderer {
     img.src = paths[0];
     this._relationIconCache.set(key, img);
     return img;
+  }
+
+  async warmupStaticAssets(onProgress = null) {
+    if (this._staticAssetWarmupDone) {
+      if (typeof onProgress === "function") onProgress(1, 1, "Assets");
+      return;
+    }
+    if (this._staticAssetWarmupPromise) {
+      await this._staticAssetWarmupPromise;
+      if (typeof onProgress === "function") onProgress(1, 1, "Assets");
+      return;
+    }
+
+    const notify = (done, total) => {
+      if (typeof onProgress === "function") onProgress(done, total, "Assets");
+    };
+
+    const waitImage = (img, timeoutMs = 2600) => new Promise((resolve) => {
+      if (!img) return resolve();
+      if (img.complete && img.naturalWidth > 0) return resolve();
+      let finished = false;
+      let timer = 0;
+      const done = () => {
+        if (finished) return;
+        finished = true;
+        if (timer) clearTimeout(timer);
+        try { img.removeEventListener("load", done); } catch {}
+        try { img.removeEventListener("error", done); } catch {}
+        resolve();
+      };
+      try { img.addEventListener("load", done); } catch {}
+      try { img.addEventListener("error", done); } catch {}
+      timer = setTimeout(done, Math.max(600, timeoutMs | 0));
+    });
+
+    const tasks = [];
+    const addTask = (img) => {
+      if (!img) return;
+      tasks.push(waitImage(img));
+    };
+
+    this._staticAssetWarmupPromise = (async () => {
+      const structureKeys = Object.keys(this._structureIconFiles || {});
+      for (let i = 0; i < structureKeys.length; i++) {
+        addTask(this._getStructureIcon(structureKeys[i]));
+      }
+      const shipKeys = Object.keys(this._shipIconFiles || {});
+      for (let i = 0; i < shipKeys.length; i++) {
+        addTask(this._getShipIcon(shipKeys[i]));
+      }
+      addTask(this._getMissileIcon("atomic"));
+      addTask(this._getMissileIcon("hydrogen"));
+      addTask(this._getMissileIcon("abm"));
+      addTask(this._getAirbornePlaneIcon());
+      addTask(this._getNukeCenterIcon());
+
+      const relationKeys = Object.keys(this._relationIconFiles || {});
+      for (let i = 0; i < relationKeys.length; i++) {
+        addTask(this._getRelationIcon(relationKeys[i]));
+      }
+
+      this._ensureVictoryIcon();
+      addTask(this._victoryIcon);
+
+      const total = Math.max(1, tasks.length);
+      let done = 0;
+      notify(done, total);
+      await Promise.all(tasks.map((p) => p.then(() => {
+        done++;
+        notify(done, total);
+      })));
+      this._staticAssetWarmupDone = true;
+      notify(total, total);
+    })();
+
+    try {
+      await this._staticAssetWarmupPromise;
+    } finally {
+      this._staticAssetWarmupPromise = null;
+    }
   }
 
   _getPlayerRelationIconKindsForNation(ownerId) {

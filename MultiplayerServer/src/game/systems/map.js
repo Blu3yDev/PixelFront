@@ -3202,6 +3202,8 @@ World.prototype._initNations = function() {
         const expandEvery = expandEveryBase * (0.90 + this._rng() * 0.20);
         const buildEvery = 1.10 + this._rng() * 0.85;
         const strategyEvery = 1.10 + this._rng() * 0.90;
+        const highTechEveryWar = 2.0 + this._rng() * 1.6;
+        const highTechEveryPeace = 4.6 + this._rng() * 3.0;
         const baseWarCooldownUntil = this.time + 8.0 + this._rng() * 10.0;
         const graceWarCooldownUntil = this.time + aiWarGraceS + 10.0 + this._rng() * 12.0;
 
@@ -3212,12 +3214,15 @@ World.prototype._initNations = function() {
           buildAcc: this._rng() * buildEvery,
           strategyAcc: this._rng() * strategyEvery,
           tuneAcc: this._rng() * 0.65,
+          highTechAcc: this._rng() * highTechEveryPeace,
           donateAcc: this._rng() * 2.4,
           neutralCarry: 0,
           expandEveryBase,
           expandEvery,
           buildEvery,
           strategyEvery,
+          highTechEveryWar,
+          highTechEveryPeace,
           warCooldownUntil: Math.max(baseWarCooldownUntil, graceWarCooldownUntil),
           allianceCooldownUntil: this.time + 22.0 + this._rng() * 30.0,
           focusCooldownUntil: this.time + 18.0 + this._rng() * 18.0,

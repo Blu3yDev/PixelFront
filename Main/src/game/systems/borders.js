@@ -419,19 +419,55 @@ export function installBorders(World) {
       const next = (this._ownerBatchDepth | 0) + 1;
       this._ownerBatchDepth = next;
       if (next === 1) {
-        if (this._ownerBatchNeighbors) this._ownerBatchNeighbors.clear();
+        const list = this._ownerBatchNeighborList;
+        if (Array.isArray(list)) list.length = 0;
+
+        const stamp = this._ownerBatchNeighborStamp;
+        if (stamp && stamp.length === (this.owner?.length || 0)) {
+          let epoch = ((this._ownerBatchNeighborEpoch >>> 0) + 1) >>> 0;
+          if (epoch === 0) {
+            stamp.fill(0);
+            epoch = 1;
+          }
+          this._ownerBatchNeighborEpoch = epoch;
+        } else if (this._ownerBatchNeighbors) {
+          this._ownerBatchNeighbors.clear();
+        }
         this._ownerBatchVersionDirty = false;
       }
     }
 
   World.prototype._recordOwnerBatchNeighbors = function(idxRaw) {
-      const set = this._ownerBatchNeighbors;
-      if (!set) return;
-
       const idx = idxRaw | 0;
       const w = this.w | 0;
       const h = this.h | 0;
       if (idx < 0 || idx >= (w * h)) return;
+
+      const stamp = this._ownerBatchNeighborStamp;
+      const list = this._ownerBatchNeighborList;
+      const epoch = this._ownerBatchNeighborEpoch >>> 0;
+
+      if (stamp && Array.isArray(list) && stamp.length === (w * h) && epoch > 0) {
+        const x = idx % w;
+        const y = (idx / w) | 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= h) continue;
+          const row = yy * w;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= w) continue;
+            const ni = (row + xx) | 0;
+            if ((stamp[ni] >>> 0) === epoch) continue;
+            stamp[ni] = epoch;
+            list.push(ni);
+          }
+        }
+        return;
+      }
+
+      const set = this._ownerBatchNeighbors;
+      if (!set) return;
 
       const x = idx % w;
       const y = (idx / w) | 0;
@@ -452,6 +488,47 @@ export function installBorders(World) {
       if (next < 0) next = 0;
       this._ownerBatchDepth = next;
       if (next > 0) return;
+
+      const list = this._ownerBatchNeighborList;
+      if (Array.isArray(list) && list.length > 0) {
+        const count = list.length | 0;
+        for (let i = 0; i < count; i++) {
+          this._refreshBorderCell(list[i] | 0);
+        }
+
+        if (this._authoritativeSyncApplying) {
+          list.length = 0;
+          if (this._ownerBatchVersionDirty) {
+            this.ownerVersion++;
+            this._ownerBatchVersionDirty = false;
+          }
+          return;
+        }
+
+        const speckleBudget = count >= 30000 ? 1800 : (count >= 12000 ? 3000 : (count >= 5000 ? 5000 : 9000));
+        if (count <= speckleBudget) {
+          for (let i = 0; i < count; i++) {
+            this._queueSpeckleCell(list[i] | 0);
+          }
+        } else {
+          const stride = Math.max(1, Math.floor(count / Math.max(1, speckleBudget)));
+          let k = 0;
+          let queued = 0;
+          for (let i = 0; i < count; i++) {
+            const idx = list[i] | 0;
+            if ((k++ % stride) !== 0) continue;
+            this._queueSpeckleCell(idx);
+            if (++queued >= speckleBudget) break;
+          }
+        }
+
+        list.length = 0;
+        if (this._ownerBatchVersionDirty) {
+          this.ownerVersion++;
+          this._ownerBatchVersionDirty = false;
+        }
+        return;
+      }
 
       const set = this._ownerBatchNeighbors;
       if (!set || set.size === 0) {

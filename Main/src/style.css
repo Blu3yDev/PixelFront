@@ -548,7 +548,9 @@ body {
 }
 
 /* Bottom structure bar */
-#structureBar {
+#structureBar,
+#quickLaunchBar,
+#researchLaunchBar {
   position: absolute;
   left: 50%;
   bottom: 14px;
@@ -567,6 +569,70 @@ body {
   pointer-events: auto;
   max-height: min(30vh, 260px);
   overflow: auto;
+}
+
+#quickLaunchBar {
+  left: auto;
+  right: calc((100vw - min(980px, calc(100vw - 28px))) / 2);
+  bottom: 68px;
+  transform: none;
+  width: min(520px, calc((100vw - 28px) / 2));
+  max-width: min(980px, calc(100vw - 28px));
+  grid-template-columns: minmax(0, 1fr);
+  padding: 8px 10px;
+}
+
+#researchLaunchBar {
+  left: auto;
+  right: calc(
+    ((100vw - min(980px, calc(100vw - 28px))) / 2) +
+    min(520px, calc((100vw - 28px) / 2)) +
+    4px
+  );
+  bottom: 68px;
+  transform: none;
+  width: clamp(180px, 20vw, 228px);
+  max-width: calc(100vw - 28px);
+  grid-template-columns: minmax(0, 1fr);
+  padding: 8px 10px;
+}
+
+#quickLaunchBar .barLeft,
+#researchLaunchBar .barLeft {
+  display: none;
+}
+
+#quickLaunchBar .barButtons,
+#researchLaunchBar .barButtons {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  justify-content: stretch;
+  overflow: hidden;
+}
+
+#researchLaunchBar .barButtons {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#quickLaunchBar .quickLaunchBtn,
+#researchLaunchBar .quickLaunchBtn {
+  min-width: 0 !important;
+  font-size: 12px;
+  line-height: 1.15;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Join Quick Launch + Build card corners so they read as one connected block. */
+#structureBar {
+  border-top-right-radius: 0 !important;
+}
+
+#quickLaunchBar {
+  border-bottom-left-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
 }
 
 .barLeft { min-width: 220px; }
@@ -1055,11 +1121,32 @@ body {
     max-height: 44vh;
   }
 
-  #structureBar {
+  #structureBar,
+  #quickLaunchBar,
+  #researchLaunchBar {
     grid-template-columns: 1fr;
     gap: 10px;
     text-align: left;
     max-height: 34vh;
+  }
+
+  #quickLaunchBar,
+  #researchLaunchBar {
+    left: 50%;
+    right: auto;
+    bottom: 132px;
+    width: min(980px, calc(100vw - 28px));
+    max-width: min(980px, calc(100vw - 28px));
+    transform: translateX(-50%);
+  }
+
+  #researchLaunchBar {
+    left: 14px;
+    right: auto;
+    bottom: 196px;
+    width: clamp(170px, 46vw, 220px);
+    max-width: calc(100vw - 28px);
+    transform: none;
   }
 
   .barRight { justify-content: flex-start; }
@@ -1118,6 +1205,7 @@ body {
 
 /* Reduce “glassy” look; keep readability */
 .panel,
+#quickLaunchBar,
 #structureBar,
 #events,
 #leaderboard{
@@ -1528,6 +1616,7 @@ body {
 
 #topHud,
 #events,
+#quickLaunchBar,
 #structureBar,
 #leaderboard,
 #sideHud .panel {
@@ -1966,12 +2055,29 @@ body {
 
 #leaderboard,
 #events,
+#quickLaunchBar,
+#researchLaunchBar,
 #structureBar,
 #sideHud > section.panel {
   background: var(--cardShellBg) !important;
   border: 1px solid var(--cardShellBorder) !important;
   border-radius: var(--cardShellRadius) !important;
   box-shadow: var(--cardShellShadow) !important;
+}
+
+/* Corner join between Quick Launch and Build (must live after shell radius override). */
+#structureBar {
+  border-top-right-radius: 0 !important;
+}
+
+#quickLaunchBar {
+  border-bottom-left-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+}
+
+#researchLaunchBar {
+  border-bottom-left-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
 }
 
 #sideHud > section.panel:first-child,
@@ -2094,11 +2200,13 @@ body {
 
 /* ===== Settings Modal ===== */
 #btnSettings {
-  min-width: 40px;
-  width: 40px;
-  padding: 8px 0;
-  font-size: 18px;
-  line-height: 1;
+  min-width: 92px;
+  padding: 7px 10px;
+}
+
+#btnPause,
+#btnLeaveGame {
+  padding: 7px 10px;
 }
 
 #btnSettings.isOpen {
@@ -2235,6 +2343,400 @@ body {
   grid-column: 1 / -1;
   width: 100%;
   margin: 0;
+}
+
+#researchModal {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 97;
+  pointer-events: auto;
+}
+
+.researchBackdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 8, 14, 0.58);
+  backdrop-filter: blur(2px);
+}
+
+.researchPanel {
+  position: relative;
+  z-index: 1;
+  width: min(1720px, calc(100vw - 12px));
+  height: min(92vh, 980px);
+  min-height: 620px;
+  max-height: min(92vh, 980px);
+  overflow: hidden;
+  padding: 16px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(14, 20, 30, 0.96);
+}
+
+.researchTopBar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.researchTitle {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: rgba(236, 242, 252, 0.96);
+}
+
+.researchTabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.researchTabBtn {
+  width: 100%;
+  min-height: 46px;
+  padding: 9px 12px;
+  justify-content: center;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.researchTabBtn.isTabSelected {
+  color: rgba(255, 242, 222, 0.98);
+  background: rgba(255, 194, 103, 0.18);
+  border-color: rgba(245, 196, 119, 0.56);
+}
+
+.researchCanvasShell {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 10px;
+  min-height: 0;
+  height: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 8px;
+  overflow: hidden;
+}
+
+.researchTreeViewport {
+  position: relative;
+  min-height: 0;
+  height: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  background:
+    radial-gradient(circle at 16% 14%, rgba(255, 255, 255, 0.04) 0%, rgba(0, 0, 0, 0) 42%),
+    rgba(8, 12, 18, 0.42);
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+
+.researchTreeViewport.isPanning {
+  cursor: grabbing;
+}
+
+.researchTreeCanvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 7200px;
+  height: 4200px;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.researchTreeLinks {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.researchTreeLinks path {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.28);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.researchTreeLinks path.researchLinkEdge {
+  opacity: 0.88;
+}
+
+.researchTreeLinks path.researchLinkTrunk {
+  stroke-width: 3.1;
+  opacity: 0.96;
+}
+
+.researchTreeLinks path.researchLinkEdge.isPending,
+.researchTreeLinks path.researchLinkTrunk.isPending {
+  opacity: 0.42;
+}
+
+.researchTreeLinks path.researchLinkEdge.isReady,
+.researchTreeLinks path.researchLinkTrunk.isReady {
+  opacity: 0.9;
+}
+
+.researchTreeLinks path.researchLinkEdge.isDisabled,
+.researchTreeLinks path.researchLinkTrunk.isDisabled {
+  opacity: 0.2;
+  stroke-dasharray: 5 5;
+}
+
+.researchTreeNodesLayer {
+  position: absolute;
+  inset: 0;
+}
+
+.researchIconNode {
+  position: absolute;
+  width: 128px;
+  height: 92px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 9px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0%, rgba(0, 0, 0, 0.36) 100%),
+    rgba(21, 28, 40, 0.82);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 4px 10px rgba(0, 0, 0, 0.42);
+  display: grid;
+  grid-template-rows: auto auto;
+  justify-items: center;
+  align-content: center;
+  gap: 4px;
+  padding: 6px 8px;
+  cursor: pointer;
+  transition: transform 100ms ease, border-color 100ms ease, filter 100ms ease;
+}
+
+.researchIconNode:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.42);
+  filter: brightness(1.05);
+}
+
+.researchIconNode.isLocked:hover,
+.researchIconNode.isBlocked:hover {
+  transform: none;
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.researchIconNode.isSelected {
+  border-color: rgba(250, 208, 129, 0.78);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 0 1px rgba(250, 208, 129, 0.35),
+    0 8px 16px rgba(0, 0, 0, 0.5);
+}
+
+.researchIconNode img {
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.4));
+  pointer-events: none;
+}
+
+.researchNodeName {
+  width: 100%;
+  font-size: 10px;
+  line-height: 1.15;
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: 0.02em;
+  color: rgba(236, 243, 251, 0.94);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.researchIconNode.isResearched {
+  border-color: rgba(152, 218, 170, 0.64);
+}
+
+.researchIconNode.isAvailable {
+  opacity: 0.86;
+  filter: grayscale(0.42) saturate(0.56);
+}
+
+.researchIconNode.isLocked {
+  opacity: 0.56;
+  filter: grayscale(0.85) saturate(0.32);
+}
+
+.researchIconNode.isBlocked {
+  opacity: 0.34;
+  filter: grayscale(1) saturate(0.08) brightness(0.78);
+}
+
+.researchInfoCard {
+  position: relative;
+  z-index: 2;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 8px 18px rgba(0, 0, 0, 0.34);
+}
+
+.researchInfoTag {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(223, 230, 238, 0.82);
+}
+
+.researchInfoMain {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.researchInfoHeader {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+}
+
+.researchInfoIcon {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.18);
+  padding: 6px;
+}
+
+.researchInfoName {
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(242, 248, 255, 0.96);
+}
+
+.researchInfoStatus {
+  margin-top: 2px;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.researchInfoDesc {
+  font-size: 12px;
+  line-height: 1.45;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.16);
+  padding: 10px;
+}
+
+.researchInfoMeta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.researchStat {
+  font-size: 12px;
+  color: rgba(219, 230, 246, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+  padding: 8px 10px;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+}
+
+.researchActionBtn {
+  min-height: 38px;
+  min-width: 152px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 980px) {
+  .researchPanel {
+    width: min(980px, calc(100vw - 18px));
+    min-height: 560px;
+  }
+
+  .researchTreeCanvas {
+    width: 5600px;
+    height: 3600px;
+  }
+
+  .researchInfoMeta {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .researchPanel {
+    padding: 12px;
+    overflow: auto;
+    height: min(92vh, 980px);
+    min-height: 520px;
+  }
+
+  .researchTabBtn {
+    min-height: 44px;
+    font-size: 14px;
+  }
+
+  .researchTreeCanvas {
+    width: 4600px;
+    height: 3200px;
+  }
+
+  .researchInfoCard {
+    gap: 10px;
+  }
+
+  .researchInfoMain {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .researchActionBtn {
+    width: 100%;
+  }
+
+  .researchInfoMeta {
+    grid-template-columns: 1fr;
+  }
 }
 
 #matchSummaryOverlay {
@@ -2402,7 +2904,7 @@ body {
   position: absolute;
   left: 14px;
   top: var(--spawn-progress-clearance);
-  width: min(340px, calc(100vw - 28px));
+  width: min(560px, calc(100vw - 28px));
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2416,7 +2918,7 @@ body {
   transform: none;
   width: 100%;
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
+  grid-template-columns: auto minmax(56px, 1fr) auto auto auto;
   align-items: center;
   gap: 8px;
   padding: 0;
@@ -2427,12 +2929,13 @@ body {
 }
 
 #leaderboard .topTimer {
-  min-width: 0;
-  text-align: left;
+  min-width: 56px;
+  text-align: center;
   font-size: 15px;
   font-weight: 750;
   letter-spacing: 0.02em;
-  padding-left: 4px;
+  padding-left: 0;
+  white-space: nowrap;
 }
 
 #btnLeaderboard {
@@ -2473,11 +2976,11 @@ body {
   #leaderboard {
     left: 10px;
     top: var(--spawn-progress-clearance);
-    width: min(320px, calc(100vw - 20px));
+    width: min(420px, calc(100vw - 20px));
   }
 
   #leaderboard #topHud {
-    grid-template-columns: auto auto auto;
+    grid-template-columns: auto auto auto auto;
     justify-content: start;
   }
 
@@ -2792,6 +3295,8 @@ body {
 #hud .lbTitle,
 #hud .barTitle,
 #hud .settingsTitle,
+#hud .researchTitle,
+#hud .researchViewTitle,
 #hud .settingsSectionTitle,
 #hud .ctxTitle,
 #hud .intelTitle,
@@ -2807,9 +3312,12 @@ body {
 
 #leaderboard,
 #events,
+#quickLaunchBar,
+#researchLaunchBar,
 #structureBar,
 #sideHud > section.panel,
 #settingsPanel,
+#researchPanel,
 #matchSummaryOverlay .matchSummaryCard,
 #hud .ctxMenu,
 #hud .intelPanel {
@@ -2877,16 +3385,71 @@ body {
 }
 
 /* Keep build tab compact after global readability bump */
+#quickLaunchBar,
+#researchLaunchBar,
 #structureBar {
   padding: 8px 10px !important;
   gap: 8px !important;
 }
 
+#hud #buildModeLabel {
+  display: none !important;
+}
+
+#hud #structureBar {
+  border-top-left-radius: 0 !important;
+  border-top-right-radius: 0 !important;
+}
+
+#hud #quickLaunchBar {
+  border-bottom-left-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+}
+
+#hud #researchLaunchBar[hidden] {
+  display: none !important;
+}
+
+/* Match Events card shell rhythm to Build card */
+#events {
+  padding: 8px 10px !important;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+  overflow: hidden !important;
+}
+
+#events .eventsHeader {
+  margin-bottom: 0;
+}
+
+#events .dockTabs .tabBtn,
+#events .eventsScopeBtn {
+  min-height: 34px;
+  padding: 6px 10px !important;
+}
+
+#events.isCollapsed {
+  min-height: 0;
+}
+
+/* Keep Events visually compact like Build bar only when collapsed. */
+#events.isCollapsed #eventsBody,
+#events.isCollapsed #dipBody,
+#events.isCollapsed #opsBody,
+#events.isCollapsed #eventsScopeControls {
+  display: none !important;
+}
+
+#quickLaunchBar .barSub,
+#researchLaunchBar .barSub,
 #structureBar .barSub {
   font-size: 12px !important;
   line-height: 1.15;
 }
 
+#quickLaunchBar .barButtons,
+#researchLaunchBar .barButtons,
 #structureBar .barButtons {
   gap: 6px !important;
 }
@@ -2894,6 +3457,18 @@ body {
 #structureBar .structureBtn {
   min-width: 76px !important;
   padding: 6px 9px !important;
+  gap: 1px !important;
+}
+
+#quickLaunchBar .structureBtn {
+  min-width: 0 !important;
+  padding: 6px 8px !important;
+  gap: 1px !important;
+}
+
+#researchLaunchBar .structureBtn {
+  min-width: 0 !important;
+  padding: 6px 8px !important;
   gap: 1px !important;
 }
 
@@ -2940,6 +3515,7 @@ body {
 #hud .tabBtn.isTabSelected,
 #hud .eventsScopeBtn.isTabSelected,
 #hud #btnDockOps.isTabSelected,
+#hud .researchTabBtn.isTabSelected,
 #hud #btnPause.isPaused,
 #hud #btnSettings.isOpen,
 #hud #btnLeaderboard.isOpen,
@@ -2954,10 +3530,32 @@ body {
 #hud .opItem,
 #hud .intelStat,
 #hud .intelStruct,
+#hud .researchCanvasShell,
+#hud .researchInfoCard,
+#hud .researchIconNode,
+#hud .researchStat,
 #hud .settingsSection,
 #hud .matchSummaryStat {
   background: var(--pf-hud-surface-soft) !important;
   border-color: var(--pf-hud-border-soft) !important;
+}
+
+#hud .researchTreeViewport {
+  background: linear-gradient(180deg, rgba(43, 35, 24, 0.58) 0%, rgba(19, 15, 10, 0.64) 100%) !important;
+  border-color: var(--pf-hud-border-soft) !important;
+}
+
+#hud .researchTreeLinks path {
+  stroke: rgba(219, 192, 145, 0.34) !important;
+}
+
+#hud .researchInfoDesc,
+#hud .researchInfoStatus {
+  color: var(--pf-hud-muted) !important;
+}
+
+#hud .researchTopBar .researchTitle {
+  color: var(--pf-hud-text) !important;
 }
 
 #hud .eventRow.eventTone-war {
@@ -2977,18 +3575,84 @@ body {
 }
 
 #hud .slider {
-  background: rgba(36, 29, 20, 0.86) !important;
+  --slider-pct: 0%;
+  --slider-fill-a: rgba(205, 164, 97, 0.95);
+  --slider-fill-b: rgba(160, 116, 58, 0.95);
+  --slider-empty-a: rgba(34, 27, 19, 0.92);
+  --slider-empty-b: rgba(18, 14, 10, 0.92);
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(255, 236, 196, 0.26) 0 6px,
+      rgba(255, 236, 196, 0.08) 6px 12px
+    ) left center / var(--slider-pct) 100% no-repeat,
+    linear-gradient(
+      90deg,
+      var(--slider-fill-a) 0%,
+      var(--slider-fill-b) var(--slider-pct),
+      var(--slider-empty-a) var(--slider-pct),
+      var(--slider-empty-b) 100%
+    ) !important;
   border-color: var(--pf-hud-border-soft) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.55);
+}
+
+#hud .slider::-webkit-slider-runnable-track {
+  height: 10px;
+  background: transparent;
+  border: 0;
+}
+
+#hud .slider::-moz-range-track {
+  height: 10px;
+  background: linear-gradient(180deg, var(--slider-empty-a), var(--slider-empty-b));
+  border: 0;
+}
+
+#hud .slider::-moz-range-progress {
+  height: 10px;
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(255, 236, 196, 0.26) 0 6px,
+      rgba(255, 236, 196, 0.08) 6px 12px
+    ),
+    linear-gradient(180deg, var(--slider-fill-a), var(--slider-fill-b));
 }
 
 #hud .slider::-webkit-slider-thumb {
   background: linear-gradient(180deg, rgba(249, 227, 176, 0.98), rgba(194, 148, 74, 0.96));
   border: 1px solid rgba(90, 58, 21, 0.86);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+  margin-top: -5px;
 }
 
 #hud .slider::-moz-range-thumb {
   background: linear-gradient(180deg, rgba(249, 227, 176, 0.98), rgba(194, 148, 74, 0.96));
   border: 1px solid rgba(90, 58, 21, 0.86);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+#sideHud > section.panel:first-child .statMain .statCurrent {
+  color: rgba(246, 251, 255, 0.98);
+  font-weight: 800;
+}
+
+#sideHud > section.panel:first-child .statMain .statMax {
+  color: rgba(186, 201, 224, 0.9);
+  font-size: 0.84em;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  padding: 1px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
 }
 
 #hud .spawnProgress {
@@ -3117,23 +3781,27 @@ body {
 }
 
 #mainMenu[data-view="settings"] {
-  --mm-track-shift: -16.6667%;
+  --mm-track-shift: -14.2857%;
 }
 
 #mainMenu[data-view="play"] {
-  --mm-track-shift: -33.3333%;
+  --mm-track-shift: -28.5714%;
+}
+
+#mainMenu[data-view="mapeditor"] {
+  --mm-track-shift: -42.8571%;
 }
 
 #mainMenu[data-view="multiplayer"] {
-  --mm-track-shift: -50%;
+  --mm-track-shift: -57.1429%;
 }
 
 #mainMenu[data-view="mpjoin"] {
-  --mm-track-shift: -66.6667%;
+  --mm-track-shift: -71.4286%;
 }
 
 #mainMenu[data-view="mplobby"] {
-  --mm-track-shift: -83.3333%;
+  --mm-track-shift: -85.7143%;
 }
 
 #mainMenu:not([hidden]) ~ #hud {
@@ -3197,7 +3865,7 @@ body {
 }
 
 .mainMenuTrack {
-  width: 600%;
+  width: 700%;
   display: flex;
   transition: transform 460ms cubic-bezier(0.2, 0.68, 0.2, 1);
   transform: translateX(var(--mm-track-shift));
@@ -3209,8 +3877,8 @@ body {
 }
 
 .mainMenuPanel {
-  width: calc(100% / 6);
-  flex: 0 0 calc(100% / 6);
+  width: calc(100% / 7);
+  flex: 0 0 calc(100% / 7);
   padding: 10px 16px 16px;
   min-height: 418px;
   display: grid;
@@ -3232,6 +3900,7 @@ body {
 
 #mainMenu[data-view="home"] .mainMenuPanelSettings,
 #mainMenu[data-view="home"] .mainMenuPanelPlay,
+#mainMenu[data-view="home"] .mainMenuPanelMapEditor,
 #mainMenu[data-view="home"] .mainMenuPanelMultiplayer,
 #mainMenu[data-view="home"] .mainMenuPanelMpJoin,
 #mainMenu[data-view="home"] .mainMenuPanelMpLobby {
@@ -3249,6 +3918,7 @@ body {
 #mainMenu.isHomeLeaving .mainMenuPanelHome .mainMenuButtons,
 #mainMenu[data-view="settings"] .mainMenuPanelHome .mainMenuButtons,
 #mainMenu[data-view="play"] .mainMenuPanelHome .mainMenuButtons,
+#mainMenu[data-view="mapeditor"] .mainMenuPanelHome .mainMenuButtons,
 #mainMenu[data-view="multiplayer"] .mainMenuPanelHome .mainMenuButtons,
 #mainMenu[data-view="mpjoin"] .mainMenuPanelHome .mainMenuButtons,
 #mainMenu[data-view="mplobby"] .mainMenuPanelHome .mainMenuButtons {
@@ -3417,6 +4087,10 @@ body {
   gap: 6px;
 }
 
+.mainMenuField.isDisabled {
+  opacity: 0.56;
+}
+
 .mainMenuField span {
   font-family: var(--mm-body-font);
   font-size: 17px;
@@ -3485,6 +4159,18 @@ body {
 .mainMenuPanelMultiplayer .mainMenuButtons {
   width: min(100%, 360px);
   margin: 10px auto 0;
+}
+
+.mainMenuMapEditorActions {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mainMenuPanelMapEditor .mainMenuBtn {
+  font-size: clamp(15px, 1.6vw, 19px);
+  height: 46px;
 }
 
 .mainMenuPanelMpJoin .mainMenuFieldGrid {
@@ -3563,6 +4249,10 @@ body {
 .mainMenuQuickButtons {
   display: grid;
   gap: 8px;
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 3;
 }
 
 .mainMenuQuickBtn {
@@ -3578,6 +4268,11 @@ body {
   place-items: center;
   padding: 0;
   transition: transform 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+#mmLibraryBtn {
+  border-color: rgba(255, 255, 255, 0.86);
+  background: rgba(0, 0, 0, 0.72);
 }
 
 .mainMenuQuickBtn svg {
@@ -3667,6 +4362,542 @@ body {
   background: linear-gradient(90deg, rgba(205, 230, 255, 0.94) 0%, rgba(240, 248, 255, 0.96) 100%);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.36);
   transition: width 280ms ease;
+}
+
+.mainMenuMapLibraryModal {
+  position: absolute;
+  inset: 0;
+  z-index: 233;
+  pointer-events: auto;
+  display: grid;
+  place-items: center;
+  animation: mmEntryRise 220ms ease-out both;
+}
+
+.mainMenuMapLibraryBackdrop {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.78) 0%, rgba(0, 0, 0, 0.86) 100%),
+    url("/main-menu/Background.png") center center / cover no-repeat,
+    #020202;
+  filter: grayscale(1) contrast(1.08);
+  backdrop-filter: blur(2px);
+}
+
+.mainMenuMapLibraryPanel {
+  position: relative;
+  z-index: 1;
+  width: min(1180px, calc(100vw - 20px));
+  max-height: min(92vh, 900px);
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid var(--mm-card-border);
+  background: linear-gradient(170deg, rgba(20, 20, 20, 0.96) 0%, rgba(6, 6, 6, 0.95) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.mainMenuMapLibraryHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0;
+}
+
+.mainMenuMapLibraryTitle {
+  margin: 0;
+  font-family: var(--mm-ui-font);
+  font-size: clamp(23px, 2.2vw, 30px);
+  letter-spacing: 0.025em;
+  color: rgba(246, 249, 255, 0.95);
+}
+
+.mainMenuMapLibrarySub {
+  margin: 6px 0 0;
+  font-family: var(--mm-body-font);
+  font-size: 17px;
+  color: rgba(224, 232, 246, 0.84);
+}
+
+.mainMenuMapLibraryBody {
+  display: grid;
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  gap: 10px;
+  min-height: 540px;
+}
+
+.mainMenuMapLibraryColumn {
+  min-height: 0;
+  display: grid;
+}
+
+.mainMenuMapLibraryColumn.isWide {
+  min-width: 0;
+  min-height: 0;
+}
+
+.mainMenuMapLibraryColumn.isWide .mainMenuMapLibraryGroup {
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.mainMenuMapLibraryGroup {
+  border: 1px solid var(--mm-card-border);
+  border-radius: 12px;
+  background: linear-gradient(170deg, rgba(17, 17, 17, 0.92) 0%, rgba(5, 5, 5, 0.92) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  padding: 12px;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.mainMenuMapLibraryGroupTitle {
+  font-family: var(--mm-ui-font);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(234, 239, 247, 0.84);
+}
+
+.mainMenuMapLibraryField {
+  display: grid;
+  gap: 6px;
+}
+
+.mainMenuMapLibraryField span {
+  font-family: var(--mm-body-font);
+  font-size: 17px;
+  color: rgba(224, 232, 246, 0.9);
+}
+
+.mainMenuMapLibraryField input,
+.mainMenuMapLibraryField select,
+.mainMenuMapLibraryField textarea {
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  border-radius: 10px;
+  background: rgba(2, 2, 2, 0.58);
+  color: rgba(242, 245, 250, 0.95);
+  font-size: 15px;
+  font-family: var(--mm-body-font);
+  padding: 8px 10px;
+  outline: none;
+}
+
+.mainMenuMapLibraryField input:focus,
+.mainMenuMapLibraryField select:focus,
+.mainMenuMapLibraryField textarea:focus {
+  border-color: rgba(255, 255, 255, 0.68);
+}
+
+.mainMenuMapLibraryField textarea {
+  resize: vertical;
+  min-height: 84px;
+}
+
+.mainMenuMapLibraryToolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.mainMenuMapLibraryList {
+  display: grid;
+  gap: 8px;
+  min-height: 220px;
+  height: min(62vh, 680px);
+  max-height: 68vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+
+.mainMenuMapLibraryItem {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  background: rgba(2, 2, 2, 0.5);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.mainMenuMapLibraryItemTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.mainMenuMapLibraryItemName {
+  font-size: 17px;
+  color: rgba(246, 249, 255, 0.95);
+  font-family: var(--mm-ui-font);
+  overflow-wrap: anywhere;
+}
+
+.mainMenuMapLibraryItemMeta {
+  font-size: 14px;
+  color: rgba(214, 226, 241, 0.82);
+  font-family: var(--mm-body-font);
+  overflow-wrap: anywhere;
+}
+
+.mainMenuMapLibraryItemDesc {
+  margin: 0;
+  font-size: 15px;
+  color: rgba(226, 233, 245, 0.88);
+  font-family: var(--mm-body-font);
+  line-height: 1.3;
+}
+
+.mainMenuMapLibraryItemActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.mainMenuMapLibraryRatingWrap {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.mainMenuMapLibraryRatingStars {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.mainMenuMapLibraryStarBtn {
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(245, 245, 245, 0.7);
+  width: 34px;
+  min-height: 34px;
+  height: 34px;
+  padding: 0;
+  line-height: 1;
+  font-size: 18px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mainMenuMapLibraryStarBtn.isFilled {
+  color: rgba(247, 218, 117, 0.95);
+}
+
+.mainMenuMapLibraryStarBtn.isMine {
+  border-color: rgba(247, 218, 117, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(247, 218, 117, 0.34);
+}
+
+.mainMenuMapLibraryStarBtn:hover:not(:disabled),
+.mainMenuMapLibraryStarBtn:focus-visible:not(:disabled) {
+  border-color: rgba(255, 245, 173, 0.9);
+  color: rgba(255, 227, 126, 0.96);
+}
+
+.mainMenuMapLibraryStarBtn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.mainMenuMapLibraryPanel .mainMenuBtn,
+.mainMenuMapEditorPanel .mainMenuBtn {
+  min-height: 44px;
+  height: auto;
+  font-size: 16px;
+  line-height: 1.15;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  white-space: normal;
+}
+
+.mainMenuMapLibraryPanel .mainMenuMiniBtn,
+.mainMenuMapEditorPanel .mainMenuMiniBtn {
+  min-height: 34px;
+  line-height: 1.15;
+  padding: 7px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  white-space: normal;
+}
+
+.mainMenuMapEditorModal {
+  position: absolute;
+  inset: 0;
+  z-index: 234;
+  pointer-events: auto;
+  display: grid;
+  place-items: center;
+  animation: mmEntryRise 220ms ease-out both;
+}
+
+.mainMenuMapEditorBackdrop {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.78) 0%, rgba(0, 0, 0, 0.86) 100%),
+    url("/main-menu/Background.png") center center / cover no-repeat,
+    #020202;
+  filter: grayscale(1) contrast(1.08);
+  backdrop-filter: blur(2px);
+}
+
+.mainMenuMapEditorPanel {
+  position: relative;
+  z-index: 1;
+  width: min(1320px, calc(100vw - 18px));
+  max-height: min(94vh, 960px);
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid var(--mm-card-border);
+  background: linear-gradient(170deg, rgba(20, 20, 20, 0.96) 0%, rgba(6, 6, 6, 0.95) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.mainMenuMapEditorHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0;
+}
+
+.mainMenuMapEditorTitle {
+  margin: 0;
+  font-family: var(--mm-ui-font);
+  font-size: clamp(24px, 2.2vw, 30px);
+  letter-spacing: 0.025em;
+  color: rgba(246, 249, 255, 0.95);
+}
+
+.mainMenuMapEditorSub {
+  margin: 6px 0 0;
+  font-family: var(--mm-body-font);
+  font-size: 18px;
+  color: rgba(224, 232, 246, 0.84);
+}
+
+.mainMenuMapEditorHeaderControls {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.mainMenuMapEditorNameWrap {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+}
+
+.mainMenuMapEditorNameWrap span {
+  font-family: var(--mm-body-font);
+  font-size: 16px;
+  color: rgba(224, 232, 246, 0.9);
+}
+
+.mainMenuMapEditorNameWrap input {
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  background: rgba(2, 2, 2, 0.58);
+  color: rgba(242, 245, 250, 0.95);
+  font-size: 15px;
+  padding: 0 10px;
+  outline: none;
+}
+
+.mainMenuMapEditorNameWrap input:focus {
+  border-color: rgba(255, 255, 255, 0.68);
+}
+
+.mainMenuMapEditorBody {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr) minmax(250px, 310px);
+  gap: 12px;
+  min-height: 620px;
+}
+
+.mainMenuMapEditorTools,
+.mainMenuMapEditorMeta {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.mainMenuMapEditorGroup {
+  border: 1px solid var(--mm-card-border);
+  border-radius: 12px;
+  background: linear-gradient(170deg, rgba(17, 17, 17, 0.92) 0%, rgba(5, 5, 5, 0.92) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.mainMenuMapEditorGroupTitle {
+  font-family: var(--mm-ui-font);
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(234, 239, 247, 0.84);
+}
+
+.mainMenuMapEditorToolRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mainMenuMapEditorToolRow .mainMenuMiniBtn.isActive {
+  border-color: rgba(255, 255, 255, 0.74);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+}
+
+.mainMenuMapEditorRange {
+  display: grid;
+  gap: 6px;
+  font-family: var(--mm-body-font);
+  font-size: 17px;
+  color: rgba(224, 232, 246, 0.9);
+}
+
+.mainMenuMapEditorRange input[type="range"] {
+  width: 100%;
+}
+
+.mainMenuMapEditorBiomeList {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  max-height: 520px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.mainMenuMapEditorBiomeBtn {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(0, 0, 0, 0.44);
+  color: rgba(242, 245, 250, 0.94);
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mainMenuMapEditorBiomeBtn.isActive {
+  border-color: rgba(255, 255, 255, 0.76);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.32);
+}
+
+.mainMenuMapEditorBiomeSwatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.38);
+}
+
+.mainMenuMapEditorCanvasPane {
+  border: 1px solid var(--mm-card-border);
+  border-radius: 12px;
+  background: linear-gradient(170deg, rgba(14, 14, 14, 0.94) 0%, rgba(4, 4, 4, 0.94) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  padding: 10px;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 0;
+}
+
+#mmMapEditorCanvas {
+  width: 100%;
+  height: 100%;
+  min-height: 520px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background:
+    linear-gradient(45deg, rgba(30, 43, 52, 0.56) 25%, rgba(0, 0, 0, 0) 25% 75%, rgba(30, 43, 52, 0.56) 75%),
+    linear-gradient(45deg, rgba(0, 0, 0, 0) 25%, rgba(30, 43, 52, 0.56) 25% 75%, rgba(0, 0, 0, 0) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+}
+
+.mainMenuMapEditorHint {
+  margin: 0;
+  font-family: var(--mm-body-font);
+  font-size: 15px;
+  color: rgba(224, 232, 246, 0.8);
+}
+
+.mainMenuMapEditorActionCol {
+  display: grid;
+  gap: 8px;
+}
+
+.mainMenuMapEditorActionCol .mainMenuBtn {
+  height: 44px;
+  font-size: 16px;
+}
+
+.mainMenuMapEditorStats {
+  margin: 0;
+  min-height: 64px;
+  font-family: var(--mm-body-font);
+  font-size: 15px;
+  line-height: 1.34;
+  color: rgba(226, 233, 245, 0.9);
+  white-space: pre-line;
+}
+
+.mainMenuMapEditorField {
+  display: grid;
+  gap: 6px;
+}
+
+.mainMenuMapEditorField span {
+  font-family: var(--mm-body-font);
+  font-size: 15px;
+  color: rgba(224, 232, 246, 0.9);
+}
+
+.mainMenuMapEditorField select {
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  background: rgba(2, 2, 2, 0.58);
+  color: rgba(242, 245, 250, 0.95);
+  font-size: 15px;
+  padding: 0 8px;
+  outline: none;
+}
+
+.mainMenuMapEditorField select:focus {
+  border-color: rgba(255, 255, 255, 0.68);
 }
 
 .mainMenuFlagEditorModal {
@@ -4940,6 +6171,37 @@ body {
     height: 42px;
   }
 
+  .mainMenuQuickButtons {
+    left: 10px;
+    bottom: 10px;
+  }
+
+  .mainMenuMapLibraryPanel {
+    width: calc(100vw - 12px);
+    max-height: calc(100vh - 12px);
+    padding: 10px;
+  }
+
+  .mainMenuMapLibraryHeader {
+    display: grid;
+    gap: 8px;
+  }
+
+  .mainMenuMapLibraryBody {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+
+  .mainMenuMapLibraryList {
+    height: min(46vh, 420px);
+    max-height: 46vh;
+    min-height: 180px;
+  }
+
+  .mainMenuMapLibraryToolbar {
+    grid-template-columns: 1fr;
+  }
+
   .mainMenuLoadingFrame {
     width: min(86vw, 420px);
   }
@@ -4951,6 +6213,37 @@ body {
   .mainMenuFlagPreview {
     width: 56px;
     height: 38px;
+  }
+
+  .mainMenuMapEditorActions {
+    grid-template-columns: 1fr;
+  }
+
+  .mainMenuMapEditorHeader {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .mainMenuMapEditorHeaderControls {
+    justify-items: stretch;
+  }
+
+  .mainMenuMapEditorNameWrap {
+    min-width: 0;
+  }
+
+  .mainMenuMapEditorBody {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+
+  .mainMenuMapEditorBiomeList {
+    grid-template-columns: 1fr;
+    max-height: 240px;
+  }
+
+  #mmMapEditorCanvas {
+    min-height: 340px;
   }
 
   .mainMenuFlagEditorPanel {
@@ -5310,7 +6603,10 @@ body {
 }
 
 #mmFlagEditorModal .mainMenuFlagCanvasToolbar {
-  align-items: center;
+  display: grid;
+  gap: 8px;
+  align-items: start;
+  padding: 4px 2px 8px;
 }
 
 #mmFlagEditorModal .mainMenuFlagCanvasTitle {
@@ -5325,6 +6621,40 @@ body {
   font-size: 12px;
   color: var(--fs-muted);
   display: none;
+}
+
+#mmFlagEditorModal .mainMenuFlagToolRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+#mmFlagEditorModal .mainMenuFlagToolBtn {
+  min-width: 78px;
+  height: 32px;
+  padding: 0 12px;
+}
+
+#mmFlagEditorModal .mainMenuFlagToolBtn.isActive {
+  border-color: #87b1ff;
+  background: linear-gradient(180deg, rgba(94, 139, 222, 0.96), rgba(55, 90, 153, 0.96));
+  color: #f7fbff;
+  box-shadow: inset 0 0 0 1px rgba(214, 230, 255, 0.24);
+}
+
+#mmFlagEditorModal .mainMenuFlagToolSettings {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+#mmFlagEditorModal .mainMenuFlagToolSettings .mainMenuField {
+  gap: 4px;
+}
+
+#mmFlagEditorModal .mainMenuFlagToolSettings .mainMenuField input[type="color"] {
+  padding: 2px;
 }
 
 #mmFlagEditorModal .mainMenuFlagCanvasStage {
@@ -5571,6 +6901,440 @@ body {
     grid-template-columns: 1fr;
   }
 
+  #mmFlagEditorModal .mainMenuFlagToolSettings {
+    grid-template-columns: 1fr;
+  }
+
+  #mmFlagEditorModal .mainMenuFlagFooterActions {
+    width: 100%;
+  }
+
+  #mmFlagEditorModal .mainMenuBtn {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+/* Flag Paint redesign: aligned with Main Menu / Map Library UI */
+#mmFlagEditorModal {
+  --fp-ui-font: var(--mm-ui-font, "Cinzel", "Cambria", "Book Antiqua", serif);
+  --fp-body-font: var(--mm-body-font, "Cormorant Garamond", "Georgia", serif);
+  --fp-card-bg: linear-gradient(170deg, rgba(20, 20, 20, 0.96) 0%, rgba(6, 6, 6, 0.95) 100%);
+  --fp-card-bg-soft: linear-gradient(170deg, rgba(17, 17, 17, 0.92) 0%, rgba(5, 5, 5, 0.92) 100%);
+  --fp-border: rgba(255, 255, 255, 0.2);
+  --fp-border-soft: rgba(255, 255, 255, 0.14);
+  --fp-input-border: rgba(255, 255, 255, 0.32);
+  --fp-text: rgba(246, 249, 255, 0.95);
+  --fp-muted: rgba(224, 232, 246, 0.84);
+}
+
+#mmFlagEditorModal .mainMenuFlagEditorBackdrop {
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.78) 0%, rgba(0, 0, 0, 0.86) 100%),
+    url("/main-menu/Background.png") center center / cover no-repeat,
+    #020202;
+  filter: grayscale(1) contrast(1.08);
+  backdrop-filter: blur(2px);
+}
+
+#mmFlagEditorModal .mainMenuFlagEditorPanelV3 {
+  width: min(1340px, calc(100vw - 18px));
+  height: min(860px, calc(100vh - 18px));
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--fp-border);
+  background: var(--fp-card-bg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+#mmFlagEditorModal .mainMenuFlagEditorHeader {
+  border-color: var(--fp-border-soft);
+  background: var(--fp-card-bg-soft);
+}
+
+#mmFlagEditorModal .mainMenuFlagEditorHeaderCopy {
+  gap: 4px;
+}
+
+#mmFlagEditorModal .mainMenuFlagEditorTitle {
+  margin: 0;
+  font-family: var(--fp-ui-font);
+  font-size: clamp(22px, 2.1vw, 29px);
+  letter-spacing: 0.025em;
+  color: var(--fp-text);
+}
+
+#mmFlagEditorModal .mainMenuFlagEditorSub {
+  margin: 0;
+  font-family: var(--fp-body-font);
+  font-size: 17px;
+  color: var(--fp-muted);
+}
+
+#mmFlagEditorModal .mainMenuFlagEditorBodyV3 {
+  display: grid !important;
+  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 10px;
+  min-height: 0;
+  width: 100%;
+  align-items: stretch;
+}
+
+#mmFlagEditorModal .mainMenuFlagPaintRibbon {
+  grid-column: 1;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-auto-rows: min-content;
+  align-content: start;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+#mmFlagEditorModal .mainMenuFlagPaintGroup {
+  min-width: 0;
+  border: 1px solid var(--fp-border-soft);
+  border-radius: 10px;
+  background: var(--fp-card-bg-soft);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+#mmFlagEditorModal .mainMenuFlagPaintGroupTitle {
+  font-family: var(--fp-ui-font);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(234, 239, 247, 0.84);
+}
+
+#mmFlagEditorModal .mainMenuFlagToolRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+#mmFlagEditorModal .mainMenuFlagShapeGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+#mmFlagEditorModal .mainMenuFlagShapeGrid .mainMenuFlagToolBtn,
+#mmFlagEditorModal .mainMenuFlagToolRow .mainMenuFlagToolBtn {
+  width: 100%;
+  min-width: 0;
+}
+
+#mmFlagEditorModal .mainMenuFlagToolSettings {
+  grid-template-columns: 108px 1fr 1fr;
+  gap: 8px;
+  align-items: end;
+}
+
+#mmFlagEditorModal .mainMenuField span {
+  font-family: var(--fp-body-font);
+  font-size: 17px;
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 500;
+  color: rgba(224, 232, 246, 0.9);
+}
+
+#mmFlagEditorModal .mainMenuField input,
+#mmFlagEditorModal .mainMenuField select {
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--fp-input-border);
+  background: rgba(2, 2, 2, 0.58);
+  color: rgba(242, 245, 250, 0.95);
+  font-family: var(--fp-body-font);
+  font-size: 15px;
+}
+
+#mmFlagEditorModal .mainMenuField input:focus,
+#mmFlagEditorModal .mainMenuField select:focus {
+  border-color: rgba(255, 255, 255, 0.68);
+  box-shadow: none;
+}
+
+#mmFlagEditorModal .mainMenuField input[type="color"] {
+  min-height: 36px;
+  padding: 2px;
+}
+
+#mmFlagEditorModal .mainMenuField input[type="range"] {
+  height: 22px;
+}
+
+#mmFlagEditorModal .mainMenuField input[type="range"]::-webkit-slider-runnable-track {
+  height: 8px;
+  border: 1px solid var(--fp-input-border);
+  background: linear-gradient(90deg, rgba(233, 240, 250, 0.52), rgba(167, 180, 203, 0.62));
+}
+
+#mmFlagEditorModal .mainMenuField input[type="range"]::-moz-range-track {
+  height: 8px;
+  border: 1px solid var(--fp-input-border);
+  background: linear-gradient(90deg, rgba(233, 240, 250, 0.52), rgba(167, 180, 203, 0.62));
+}
+
+#mmFlagEditorModal .mainMenuField input[type="range"]::-webkit-slider-thumb {
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border: 1px solid rgba(0, 0, 0, 0.36);
+  background: rgba(247, 250, 255, 0.96);
+}
+
+#mmFlagEditorModal .mainMenuField input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.36);
+  background: rgba(247, 250, 255, 0.96);
+}
+
+#mmFlagEditorModal .mainMenuRangeValue {
+  min-width: 44px;
+  border-radius: 999px;
+  border: 1px solid var(--fp-input-border);
+  background: rgba(0, 0, 0, 0.32);
+  color: rgba(243, 248, 255, 0.96);
+  font-family: var(--fp-ui-font);
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  text-transform: none;
+  font-weight: 600;
+  padding: 3px 8px;
+}
+
+#mmFlagEditorModal .mainMenuMiniBtn {
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.42);
+  color: rgba(236, 239, 245, 0.94);
+  padding: 7px 10px;
+  font-family: var(--fp-ui-font);
+  font-size: 14px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+#mmFlagEditorModal .mainMenuMiniBtn:hover,
+#mmFlagEditorModal .mainMenuMiniBtn:focus-visible {
+  background: rgba(34, 34, 34, 0.86);
+  border-color: rgba(255, 255, 255, 0.52);
+  transform: none;
+}
+
+#mmFlagEditorModal .mainMenuFlagToolBtn.isActive {
+  border-color: rgba(255, 255, 255, 0.82);
+  background: linear-gradient(180deg, rgba(40, 40, 40, 0.86) 0%, rgba(11, 11, 11, 0.88) 100%);
+  color: rgba(246, 249, 255, 0.98);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+#mmFlagEditorModal .mainMenuTogglePill {
+  min-height: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--fp-border-soft);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--fp-text);
+  font-family: var(--fp-body-font);
+  font-size: 15px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  justify-content: center;
+  padding: 4px 10px;
+}
+
+#mmFlagEditorModal .mainMenuTogglePill input {
+  accent-color: #83b4ff;
+}
+
+#mmFlagEditorModal .mainMenuFlagPaintBody {
+  grid-column: 2;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 10px;
+  width: 100%;
+  align-items: stretch;
+}
+
+#mmFlagEditorModal .mainMenuFlagCanvasPane,
+#mmFlagEditorModal .mainMenuFlagPaintSide {
+  border: 1px solid var(--fp-border-soft);
+  border-radius: 12px;
+  background: var(--fp-card-bg-soft);
+}
+
+#mmFlagEditorModal .mainMenuFlagCanvasPane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px;
+}
+
+#mmFlagEditorModal .mainMenuFlagCanvasToolbar {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  margin-bottom: 6px;
+  padding-bottom: 8px;
+}
+
+#mmFlagEditorModal .mainMenuFlagCanvasTitle {
+  font-family: var(--fp-ui-font);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(234, 239, 247, 0.84);
+}
+
+#mmFlagEditorModal .mainMenuFlagCanvasHelp {
+  display: block;
+  font-family: var(--fp-body-font);
+  font-size: 14px;
+  color: var(--fp-muted);
+}
+
+#mmFlagEditorModal .mainMenuFlagCanvasStage {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  border: 1px solid var(--fp-border-soft);
+  border-radius: 10px;
+  background: rgba(2, 2, 2, 0.58);
+}
+
+#mmFlagEditorModal .mainMenuFlagCanvasWrap {
+  width: min(100%, 1120px);
+  max-width: 100%;
+  margin: 0 auto;
+  border-radius: 10px;
+  border: 1px solid var(--fp-input-border);
+}
+
+#mmFlagEditorModal .mainMenuFlagEditorPreview {
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%),
+    rgba(8, 8, 8, 0.92);
+  background-size: 24px 24px, 24px 24px, 24px 24px, 24px 24px, auto;
+  background-position: 0 0, 0 12px, 12px -12px, -12px 0, 0 0;
+}
+
+#mmFlagEditorModal .mainMenuFlagEditorPreview,
+#mmFlagEditorModal .mainMenuFlagEditorOverlay {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+}
+
+#mmFlagEditorModal .mainMenuFlagPaintSide {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 10px;
+}
+
+#mmFlagEditorModal .mainMenuFlagPaintSide .mainMenuFlagGroup {
+  border: 1px solid var(--fp-border-soft);
+  border-radius: 10px;
+  background: rgba(2, 2, 2, 0.42);
+  padding: 10px;
+  gap: 8px;
+}
+
+#mmFlagEditorModal .mainMenuFlagSectionTitle {
+  font-family: var(--fp-ui-font);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(234, 239, 247, 0.84);
+  padding: 0;
+}
+
+#mmFlagEditorModal .mainMenuFlagPaintSide .mainMenuFlagButtons {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+#mmFlagEditorModal .mainMenuFlagEditorFooter {
+  border: 1px solid var(--fp-border-soft);
+  background: var(--fp-card-bg-soft);
+}
+
+#mmFlagEditorModal .mainMenuFlagFooterActions {
+  display: flex;
+  gap: 8px;
+}
+
+#mmFlagEditorModal .mainMenuBtn {
+  min-width: 132px;
+  min-height: 44px;
+  height: auto;
+  font-family: var(--fp-ui-font);
+  font-size: 16px;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  padding: 8px 12px;
+}
+
+@media (max-width: 1120px) {
+  #mmFlagEditorModal .mainMenuFlagEditorPanelV3 {
+    height: auto;
+    max-height: calc(100vh - 10px);
+  }
+
+  #mmFlagEditorModal .mainMenuFlagPaintRibbon {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #mmFlagEditorModal .mainMenuFlagEditorBodyV3 {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  #mmFlagEditorModal .mainMenuFlagPaintRibbon,
+  #mmFlagEditorModal .mainMenuFlagPaintBody {
+    grid-column: 1;
+  }
+
+  #mmFlagEditorModal .mainMenuFlagPaintBody {
+    grid-template-columns: 1fr;
+  }
+
+  #mmFlagEditorModal .mainMenuFlagPaintSide .mainMenuFlagButtons {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 780px) {
+  #mmFlagEditorModal .mainMenuFlagPaintRibbon {
+    grid-template-columns: 1fr;
+  }
+
+  #mmFlagEditorModal .mainMenuFlagShapeGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #mmFlagEditorModal .mainMenuFlagToolSettings {
+    grid-template-columns: 1fr;
+  }
+
   #mmFlagEditorModal .mainMenuFlagFooterActions {
     width: 100%;
   }
@@ -5596,5 +7360,124 @@ body {
   }
   .mainMenuLoadingFill {
     transition: none !important;
+  }
+}
+
+/* ===== HUD controls: thin vertical stack + side leaderboard panel ===== */
+#leaderboard {
+  position: absolute;
+  left: 14px;
+  top: var(--spawn-progress-clearance);
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  width: auto;
+  max-width: calc(100vw - 20px);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  z-index: 30;
+}
+
+#leaderboard #topHud {
+  flex: 0 0 auto;
+  width: 60px;
+  --pf-hud-icon-inset: 8px;
+  --pf-hud-icon-zoom: 1.22;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--pf-hud-border-soft, rgba(255, 255, 255, 0.22));
+  border-radius: 12px;
+  background: var(--pf-hud-surface-soft, rgba(8, 12, 18, 0.60));
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(10px);
+}
+
+#leaderboard #topHud .topTimer {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 5px 2px;
+  text-align: center;
+  border: 1px solid var(--pf-hud-border-soft, rgba(255, 255, 255, 0.22));
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.22);
+  font-size: 15px;
+  font-weight: 760;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+
+#leaderboard #topHud .btn {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  padding: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hudControlIcon {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: var(--pf-hud-icon-inset);
+  display: block;
+  object-fit: contain;
+  transform: scale(var(--pf-hud-icon-zoom));
+  transform-origin: center;
+  pointer-events: none;
+}
+
+#leaderboard .lbPanel {
+  width: min(360px, calc(100vw - 98px));
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--pf-hud-border-soft, rgba(255, 255, 255, 0.22));
+  border-radius: 12px;
+  background: var(--pf-hud-surface-soft, rgba(8, 12, 18, 0.60));
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(10px);
+}
+
+@media (max-width: 720px) {
+  #leaderboard {
+    left: 8px;
+    gap: 8px;
+    max-width: calc(100vw - 12px);
+  }
+
+  #leaderboard #topHud {
+    width: 54px;
+    --pf-hud-icon-inset: 7px;
+    --pf-hud-icon-zoom: 1.2;
+    padding: 5px;
+    gap: 7px;
+  }
+
+  #leaderboard #topHud .topTimer {
+    font-size: 13px;
+    padding: 4px 1px;
+  }
+
+  #leaderboard #topHud .btn {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+  }
+
+  #leaderboard .lbPanel {
+    width: min(300px, calc(100vw - 72px));
+    padding: 8px;
   }
 }

@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="pf-multiplayer-api-url" content="%VITE_MULTIPLAYER_API_URL%" />
+    <meta name="pf-supabase-url" content="%VITE_SUPABASE_URL%" />
+    <meta name="pf-supabase-anon-key" content="%VITE_SUPABASE_ANON_KEY%" />
+    <meta name="pf-supabase-maps-table" content="%VITE_SUPABASE_MAPS_TABLE%" />
+    <meta name="pf-supabase-rpc-increment-downloads" content="%VITE_SUPABASE_RPC_INCREMENT_DOWNLOADS%" />
     <link rel="icon" type="image/png" href="/GameLogo/pflogo.png" />
     <title>PixelFront | Beta</title>
     <link rel="stylesheet" href="./src/style.css" />
@@ -24,6 +28,7 @@
                   <button id="mmPlayBtn" class="mainMenuBtn" type="button">Play</button>
                   <button id="mmMultiplayerBtn" class="mainMenuBtn isDisabled" type="button" disabled aria-disabled="true">Disabled</button>
                   <button id="mmSettingsBtn" class="mainMenuBtn" type="button">Settings</button>
+                  <button id="mmMapEditorBtn" class="mainMenuBtn" type="button">Map Editor</button>
                 </div>
                 <p id="mmStatusText" class="mainMenuStatus">Select your command.</p>
               </section>
@@ -47,6 +52,7 @@
                     <label class="mainMenuToggleRow" for="mmSetPoliticalMapMode"><span>Political Map Mode</span><input id="mmSetPoliticalMapMode" type="checkbox" /></label>
                     <label class="mainMenuToggleRow" for="mmSetDisableAtmosphere"><span>Disable Weather and Day/Night</span><input id="mmSetDisableAtmosphere" type="checkbox" /></label>
                     <label class="mainMenuToggleRow" for="mmSetReduceMotion"><span>Reduce Camera Motion</span><input id="mmSetReduceMotion" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetFullscreen"><span>Fullscreen</span><input id="mmSetFullscreen" type="checkbox" /></label>
                     <label class="mainMenuToggleRow" for="mmSetMenuMusicVolume"><span>Menu Music Volume (<output id="mmSetMenuMusicVolumeValue">12%</output>)</span><input id="mmSetMenuMusicVolume" type="range" min="0" max="100" step="1" value="12" /></label>
                     <label class="mainMenuToggleRow" for="mmSetWarMusicVolume"><span>War Music Volume (<output id="mmSetWarMusicVolumeValue">9%</output>)</span><input id="mmSetWarMusicVolume" type="range" min="0" max="100" step="1" value="9" /></label>
                   </div>
@@ -80,9 +86,15 @@
                     </label>
                     <label class="mainMenuField" for="mmCfgMapMode">
                       <span>Map Source</span>
-                      <select id="mmCfgMapMode" disabled>
+                      <select id="mmCfgMapMode">
                         <option value="earth">Earth Map</option>
-                        <option value="procedural" disabled>Procedural (Disabled)</option>
+                        <option value="custom">Saved Custom Map</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmCfgCustomMap">
+                      <span>Custom Map</span>
+                      <select id="mmCfgCustomMap">
+                        <option value="">No saved maps</option>
                       </select>
                     </label>
                     <label class="mainMenuField" for="mmCfgDifficulty">
@@ -137,6 +149,45 @@
 
                   <div class="mainMenuCardActions">
                     <button id="mmStartBtn" class="mainMenuBtn isPrimary" type="button">Start</button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelMapEditor" aria-label="Main menu map editor setup">
+                <div class="mainMenuCard">
+                  <header class="mainMenuCardHeader">
+                    <h2 class="mainMenuCardTitle">Map Editor</h2>
+                    <button id="mmMapEditorBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+
+                  <div class="mainMenuFieldGrid">
+                    <label class="mainMenuField" for="mmMapEditorSizePreset">
+                      <span>New Map Size</span>
+                      <select id="mmMapEditorSizePreset">
+                        <option value="Small">Small</option>
+                        <option value="Large">Large</option>
+                        <option value="Super Large">Super Large</option>
+                        <option value="Extremely Large">Extremely Large</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmMapEditorNameInput">
+                      <span>Map Name</span>
+                      <input id="mmMapEditorNameInput" type="text" maxlength="32" spellcheck="false" placeholder="My Custom World" />
+                    </label>
+                    <label class="mainMenuField" for="mmMapEditorSavedSelect">
+                      <span>Saved Maps</span>
+                      <select id="mmMapEditorSavedSelect">
+                        <option value="">No saved maps</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <p id="mmMapEditorSummary" class="mainMenuConfigSummary">Create a new map or edit an existing one.</p>
+
+                  <div class="mainMenuMapEditorActions">
+                    <button id="mmMapEditorNewBtn" class="mainMenuBtn" type="button">New Map</button>
+                    <button id="mmMapEditorLoadBtn" class="mainMenuBtn" type="button">Edit Selected</button>
+                    <button id="mmMapEditorDeleteBtn" class="mainMenuBtn" type="button">Delete Selected</button>
                   </div>
                 </div>
               </section>
@@ -205,6 +256,11 @@
           />
 
           <div class="mainMenuQuickButtons" aria-label="Quick menu buttons">
+            <button id="mmLibraryBtn" class="mainMenuQuickBtn" type="button" aria-label="Map Library">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 4.5A2.5 2.5 0 0 1 6.5 2h10A2.5 2.5 0 0 1 19 4.5v15a2.5 2.5 0 0 1-2.5 2.5h-10A2.5 2.5 0 0 1 4 19.5zm2 0v15c0 .28.22.5.5.5h10a.5.5 0 0 0 .5-.5v-15a.5.5 0 0 0-.5-.5h-10a.5.5 0 0 0-.5.5m2 2h7v2H8zm0 4h7v2H8zm0 4h5v2H8z"></path>
+              </svg>
+            </button>
             <button id="mmFlagBtn" class="mainMenuQuickBtn" type="button" aria-label="Flag Editor">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M6 3v18h2v-6.2l9.2 2.1c.8.2 1.6-.4 1.6-1.2V4.7c0-.8-.8-1.4-1.6-1.2L8 5.6V3z"></path>
@@ -226,146 +282,227 @@
           </div>
         </div>
       </div>
+      <div id="mmMapLibraryModal" class="mainMenuMapLibraryModal" hidden aria-hidden="true">
+        <div id="mmMapLibraryBackdrop" class="mainMenuMapLibraryBackdrop"></div>
+        <section class="mainMenuMapLibraryPanel" aria-label="Public map library">
+          <header class="mainMenuMapLibraryHeader mainMenuCardHeader">
+            <div>
+              <h2 class="mainMenuMapLibraryTitle mainMenuCardTitle">Map Library</h2>
+              <p id="mmMapLibraryStatus" class="mainMenuMapLibrarySub mainMenuConfigSummary">Browse public maps, download locally, or publish your own.</p>
+            </div>
+            <button id="mmMapLibraryCloseBtn" class="mainMenuMiniBtn" type="button">Close</button>
+          </header>
+
+          <div class="mainMenuMapLibraryBody">
+            <section class="mainMenuMapLibraryColumn" aria-label="Publish map">
+              <div class="mainMenuMapLibraryGroup">
+                <div class="mainMenuMapLibraryGroupTitle">Publish</div>
+                <label class="mainMenuMapLibraryField" for="mmMapLibraryPublishMapSelect">
+                  <span>Local Map</span>
+                  <select id="mmMapLibraryPublishMapSelect">
+                    <option value="">No local maps</option>
+                  </select>
+                </label>
+                <label class="mainMenuMapLibraryField" for="mmMapLibraryPublishName">
+                  <span>Public Name</span>
+                  <input id="mmMapLibraryPublishName" type="text" maxlength="48" placeholder="Map name in library" />
+                </label>
+                <label class="mainMenuMapLibraryField" for="mmMapLibraryPublishAuthor">
+                  <span>Author</span>
+                  <input id="mmMapLibraryPublishAuthor" type="text" maxlength="32" placeholder="Your name" />
+                </label>
+                <label class="mainMenuMapLibraryField" for="mmMapLibraryPublishDesc">
+                  <span>Description</span>
+                  <textarea id="mmMapLibraryPublishDesc" maxlength="360" rows="5" placeholder="Short description"></textarea>
+                </label>
+                <button id="mmMapLibraryPublishBtn" class="mainMenuBtn isPrimary" type="button">Publish To Public Library</button>
+              </div>
+            </section>
+
+            <section class="mainMenuMapLibraryColumn isWide" aria-label="Browse maps">
+              <div class="mainMenuMapLibraryGroup">
+                <div class="mainMenuMapLibraryToolbar">
+                  <label class="mainMenuMapLibraryField" for="mmMapLibrarySearchInput">
+                    <span>Search</span>
+                    <input id="mmMapLibrarySearchInput" type="text" maxlength="48" placeholder="Find maps by name" />
+                  </label>
+                  <button id="mmMapLibraryRefreshBtn" class="mainMenuMiniBtn" type="button">Refresh</button>
+                </div>
+                <div id="mmMapLibraryList" class="mainMenuMapLibraryList"></div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+      <div id="mmMapEditorModal" class="mainMenuMapEditorModal" hidden aria-hidden="true">
+        <div id="mmMapEditorBackdrop" class="mainMenuMapEditorBackdrop"></div>
+        <section class="mainMenuMapEditorPanel" aria-label="Advanced map editor">
+          <header class="mainMenuMapEditorHeader mainMenuCardHeader">
+            <div class="mainMenuMapEditorHeaderCopy">
+              <h2 class="mainMenuMapEditorTitle mainMenuCardTitle">Advanced Map Editor</h2>
+              <p class="mainMenuMapEditorSub">Paint biomes with a resizable brush. Save maps locally and use them in match config.</p>
+            </div>
+            <div class="mainMenuMapEditorHeaderControls">
+              <label class="mainMenuMapEditorNameWrap" for="mmMapEditorActiveName">
+                <span>Name</span>
+                <input id="mmMapEditorActiveName" type="text" maxlength="32" spellcheck="false" />
+              </label>
+              <button id="mmMapEditorCloseBtn" class="mainMenuMiniBtn" type="button">Close</button>
+            </div>
+          </header>
+
+          <div class="mainMenuMapEditorBody">
+            <aside class="mainMenuMapEditorTools" aria-label="Map tools">
+              <div class="mainMenuMapEditorGroup">
+                <div class="mainMenuMapEditorGroupTitle">Tools</div>
+                <div class="mainMenuMapEditorToolRow">
+                  <button id="mmMapEditorToolBrush" class="mainMenuMiniBtn isActive" type="button">Brush</button>
+                  <button id="mmMapEditorToolErase" class="mainMenuMiniBtn" type="button">Erase</button>
+                </div>
+                <label class="mainMenuMapEditorRange" for="mmMapEditorBrushSize">
+                  <span>Brush Radius <output id="mmMapEditorBrushSizeValue">8</output></span>
+                  <input id="mmMapEditorBrushSize" type="range" min="1" max="72" step="1" value="8" />
+                </label>
+                <label class="mainMenuMapEditorRange" for="mmMapEditorZoom">
+                  <span>Zoom <output id="mmMapEditorZoomValue">100%</output></span>
+                  <input id="mmMapEditorZoom" type="range" min="30" max="600" step="5" value="100" />
+                </label>
+              </div>
+              <div class="mainMenuMapEditorGroup">
+                <div class="mainMenuMapEditorGroupTitle">Biomes</div>
+                <div id="mmMapEditorBiomeList" class="mainMenuMapEditorBiomeList"></div>
+              </div>
+            </aside>
+
+            <section class="mainMenuMapEditorCanvasPane" aria-label="Map canvas">
+              <canvas id="mmMapEditorCanvas" width="1280" height="720"></canvas>
+              <p class="mainMenuMapEditorHint">Left click to paint, right click drag to pan, mouse wheel to zoom.</p>
+            </section>
+
+            <aside class="mainMenuMapEditorMeta" aria-label="Map actions">
+              <div class="mainMenuMapEditorGroup">
+                <div class="mainMenuMapEditorGroupTitle">Actions</div>
+                <div class="mainMenuMapEditorActionCol">
+                  <button id="mmMapEditorSaveBtn" class="mainMenuBtn isPrimary" type="button">Save</button>
+                  <button id="mmMapEditorSaveAsBtn" class="mainMenuBtn" type="button">Save As New</button>
+                  <button id="mmMapEditorUseBtn" class="mainMenuBtn" type="button">Use In Match Config</button>
+                  <button id="mmMapEditorClearBtn" class="mainMenuBtn" type="button">Clear To Ocean</button>
+                </div>
+              </div>
+              <div class="mainMenuMapEditorGroup">
+                <div class="mainMenuMapEditorGroupTitle">Map Stats</div>
+                <p id="mmMapEditorStats" class="mainMenuMapEditorStats"></p>
+              </div>
+              <div class="mainMenuMapEditorGroup">
+                <div class="mainMenuMapEditorGroupTitle">Saved Maps</div>
+                <label class="mainMenuMapEditorField" for="mmMapEditorModalSavedSelect">
+                  <span>Load Saved</span>
+                  <select id="mmMapEditorModalSavedSelect">
+                    <option value="">No saved maps</option>
+                  </select>
+                </label>
+                <button id="mmMapEditorLoadSavedBtn" class="mainMenuMiniBtn" type="button">Load Into Editor</button>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </div>
       <div id="mmFlagEditorModal" class="mainMenuFlagEditorModal" hidden aria-hidden="true">
         <div id="mmFlagEditorBackdrop" class="mainMenuFlagEditorBackdrop"></div>
         <section class="mainMenuFlagEditorPanel mainMenuFlagEditorPanelV3" aria-label="Flag editor">
           <header class="mainMenuFlagEditorHeader">
             <div class="mainMenuFlagEditorHeaderCopy">
-              <h2 class="mainMenuFlagEditorTitle">Flag Studio</h2>
-              <p class="mainMenuFlagEditorSub">Clean layer-based flag designer.</p>
+              <h2 class="mainMenuFlagEditorTitle">Flag Editor</h2>
+              <p class="mainMenuFlagEditorSub">Build your nation banner with brush, eraser, and shape tools.</p>
             </div>
             <button id="mmFlagCloseBtn" class="mainMenuMiniBtn" type="button">Close</button>
           </header>
 
           <div class="mainMenuFlagEditorBody mainMenuFlagEditorBodyV3">
-            <aside class="mainMenuFlagSidebar" aria-label="Tools and layers">
-              <section class="mainMenuFlagGroup isPresetLibrary" aria-label="Preset library">
-                <div class="mainMenuFlagSectionTitle">Preset Library</div>
-                <div class="mainMenuFlagButtons mainMenuFlagButtonsPresets">
-                  <button id="mmFlagPresetDefault" class="mainMenuMiniBtn" type="button">Default</button>
-                  <button id="mmFlagPresetNordic" class="mainMenuMiniBtn" type="button">Nordic</button>
-                  <button id="mmFlagPresetTricolor" class="mainMenuMiniBtn" type="button">Tricolor</button>
-                  <button id="mmFlagPresetCanton" class="mainMenuMiniBtn" type="button">Canton</button>
-                  <button id="mmFlagPresetQuartered" class="mainMenuMiniBtn" type="button">Quartered</button>
-                  <button id="mmFlagPresetSaltire" class="mainMenuMiniBtn" type="button">Saltire</button>
+            <section class="mainMenuFlagPaintRibbon" aria-label="Flag paint controls">
+              <div class="mainMenuFlagPaintGroup">
+                <div class="mainMenuFlagPaintGroupTitle">Tools</div>
+                <div class="mainMenuFlagToolRow" role="toolbar" aria-label="Paint tools">
+                  <button id="mmFlagToolSelect" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Select</button>
+                  <button id="mmFlagToolBrush" class="mainMenuMiniBtn mainMenuFlagToolBtn isActive" type="button">Brush</button>
+                  <button id="mmFlagToolEraser" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Eraser</button>
                 </div>
-              </section>
-
-              <section class="mainMenuFlagGroup isUtilityGroup" aria-label="Utilities">
-                <div class="mainMenuFlagSectionTitle">Utilities</div>
-                <div class="mainMenuFlagButtons mainMenuFlagButtonsUtil">
-                  <button id="mmFlagRandomBtn" class="mainMenuMiniBtn" type="button">Randomize</button>
-                  <button id="mmFlagResetBtn" class="mainMenuMiniBtn" type="button">Reset</button>
-                  <button id="mmFlagUndoBtn" class="mainMenuMiniBtn" type="button">Undo</button>
+              </div>
+              <div class="mainMenuFlagPaintGroup">
+                <div class="mainMenuFlagPaintGroupTitle">Shapes</div>
+                <div class="mainMenuFlagShapeGrid" aria-label="Shape tools">
+                  <button id="mmFlagToolRect" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Rect</button>
+                  <button id="mmFlagToolCircle" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Circle</button>
+                  <button id="mmFlagToolTriangle" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Triangle</button>
+                  <button id="mmFlagToolStar" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Star</button>
+                  <button id="mmFlagToolDiamond" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Diamond</button>
+                  <button id="mmFlagToolLine" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Line</button>
+                  <button id="mmFlagToolCross" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Cross</button>
+                  <button id="mmFlagToolRing" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Ring</button>
+                  <button id="mmFlagToolCrescent" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Crescent</button>
+                  <button id="mmFlagToolChevron" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Chevron</button>
+                  <button id="mmFlagToolPentagon" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Pentagon</button>
+                  <button id="mmFlagToolHexagon" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Hexagon</button>
                 </div>
-              </section>
-
-              <section class="mainMenuFlagGroup isLayerStack" aria-label="Layer stack">
-                <div class="mainMenuFlagSectionTitle">Layer Stack</div>
-                <div id="mmFlagLayerList" class="mainMenuFlagLayerList" role="listbox" aria-label="Flag layers"></div>
-
-                <div class="mainMenuFlagLayerActions" aria-label="Layer actions">
-                  <button id="mmFlagLayerAddBtn" class="mainMenuMiniBtn" type="button">Add Emblem</button>
-                  <button id="mmFlagLayerDuplicateBtn" class="mainMenuMiniBtn" type="button">Duplicate</button>
-                  <button id="mmFlagLayerDeleteBtn" class="mainMenuMiniBtn" type="button">Delete</button>
+              </div>
+              <div class="mainMenuFlagPaintGroup">
+                <div class="mainMenuFlagPaintGroupTitle">Stroke</div>
+                <div class="mainMenuFlagToolRow mainMenuFlagToolSettings" aria-label="Paint settings">
+                  <label class="mainMenuField" for="mmFlagPaintColor">
+                    <span>Color</span>
+                    <input id="mmFlagPaintColor" type="color" value="#ffffff" />
+                  </label>
+                  <label class="mainMenuField mainMenuRangeField" for="mmFlagPaintSize">
+                    <div class="mainMenuFieldHead"><span>Size</span><output id="mmFlagPaintSizeValue" class="mainMenuRangeValue">3%</output></div>
+                    <input id="mmFlagPaintSize" type="range" min="1" max="20" step="1" value="3" />
+                  </label>
+                  <label class="mainMenuField mainMenuRangeField" for="mmFlagPaintOpacity">
+                    <div class="mainMenuFieldHead"><span>Opacity</span><output id="mmFlagPaintOpacityValue" class="mainMenuRangeValue">100%</output></div>
+                    <input id="mmFlagPaintOpacity" type="range" min="10" max="100" step="1" value="100" />
+                  </label>
                 </div>
-
-                <div class="mainMenuFlagLayerActions" aria-label="Reorder">
-                  <button id="mmFlagLayerDownBtn" class="mainMenuMiniBtn" type="button">Send Back</button>
-                  <button id="mmFlagLayerUpBtn" class="mainMenuMiniBtn" type="button">Bring Front</button>
-                </div>
-              </section>
-
-              <section class="mainMenuFlagGroup isCanvasOptions" aria-label="Canvas options">
-                <div class="mainMenuFlagSectionTitle">Canvas Options</div>
-                <div class="mainMenuFlagQuickToggles" aria-label="Canvas options">
+              </div>
+              <div class="mainMenuFlagPaintGroup">
+                <div class="mainMenuFlagPaintGroupTitle">Canvas</div>
+                <div class="mainMenuFlagToolRow" aria-label="Canvas options">
                   <label class="mainMenuTogglePill mainMenuTogglePillSlim"><input id="mmFlagSnapToGrid" type="checkbox" checked /> Snap</label>
                   <label class="mainMenuTogglePill mainMenuTogglePillSlim"><input id="mmFlagShowGrid" type="checkbox" /> Grid</label>
                 </div>
-                <p class="mainMenuFlagHintCompact">
-                  Drag emblems on-canvas. Corner handles resize. Top handle rotates. Hold Shift for fine control.
-                </p>
-              </section>
-            </aside>
-
-            <section class="mainMenuFlagCanvasPane" aria-label="Flag canvas">
-              <div class="mainMenuFlagCanvasToolbar">
-                <div class="mainMenuFlagCanvasTitle">Design Workspace</div>
-                <div class="mainMenuFlagCanvasHelp">Select layer, then drag/resize/rotate on canvas.</div>
               </div>
-
-              <div class="mainMenuFlagCanvasStage">
-                <div class="mainMenuFlagCanvasWrap" id="mmFlagCanvasWrap">
-                  <canvas id="mmFlagEditorPreview" class="mainMenuFlagEditorPreview" width="480" height="320" aria-label="Flag editor preview"></canvas>
-                  <canvas id="mmFlagEditorOverlay" class="mainMenuFlagEditorOverlay" width="480" height="320" aria-label="Flag editor overlay"></canvas>
-                </div>
-              </div>
-
             </section>
 
-            <aside class="mainMenuFlagProps" aria-label="Properties">
-              <section class="mainMenuFlagGroup mainMenuFlagGroupInspectorInfo" aria-label="Inspector header">
-                <div class="mainMenuFlagSectionTitle">Inspector</div>
-                <p class="mainMenuFlagInspectorHint">Edit selected layer properties.</p>
-              </section>
-
-              <section id="mmFlagBaseSection" class="mainMenuFlagInspectorCard" aria-label="Base flag settings">
-                <div class="mainMenuFlagInspectorTitle">Background</div>
-                <div class="mainMenuFieldGrid">
-                  <label class="mainMenuField" for="mmFlagLayout">
-                    <span>Layout</span>
-                    <select id="mmFlagLayout"></select>
-                  </label>
-                  <label class="mainMenuField mainMenuRangeField" for="mmFlagStripeCount">
-                    <div class="mainMenuFieldHead"><span>Stripe Count</span><output id="mmFlagStripeCountValue" class="mainMenuRangeValue">3</output></div>
-                    <input id="mmFlagStripeCount" type="range" min="2" max="7" step="1" value="3" />
-                  </label>
+            <div class="mainMenuFlagPaintBody">
+              <section class="mainMenuFlagCanvasPane" aria-label="Flag canvas">
+                <div class="mainMenuFlagCanvasToolbar">
+                  <div class="mainMenuFlagCanvasTitle">Canvas</div>
+                  <div class="mainMenuFlagCanvasHelp">Paint directly on canvas. Select tool lets you move and resize emblem shapes.</div>
                 </div>
-
-                <div class="mainMenuFlagColorGrid">
-                  <label class="mainMenuField" for="mmFlagColorA"><span>Color A</span><input id="mmFlagColorA" type="color" value="#203a8f" /></label>
-                  <label class="mainMenuField" for="mmFlagColorB"><span>Color B</span><input id="mmFlagColorB" type="color" value="#f2f2f2" /></label>
-                  <label class="mainMenuField" for="mmFlagColorC"><span>Color C</span><input id="mmFlagColorC" type="color" value="#d42c2c" /></label>
-                </div>
-
-                <div class="mainMenuFieldGrid">
-                  <label class="mainMenuTogglePill"><input id="mmFlagBorderEnabled" type="checkbox" checked /> Border</label>
-                  <label class="mainMenuField" for="mmFlagBorderColor">
-                    <span>Border Color</span>
-                    <input id="mmFlagBorderColor" type="color" value="#121212" />
-                  </label>
-                  <label class="mainMenuField mainMenuRangeField" for="mmFlagBorderWidth">
-                    <div class="mainMenuFieldHead"><span>Border Width</span><output id="mmFlagBorderWidthValue" class="mainMenuRangeValue">1px</output></div>
-                    <input id="mmFlagBorderWidth" type="range" min="1" max="8" step="1" value="1" />
-                  </label>
+                <div class="mainMenuFlagCanvasStage">
+                  <div class="mainMenuFlagCanvasWrap" id="mmFlagCanvasWrap">
+                    <canvas id="mmFlagEditorPreview" class="mainMenuFlagEditorPreview" width="480" height="320" aria-label="Flag editor preview"></canvas>
+                    <canvas id="mmFlagEditorOverlay" class="mainMenuFlagEditorOverlay" width="480" height="320" aria-label="Flag editor overlay"></canvas>
+                  </div>
                 </div>
               </section>
 
-              <section id="mmFlagShapeSection" class="mainMenuFlagInspectorCard" aria-label="Emblem settings">
-                <div class="mainMenuFlagInspectorHead">
-                  <div class="mainMenuFlagInspectorTitle">Emblem Layer</div>
-                  <div id="mmFlagSelectedLayerLabel" class="mainMenuFlagInspectorMeta">Emblem 1</div>
-                </div>
-
-                <div class="mainMenuFlagShapeMeta">
-                  <label class="mainMenuTogglePill"><input id="mmFlagShapeEnabled" type="checkbox" checked /> Enabled</label>
-                  <label class="mainMenuField" for="mmFlagShapeType">
-                    <span>Shape</span>
-                    <select id="mmFlagShapeType"></select>
-                  </label>
-                  <label class="mainMenuField" for="mmFlagShapeColor"><span>Color</span><input id="mmFlagShapeColor" type="color" value="#ffffff" /></label>
-                </div>
-
-                <div class="mainMenuFlagSliderGrid mainMenuFlagSliderGridV3">
-                  <label class="mainMenuField mainMenuRangeField" for="mmFlagShapeX"><div class="mainMenuFieldHead"><span>X</span><output id="mmFlagShapeXValue" class="mainMenuRangeValue">50%</output></div><input id="mmFlagShapeX" type="range" min="0" max="100" step="1" value="50" /></label>
-                  <label class="mainMenuField mainMenuRangeField" for="mmFlagShapeY"><div class="mainMenuFieldHead"><span>Y</span><output id="mmFlagShapeYValue" class="mainMenuRangeValue">50%</output></div><input id="mmFlagShapeY" type="range" min="0" max="100" step="1" value="50" /></label>
-                  <label class="mainMenuField mainMenuRangeField" for="mmFlagShapeW"><div class="mainMenuFieldHead"><span>Width</span><output id="mmFlagShapeWValue" class="mainMenuRangeValue">24%</output></div><input id="mmFlagShapeW" type="range" min="4" max="100" step="1" value="24" /></label>
-                  <label class="mainMenuField mainMenuRangeField" for="mmFlagShapeH"><div class="mainMenuFieldHead"><span>Height</span><output id="mmFlagShapeHValue" class="mainMenuRangeValue">24%</output></div><input id="mmFlagShapeH" type="range" min="4" max="100" step="1" value="24" /></label>
-                  <label class="mainMenuField mainMenuRangeField" for="mmFlagShapeR"><div class="mainMenuFieldHead"><span>Rotation</span><output id="mmFlagShapeRValue" class="mainMenuRangeValue">0deg</output></div><input id="mmFlagShapeR" type="range" min="-180" max="180" step="1" value="0" /></label>
-                  <label class="mainMenuField mainMenuRangeField" for="mmFlagShapeOpacity"><div class="mainMenuFieldHead"><span>Opacity</span><output id="mmFlagShapeOpacityValue" class="mainMenuRangeValue">100%</output></div><input id="mmFlagShapeOpacity" type="range" min="5" max="100" step="1" value="100" /></label>
-                </div>
-              </section>
-            </aside>
+              <aside class="mainMenuFlagPaintSide" aria-label="Paint actions">
+                <section class="mainMenuFlagGroup" aria-label="Edit actions">
+                  <div class="mainMenuFlagSectionTitle">Edit</div>
+                  <div class="mainMenuFlagButtons mainMenuFlagButtonsUtil">
+                    <button id="mmFlagUndoBtn" class="mainMenuMiniBtn" type="button">Undo</button>
+                    <button id="mmFlagClearPaintBtn" class="mainMenuMiniBtn" type="button">Clear Paint</button>
+                    <button id="mmFlagDeleteShapeBtn" class="mainMenuMiniBtn" type="button">Delete Shape</button>
+                  </div>
+                </section>
+                <section class="mainMenuFlagGroup" aria-label="Flag actions">
+                  <div class="mainMenuFlagSectionTitle">Flag</div>
+                  <div class="mainMenuFlagButtons mainMenuFlagButtonsUtil">
+                    <button id="mmFlagResetBtn" class="mainMenuMiniBtn" type="button">Reset</button>
+                    <button id="mmFlagRandomBtn" class="mainMenuMiniBtn" type="button">Randomize</button>
+                  </div>
+                </section>
+              </aside>
+            </div>
           </div>
 
           <footer class="mainMenuFlagEditorFooter">
@@ -378,6 +515,7 @@
       </div>
 <div id="hud">
         <div id="topHud" class="panel ui-interactive" aria-label="Game controls">
+          <div id="gameTimer" class="topTimer" aria-label="Match timer">0:00</div>
           <button
             id="btnLeaderboard"
             class="btn subtle iconBtn"
@@ -385,12 +523,16 @@
             title="Toggle leaderboard"
             aria-label="Toggle leaderboard"
           >
-            &#127942;
+            <img class="hudControlIcon" src="/UI_Icons/Leaderboard.png" alt="" aria-hidden="true" />
           </button>
-          <div id="gameTimer" class="topTimer">0:00</div>
-          <button id="btnPause" class="btn subtle" type="button">Pause</button>
           <button id="btnSettings" class="btn subtle iconBtn" type="button" title="Open settings" aria-label="Open settings">
-            &#9881;
+            <img class="hudControlIcon" src="/UI_Icons/Settings.png" alt="" aria-hidden="true" />
+          </button>
+          <button id="btnPause" class="btn subtle iconBtn" type="button" title="Pause game" aria-label="Pause game">
+            <img class="hudControlIcon" src="/UI_Icons/Pause.png" alt="" aria-hidden="true" />
+          </button>
+          <button id="btnLeaveGame" class="btn subtle iconBtn" type="button" title="Leave game" aria-label="Leave game">
+            <img class="hudControlIcon" src="/UI_Icons/Leave.png" alt="" aria-hidden="true" />
           </button>
         </div>
         <div id="spawnProgressWrap" class="spawnProgress ui-interactive" hidden aria-hidden="true">
@@ -586,6 +728,13 @@
                   </span>
                   <input id="setReduceMotion" type="checkbox" />
                 </label>
+                <label class="settingsRow" for="setFullscreen">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Fullscreen</span>
+                    <span class="settingsRowHint muted">Toggle fullscreen mode for the game window.</span>
+                  </span>
+                  <input id="setFullscreen" type="checkbox" />
+                </label>
 
               </section>
 
@@ -595,16 +744,67 @@
                 <label class="settingsRow settingsRowAudio" for="setMenuMusicVolume">
                   <span class="settingsAudioLabel settingsRowLabel">Menu Music Volume</span>
                   <output id="setMenuMusicVolumeValue" class="settingsAudioValue">12%</output>
-                  <input id="setMenuMusicVolume" type="range" min="0" max="100" step="1" value="12" />
+                  <input id="setMenuMusicVolume" class="slider" type="range" min="0" max="100" step="1" value="12" />
                 </label>
 
                 <label class="settingsRow settingsRowAudio" for="setWarMusicVolume">
                   <span class="settingsAudioLabel settingsRowLabel">War Music Volume</span>
                   <output id="setWarMusicVolumeValue" class="settingsAudioValue">9%</output>
-                  <input id="setWarMusicVolume" type="range" min="0" max="100" step="1" value="9" />
+                  <input id="setWarMusicVolume" class="slider" type="range" min="0" max="100" step="1" value="9" />
                 </label>
               </section>
 
+            </div>
+          </section>
+        </div>
+
+        <div id="researchModal" class="researchModal ui-interactive" hidden>
+          <div id="researchBackdrop" class="researchBackdrop"></div>
+          <section id="researchPanel" class="panel researchPanel" role="dialog" aria-modal="true" aria-labelledby="researchTitle">
+            <div class="researchTopBar">
+              <div id="researchTitle" class="researchTitle">Research Tree</div>
+              <button id="researchClose" class="btn subtle" type="button" aria-label="Close research panel">Close</button>
+            </div>
+
+            <div class="researchTabs" role="tablist" aria-label="Research categories">
+              <button id="researchTabMilitary" class="btn subtle researchTabBtn isTabSelected" type="button" role="tab" aria-selected="true" data-research-tab="military">
+                Military
+              </button>
+              <button id="researchTabEconomy" class="btn subtle researchTabBtn" type="button" role="tab" aria-selected="false" data-research-tab="economy">
+                Economy
+              </button>
+              <button id="researchTabIntel" class="btn subtle researchTabBtn" type="button" role="tab" aria-selected="false" data-research-tab="intel">
+                Intelligence
+              </button>
+            </div>
+
+            <div class="researchCanvasShell">
+              <div id="researchTreeViewport" class="researchTreeViewport" aria-label="Research tree canvas">
+                <div id="researchTreeCanvas" class="researchTreeCanvas">
+                  <svg id="researchTreeLinks" class="researchTreeLinks" aria-hidden="true"></svg>
+                  <div id="researchTreeNodes" class="researchTreeNodesLayer"></div>
+                </div>
+              </div>
+              <aside id="researchInfoCard" class="researchInfoCard" aria-label="Research details">
+                <div class="researchInfoTag">Selected Research</div>
+                <div class="researchInfoMain">
+                  <div class="researchInfoHeader">
+                    <img id="researchInfoIcon" class="researchInfoIcon" src="/UI_Icons/Expressions/war.png" alt="" aria-hidden="true" />
+                    <div>
+                      <div id="researchInfoName" class="researchInfoName">Select Research</div>
+                      <div id="researchInfoStatus" class="researchInfoStatus muted">Choose an icon in the tree</div>
+                    </div>
+                  </div>
+                  <button id="researchActionBtn" class="btn researchActionBtn" type="button">Research</button>
+                </div>
+                <div id="researchInfoDesc" class="researchInfoDesc muted">
+                  Research details will appear here.
+                </div>
+                <div class="researchInfoMeta">
+                  <span id="researchInfoPrice" class="researchStat">Price: -</span>
+                  <span id="researchInfoTime" class="researchStat">Time: -</span>
+                </div>
+              </aside>
             </div>
           </section>
         </div>
@@ -665,7 +865,7 @@
                 <dt><img class="statIcon" src="/UI_Icons/population.png" alt="" aria-hidden="true" /><span>Population</span></dt>
                 <dd>
                   <div class="statMain">
-                    <span id="statPopVal">0</span><span class="statDim"> / </span><span id="statPopCap">0</span>
+                    <span id="statPopVal" class="statCurrent">0</span><span class="statDim"> / </span><span id="statPopCap" class="statMax">0</span>
                   </div>
                   <div class="statSub">
                     <span class="delta" id="statPopDelta">+0/s</span>
@@ -677,7 +877,7 @@
                 <dt><img class="statIcon" src="/UI_Icons/infantry.png" alt="" aria-hidden="true" /><span>Infantry</span></dt>
                 <dd>
                   <div class="statMain">
-                    <span id="statInfVal">0</span><span class="statDim"> / </span><span id="statInfCap">0</span>
+                    <span id="statInfVal" class="statCurrent">0</span><span class="statDim"> / </span><span id="statInfCap" class="statMax">0</span>
                   </div>
                   <div class="statSub"><span class="delta" id="statInfDelta">+0/s</span></div>
                 </dd>
@@ -692,7 +892,7 @@
             </dl>
 
             <div class="objective">
-              <div class="objectiveLabel">Objective</div>
+              <div class="objectiveLabel">Top Priority</div>
               <div class="objectiveValue">Eliminate all enemy capitals.</div>
             </div>
           </section>
@@ -734,10 +934,42 @@
           </section>
         </aside>
 
+        <nav id="quickLaunchBar" class="ui-interactive" aria-label="Quick launch">
+          <div class="barLeft">
+            <div class="barTitle">Quick Launch</div>
+          </div>
+
+          <div class="barButtons" role="group" aria-label="Quick launch buttons">
+            <button class="btn structureBtn quickLaunchBtn" id="btnQuickAtomic" type="button" title="Atomic Bomb (X)">
+              Atomic (X)
+            </button>
+            <button class="btn structureBtn quickLaunchBtn" id="btnQuickHydrogen" type="button" title="Hydrogen Bomb (V)">
+              Hydrogen (V)
+            </button>
+            <button class="btn structureBtn quickLaunchBtn" id="btnQuickTransportBoat" type="button" title="Transport (H)">
+              Transport (H)
+            </button>
+            <button class="btn structureBtn quickLaunchBtn" id="btnQuickPlane" type="button" title="Plane (F)">
+              Plane (F)
+            </button>
+          </div>
+        </nav>
+
+        <nav id="researchLaunchBar" class="ui-interactive" aria-label="Research quick launch" hidden aria-hidden="true">
+          <div class="barLeft">
+            <div class="barTitle">Research</div>
+          </div>
+          <div class="barButtons" role="group" aria-label="Research controls">
+            <button class="btn structureBtn quickLaunchBtn" id="btnResearchPanel" type="button" title="Open Research Panel">
+              Research
+            </button>
+          </div>
+        </nav>
+
         <nav id="structureBar" class="ui-interactive" aria-label="Structures">
           <div class="barLeft">
             <div class="barTitle">Build</div>
-            <div class="barSub muted" id="buildModeLabel">No build mode</div>
+            <div class="barSub muted" id="buildModeLabel" hidden aria-hidden="true">No build mode</div>
           </div>
 
           <div class="barButtons" role="group" aria-label="Structure buttons">

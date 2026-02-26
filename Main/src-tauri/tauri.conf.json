@@ -1,0 +1,46 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "PixelFront",
+  "version": "0.1.0",
+  "identifier": "com.pixelfront.game",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PixelFront",
+        "width": 1600,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 576,
+        "center": true,
+        "maximized": true,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Game",
+    "shortDescription": "PixelFront is a modern geopolitical strategy game.",
+    "longDescription": "PixelFront is a real-time geopolitical strategy game where players manage economies, militaries, alliances, and wars on a living world map.",
+    "copyright": "Copyright (c) 2026 PixelFront",
+    "publisher": "PixelFront",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

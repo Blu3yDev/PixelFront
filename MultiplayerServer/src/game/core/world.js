@@ -36,6 +36,7 @@ import {
   SIM_DT_S,
   SIM_HZ,
   SPECKLE_CLEAN_INTERVAL_S,
+  STRUCT_BUILD_TIME_S,
   STRUCT_COST_LINEAR_STEP,
   STRUCT_COST_MAX,
   STRUCT_STACK_MAX,
@@ -228,6 +229,7 @@ export class World {
     this._nextNukeFlightId = 1;
     this._activeSiloBuildIds = new Set();
     this._activeAirbaseBuildIds = new Set();
+    this._activeStructureBuildIds = new Set();
     this.airborneMissions = [];
     this._nextAirborneMissionId = 1;
 
@@ -390,6 +392,9 @@ export class World {
 
     this._ownerBatchDepth = 0;
     this._ownerBatchNeighbors = new Set();
+    this._ownerBatchNeighborStamp = new Uint32Array(n);
+    this._ownerBatchNeighborList = [];
+    this._ownerBatchNeighborEpoch = 1;
     this._ownerBatchVersionDirty = false;
 
     this._speckleSet = new Set();
@@ -748,6 +753,7 @@ export class World {
     this._nextNukeFlightId = 1;
     this._activeSiloBuildIds.clear();
     this._activeAirbaseBuildIds.clear();
+    this._activeStructureBuildIds.clear();
     this.airborneMissions.length = 0;
     this._nextAirborneMissionId = 1;
 
@@ -813,6 +819,9 @@ export class World {
     if (this._borderOwnerByTile && this._borderOwnerByTile.length === n) this._borderOwnerByTile.fill(0);
     if (this._borderPosByTile && this._borderPosByTile.length === n) this._borderPosByTile.fill(-1);
     if (this._ownerBatchNeighbors) this._ownerBatchNeighbors.clear();
+    if (Array.isArray(this._ownerBatchNeighborList)) this._ownerBatchNeighborList.length = 0;
+    if (this._ownerBatchNeighborStamp && this._ownerBatchNeighborStamp.length === n) this._ownerBatchNeighborStamp.fill(0);
+    this._ownerBatchNeighborEpoch = 1;
     this._ownerBatchVersionDirty = false;
 
     this._speckleSet.clear();
@@ -1398,6 +1407,65 @@ export class World {
     const sid = this._structAt[idx] | 0;
     if (!sid) return null;
     return this._structureById.get(sid) || null;
+  }
+
+  _getStructureBuildTimeS(type) {
+    const t = String(type || "");
+    const fromConfig = Number(STRUCT_BUILD_TIME_S?.[t]);
+    if (Number.isFinite(fromConfig) && fromConfig > 0) return fromConfig;
+    return 6;
+  }
+
+  _ensureStructureConstructionData(st) {
+    if (!st || typeof st !== "object") return null;
+    if (!st.data || typeof st.data !== "object") st.data = {};
+    if (!st.data.construction || typeof st.data.construction !== "object") {
+      st.data.construction = {
+        pendingCount: 0,
+        buildRemainingS: 0,
+        buildTotalS: 0
+      };
+    }
+    const d = st.data.construction;
+    d.pendingCount = Math.max(0, d.pendingCount | 0);
+    d.buildRemainingS = Math.max(0, Number(d.buildRemainingS) || 0);
+    d.buildTotalS = Math.max(0, Number(d.buildTotalS) || 0);
+    return d;
+  }
+
+  _structureTotalCount(st) {
+    if (!st || typeof st !== "object") return 0;
+    return Math.max(1, (Number(st.count) | 0) || 1);
+  }
+
+  _structurePendingCount(st) {
+    if (!st || typeof st !== "object") return 0;
+    const c = st?.data?.construction;
+    if (!c || typeof c !== "object") return 0;
+    return Math.max(0, c.pendingCount | 0);
+  }
+
+  _structureOperationalCount(st) {
+    const total = this._structureTotalCount(st);
+    const pending = this._structurePendingCount(st);
+    return Math.max(0, total - pending);
+  }
+
+  _isStructureOperational(st) {
+    return this._structureOperationalCount(st) > 0;
+  }
+
+  _queueStructureConstruction(st, queueCount = 1) {
+    if (!st || typeof st !== "object") return;
+    const add = Math.max(1, queueCount | 0);
+    const d = this._ensureStructureConstructionData(st);
+    if (!d) return;
+    d.pendingCount = Math.max(0, (d.pendingCount | 0) + add);
+    if (!(d.buildRemainingS > 0.00001) || !(d.buildTotalS > 0.00001)) {
+      d.buildTotalS = Math.max(0.1, Number(this._getStructureBuildTimeS(st.type)) || 0.1);
+      d.buildRemainingS = d.buildTotalS;
+    }
+    if (this._activeStructureBuildIds) this._activeStructureBuildIds.add(st.id | 0);
   }
 
   _nukeSpec(warheadType) {
@@ -2047,6 +2115,7 @@ export class World {
 
     const oid = ownerId | 0;
     if ((st.owner | 0) !== oid) return { ok: false, reason: "You do not control this Missile Silo." };
+    if (!this._isStructureOperational(st)) return { ok: false, reason: "Missile Silo is still under construction." };
 
     const nat = this.nation[oid];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
@@ -2108,6 +2177,7 @@ export class World {
     const st = this._getMissileSiloById(structId | 0);
     if (!st) return { ok: false, reason: "Missile Silo not found." };
     if ((st.owner | 0) !== oid) return { ok: false, reason: "You do not control this Missile Silo." };
+    if (!this._isStructureOperational(st)) return { ok: false, reason: "Missile Silo is still under construction." };
 
     const spec = this._nukeSpec(warheadType);
     if (!spec) return { ok: false, reason: "Unknown warhead type." };
@@ -2141,6 +2211,7 @@ export class World {
     const st = this._getMissileSiloById(structId | 0);
     if (!st) return { ok: false, reason: "Missile Silo not found." };
     if ((st.owner | 0) !== oid) return { ok: false, reason: "You do not control this Missile Silo." };
+    if (!this._isStructureOperational(st)) return { ok: false, reason: "Missile Silo is still under construction." };
 
     const nat = this.nation[oid];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
@@ -2351,6 +2422,61 @@ export class World {
     if (!(step > 0)) return;
     const now = Number(this.time) || 0;
 
+    if (this._activeStructureBuildIds && this._activeStructureBuildIds.size > 0) {
+      const done = this._structureDoneScratch || (this._structureDoneScratch = []);
+      done.length = 0;
+      for (const sid0 of this._activeStructureBuildIds) {
+        const sid = sid0 | 0;
+        const st = this._structureById.get(sid);
+        if (!st) {
+          done.push(sid);
+          continue;
+        }
+
+        const d = this._ensureStructureConstructionData(st);
+        if (!d || (d.pendingCount | 0) <= 0) {
+          if (d) {
+            d.pendingCount = 0;
+            d.buildRemainingS = 0;
+            d.buildTotalS = 0;
+          }
+          done.push(sid);
+          continue;
+        }
+
+        if (!(d.buildRemainingS > 0.00001) || !(d.buildTotalS > 0.00001)) {
+          d.buildTotalS = Math.max(0.1, Number(this._getStructureBuildTimeS(st.type)) || 0.1);
+          d.buildRemainingS = d.buildTotalS;
+        }
+
+        d.buildRemainingS = Math.max(0, (Number(d.buildRemainingS) || 0) - step);
+        if (d.buildRemainingS > 0.00001) continue;
+
+        d.pendingCount = Math.max(0, (d.pendingCount | 0) - 1);
+        const ownerId = st.owner | 0;
+        if (ownerId > 0 && typeof this._recomputeNationEconomySnapshot === "function") {
+          this._recomputeNationEconomySnapshot(ownerId);
+        }
+        if (ownerId === OWNER.PLAYER) {
+          const doneCount = this._structureOperationalCount(st);
+          const doneLabel = doneCount > 1
+            ? `${title(st.type)} construction complete (x${doneCount}).`
+            : `${title(st.type)} construction complete.`;
+          this._pushEvent(doneLabel);
+        }
+
+        if ((d.pendingCount | 0) > 0) {
+          d.buildTotalS = Math.max(0.1, Number(this._getStructureBuildTimeS(st.type)) || 0.1);
+          d.buildRemainingS = d.buildTotalS;
+        } else {
+          d.buildRemainingS = 0;
+          d.buildTotalS = 0;
+          done.push(sid);
+        }
+      }
+      for (let i = 0; i < done.length; i++) this._activeStructureBuildIds.delete(done[i] | 0);
+    }
+
     if (this._activeSiloBuildIds && this._activeSiloBuildIds.size > 0) {
       const done = this._nukeDoneScratch || (this._nukeDoneScratch = []);
       done.length = 0;
@@ -2425,6 +2551,7 @@ export class World {
     for (let i = 0; i < this.structures.length; i++) {
       const st = this.structures[i];
       if (!st || String(st.type || "") !== "abm_launcher") continue;
+      if (!this._isStructureOperational(st)) continue;
       const d = this._ensureAbmLauncherData(st);
       if (!d) continue;
 
@@ -2841,6 +2968,7 @@ export class World {
     const ownerId = st.owner | 0;
     this._activeSiloBuildIds.delete(sid);
     this._activeAirbaseBuildIds.delete(sid);
+    this._activeStructureBuildIds.delete(sid);
     if (String(st.type || "") === "abm_launcher") {
       const d = this._ensureAbmLauncherData(st);
       const lockId = d ? (d.targetFlightId | 0) : 0;
@@ -2893,7 +3021,8 @@ export class World {
     // Count existing owned structures of this type to apply linear price growth.
     for (let i = 0; i < this.structures.length; i++) {
       const st = this.structures[i];
-      if (st && st.owner === oid && st.type === t) count += (st.count | 0) || 1;
+      if (!st || st.owner !== oid || st.type !== t) continue;
+      count += this._structureTotalCount(st);
     }
 
     // First owned structure of a type remains at base price.
@@ -2952,7 +3081,7 @@ placeStructure(type, ownerId, x, y) {
         if (t === "missile_silo") return { ok: false, reason: "Missile Silo cannot be stacked." };
         if (t === "abm_launcher") return { ok: false, reason: "ABM Launcher cannot be stacked." };
         if (t === "airbase") return { ok: false, reason: "Airbase cannot be stacked." };
-        const cur = (stHere.count | 0) || 1;
+        const cur = this._structureTotalCount(stHere);
         if (cur >= STRUCT_STACK_MAX) return { ok: false, reason: `Max stack (${STRUCT_STACK_MAX}) reached.` };
 
         const cost = this.getBuildCost(t, oid) | 0;
@@ -2960,10 +3089,11 @@ placeStructure(type, ownerId, x, y) {
         nat.gold -= cost;
 
         stHere.count = cur + 1;
+        this._queueStructureConstruction(stHere, 1);
         if (oid === OWNER.PLAYER) {
-          this._pushEvent(`${this._nameOf(oid)} built ${title(t)} (x${stHere.count}).`);
+          this._pushEvent(`${this._nameOf(oid)} started ${title(t)} construction (x${stHere.count}).`);
         }
-        return { ok: true, reason: "", structure: stHere };
+        return { ok: true, queued: true, reason: "", structure: stHere };
       }
       return { ok: false, reason: "Space blocked by another structure." };
     }
@@ -2979,10 +3109,11 @@ placeStructure(type, ownerId, x, y) {
   nat.gold -= cost;
 
   const st = this._addStructure(t, oid, ix, iy);
+  this._queueStructureConstruction(st, 1);
   if (oid === OWNER.PLAYER) {
-    this._pushEvent(`${this._nameOf(oid)} built ${title(t)}.`);
+    this._pushEvent(`${this._nameOf(oid)} started ${title(t)} construction.`);
   }
-  return { ok: true, reason: "", structure: st };
+  return { ok: true, queued: true, reason: "", structure: st };
 }
 
 

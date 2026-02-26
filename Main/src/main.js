@@ -1,12 +1,15 @@
 ﻿// src/main.js
 import { createHUD } from "./ui.js";
 import { World, OWNER } from "./game/core/world.js";
-import { AIRBASE_LAUNCH_RADIUS_TILES, AIRBASE_TRANSPORT_BUILD_GOLD_COST, AIRBASE_TRANSPORT_BUILD_TIME_S, DEBUG_ABM_TEST, DEBUG_MATCH_OUTCOME_TEST, MAP_MODE, MAX_ALLIES, SIM_DT_S, WORLD_SETUP, WORLD_SIZE_PRESET, WORLD_SIZE_PRESETS, WORLDGEN, attackCommitFromRatio } from "./game/config.js";
+import { AIRBASE_LAUNCH_RADIUS_TILES, AIRBASE_TRANSPORT_BUILD_GOLD_COST, AIRBASE_TRANSPORT_BUILD_TIME_S, BIOME, BIOME_COLORS, DEBUG_ABM_TEST, DEBUG_MATCH_OUTCOME_TEST, MAP_MODE, MAX_ALLIES, SIM_DT_S, WORLD_SETUP, WORLD_SIZE_PRESET, WORLD_SIZE_PRESETS, WORLDGEN, attackCommitFromRatio } from "./game/config.js";
 import { Renderer } from "./render.js";
 import { PaintInput } from "./input.js";
 import { loadEarthData } from "./game/data/earthData.js";
+import { createClient } from "@supabase/supabase-js";
 import {
   FLAG_LAYOUT_OPTIONS,
+  FLAG_MAX_STROKES,
+  FLAG_MAX_STROKE_POINTS,
   FLAG_MAX_SHAPES,
   FLAG_SHAPE_OPTIONS,
   createDefaultFlag,
@@ -42,6 +45,23 @@ if (!ctx) throw new Error("[Boot] Could not get 2D context");
 ctx.imageSmoothingEnabled = false;
 const screenAlert = createScreenAlertOverlay();
 const voiceLines = createVoiceLineToast();
+const SUPABASE_URL = resolveSupabaseUrl();
+const SUPABASE_ANON_KEY = resolveSupabaseAnonKey();
+const SUPABASE_TABLE_PUBLIC_MAPS = resolveSupabaseMapsTable();
+const SUPABASE_RPC_INCREMENT_DOWNLOADS = resolveSupabaseDownloadsRpc();
+const SUPABASE_RPC_SUBMIT_RATING = String(import.meta?.env?.VITE_SUPABASE_RPC_SUBMIT_RATING || "submit_map_rating").trim();
+const SUPABASE_ENABLED = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+const SUPABASE_CONFIG_HINT = !SUPABASE_URL
+  ? "Missing Supabase URL."
+  : (!SUPABASE_ANON_KEY ? "Missing Supabase anon key." : "");
+let supabasePublicMapsHasRatingColumns = null;
+const supabase = SUPABASE_ENABLED
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { "x-client-info": "pixelfront-map-library" } }
+    })
+  : null;
+console.info(`[PixelFront] Map library config: ${SUPABASE_ENABLED ? "enabled" : "disabled"}${SUPABASE_CONFIG_HINT ? ` (${SUPABASE_CONFIG_HINT})` : ""}`);
 
 const hud = createHUD();
 let runtimeErrorHudCooldownUntilMs = 0;
@@ -87,6 +107,7 @@ const DEFAULT_CLIENT_SETTINGS = Object.freeze({
   politicalMapMode: false,
   disableAtmosphere: false,
   reduceMotion: false,
+  fullscreen: false,
   menuMusicVolume: 12,
   warMusicVolume: 9
 });
@@ -155,11 +176,24 @@ const MATCH_DIFFICULTY_DEFAULTS = Object.freeze({
   aiWarGraceS: 0
 });
 const MATCH_PLAYER_BOOSTS = Object.freeze([1, 2, 5, 10]);
+const MAP_SOURCE = Object.freeze({
+  EARTH: "earth",
+  CUSTOM: "custom"
+});
+const CUSTOM_MAPS_STORAGE_KEY = "pf-custom-maps-v1";
+const CUSTOM_MAP_EDITOR_SIZE_PRESETS = Object.freeze({
+  [WORLD_SIZE_PRESET.SMALL]: Object.freeze({ width: 360, height: 180 }),
+  [WORLD_SIZE_PRESET.LARGE]: Object.freeze({ width: 720, height: 360 }),
+  [WORLD_SIZE_PRESET.SUPER_LARGE]: Object.freeze({ width: 960, height: 480 }),
+  [WORLD_SIZE_PRESET.EXTREMELY_LARGE]: Object.freeze({ width: 1280, height: 640 })
+});
 const DEFAULT_MATCH_CONFIG = Object.freeze({
   sizePreset: String(WORLD_SETUP?.sizePreset ?? WORLD_SIZE_PRESET.LARGE),
   aiCount: null,
   difficulty: "normal",
   mapMode: MAP_MODE.WORLD_MAP,
+  mapSource: MAP_SOURCE.EARTH,
+  customMapId: "",
   infiniteGold: false,
   infiniteTroops: false,
   disableMissileSilo: false,
@@ -215,6 +249,128 @@ function normalizeApiBase(rawValue) {
   } catch {
     return out.replace(/\/+$/, "");
   }
+}
+
+function readMetaConfigValue(metaName) {
+  try {
+    const doc = globalThis?.document;
+    if (!doc || typeof doc.querySelector !== "function") return "";
+    const el = doc.querySelector(`meta[name="${String(metaName || "").trim()}"]`);
+    const raw = String(el?.getAttribute?.("content") || "").trim();
+    if (!raw || raw.includes("%VITE_")) return "";
+    return raw;
+  } catch {
+    return "";
+  }
+}
+
+function readStorageConfigValue(primaryKey, compatKey = "") {
+  try {
+    const storage = globalThis?.localStorage;
+    const first = String(storage?.getItem?.(String(primaryKey || "")) || "").trim();
+    if (first) return first;
+    if (compatKey) {
+      const second = String(storage?.getItem?.(String(compatKey || "")) || "").trim();
+      if (second) return second;
+    }
+  } catch {
+    // Ignore storage read errors.
+  }
+  return "";
+}
+
+function resolveRuntimeConfigValue(options = null) {
+  const opts = (options && typeof options === "object") ? options : {};
+  const envValue = String(opts.envValue || "").trim();
+  if (envValue) return envValue;
+
+  const globalKey = String(opts.globalKey || "").trim();
+  if (globalKey) {
+    const fromGlobal = String(globalThis?.[globalKey] || "").trim();
+    if (fromGlobal) return fromGlobal;
+  }
+
+  const metaName = String(opts.metaName || "").trim();
+  if (metaName) {
+    const fromMeta = readMetaConfigValue(metaName);
+    if (fromMeta) return fromMeta;
+  }
+
+  const queryKey = String(opts.queryKey || "").trim();
+  if (queryKey) {
+    try {
+      const u = new URL(String(globalThis?.location?.href || ""));
+      const fromQuery = String(u.searchParams.get(queryKey) || "").trim();
+      if (fromQuery) return fromQuery;
+    } catch {
+      // Ignore URL parse errors.
+    }
+  }
+
+  const storageKey = String(opts.storageKey || "").trim();
+  const storageCompatKey = String(opts.storageCompatKey || "").trim();
+  if (storageKey || storageCompatKey) {
+    const fromStorage = readStorageConfigValue(storageKey, storageCompatKey);
+    if (fromStorage) return fromStorage;
+  }
+
+  const fallback = String(opts.fallback || "").trim();
+  return fallback;
+}
+
+function normalizeSupabaseUrl(rawValue) {
+  const base = normalizeApiBase(rawValue);
+  if (!base) return "";
+  return base.replace(/\/+$/, "");
+}
+
+function resolveSupabaseUrl() {
+  const raw = resolveRuntimeConfigValue({
+    envValue: import.meta?.env?.VITE_SUPABASE_URL,
+    globalKey: "__PF_SUPABASE_URL",
+    metaName: "pf-supabase-url",
+    queryKey: "sbUrl",
+    storageKey: "pf-supabase-url-override",
+    storageCompatKey: "pf-supabase-url"
+  });
+  return normalizeSupabaseUrl(raw);
+}
+
+function resolveSupabaseAnonKey() {
+  return resolveRuntimeConfigValue({
+    envValue: import.meta?.env?.VITE_SUPABASE_ANON_KEY,
+    globalKey: "__PF_SUPABASE_ANON_KEY",
+    metaName: "pf-supabase-anon-key",
+    queryKey: "sbAnonKey",
+    storageKey: "pf-supabase-anon-key-override",
+    storageCompatKey: "pf-supabase-anon-key"
+  });
+}
+
+function resolveSupabaseMapsTable() {
+  const raw = resolveRuntimeConfigValue({
+    envValue: import.meta?.env?.VITE_SUPABASE_MAPS_TABLE,
+    globalKey: "__PF_SUPABASE_MAPS_TABLE",
+    metaName: "pf-supabase-maps-table",
+    queryKey: "sbTable",
+    storageKey: "pf-supabase-maps-table-override",
+    storageCompatKey: "pf-supabase-maps-table",
+    fallback: "public_maps"
+  });
+  return raw || "public_maps";
+}
+
+function resolveSupabaseDownloadsRpc() {
+  const raw = resolveRuntimeConfigValue({
+    envValue: import.meta?.env?.VITE_SUPABASE_RPC_INCREMENT_DOWNLOADS,
+    globalKey: "__PF_SUPABASE_RPC_INCREMENT_DOWNLOADS",
+    metaName: "pf-supabase-rpc-increment-downloads",
+    queryKey: "sbRpcDownloads",
+    storageKey: "pf-supabase-rpc-downloads-override",
+    storageCompatKey: "pf-supabase-rpc-downloads",
+    fallback: "increment_map_downloads"
+  });
+  return raw || "increment_map_downloads";
 }
 
 function readMetaMultiplayerApiBase() {
@@ -499,6 +655,8 @@ let renderer = null;
 let input = null;
 const MAIN_MENU_NAME_STORAGE_KEY = "pf-main-menu-name-v1";
 const PLAYER_FLAG_STORAGE_KEY = "pf-player-flag-v1";
+const MAP_LIBRARY_AUTHOR_STORAGE_KEY = "pf-map-library-author-v1";
+const MAP_LIBRARY_RATINGS_STORAGE_KEY = "pf-map-library-ratings-v1";
 let bootInProgress = false;
 let bootCompleted = false;
 let mainMenuController = null;
@@ -1356,15 +1514,17 @@ function rebuildMultiplayerStructureCaches(worldRef) {
     if (!st) continue;
     const ownerId = Math.max(0, Number(st.owner) | 0);
     if (ownerId <= 0 || ownerId > totalOwners) continue;
-    const count = Math.max(1, Number(st.count) | 0 || 1);
+    const totalCount = Math.max(1, Number(st.count) | 0 || 1);
+    const pendingCount = Math.max(0, Number(st?.data?.construction?.pendingCount) | 0);
+    const count = Math.max(0, totalCount - pendingCount);
     const type = String(st.type || "");
     if (type === "city" && worldRef._cityCount) worldRef._cityCount[ownerId] += count;
     else if (type === "factory" && worldRef._factoryCount) worldRef._factoryCount[ownerId] += count;
     else if (type === "barracks" && worldRef._barracksCount) worldRef._barracksCount[ownerId] += count;
-    else if (type === "port") {
+    else if (type === "port" && count > 0) {
       if (worldRef._portCount) worldRef._portCount[ownerId] += count;
       if (Array.isArray(worldRef._portsByOwner?.[ownerId])) worldRef._portsByOwner[ownerId].push(st);
-    } else if (type === "defence_post") {
+    } else if (type === "defence_post" && count > 0) {
       if (Array.isArray(worldRef._defencePostsByOwner?.[ownerId])) worldRef._defencePostsByOwner[ownerId].push(st);
     }
   }
@@ -1373,6 +1533,9 @@ function rebuildMultiplayerStructureCaches(worldRef) {
 
 function rebuildMultiplayerBuildQueues(worldRef) {
   if (!worldRef) return;
+  if (worldRef._activeStructureBuildIds && typeof worldRef._activeStructureBuildIds.clear === "function") {
+    worldRef._activeStructureBuildIds.clear();
+  }
   if (worldRef._activeSiloBuildIds && typeof worldRef._activeSiloBuildIds.clear === "function") {
     worldRef._activeSiloBuildIds.clear();
   }
@@ -1386,6 +1549,11 @@ function rebuildMultiplayerBuildQueues(worldRef) {
     if (!st || typeof st !== "object") continue;
     const sid = Math.max(0, Number(st.id) | 0);
     if (!sid) continue;
+    const c = st?.data?.construction;
+    const pendingCount = Math.max(0, Number(c?.pendingCount) | 0);
+    if (pendingCount > 0 && worldRef._activeStructureBuildIds) {
+      worldRef._activeStructureBuildIds.add(sid);
+    }
     const type = String(st.type || "");
     if (type === "missile_silo") {
       const d = st?.data?.missileSilo;
@@ -2459,6 +2627,9 @@ function sanitizeClientSettings(next) {
     reduceMotion: Object.prototype.hasOwnProperty.call(src, "reduceMotion")
       ? Boolean(src.reduceMotion)
       : DEFAULT_CLIENT_SETTINGS.reduceMotion,
+    fullscreen: Object.prototype.hasOwnProperty.call(src, "fullscreen")
+      ? Boolean(src.fullscreen)
+      : DEFAULT_CLIENT_SETTINGS.fullscreen,
     menuMusicVolume: Object.prototype.hasOwnProperty.call(src, "menuMusicVolume")
       ? clampPct(src.menuMusicVolume, DEFAULT_CLIENT_SETTINGS.menuMusicVolume)
       : DEFAULT_CLIENT_SETTINGS.menuMusicVolume,
@@ -2489,6 +2660,725 @@ function saveClientSettings(next) {
   }
 }
 
+const CUSTOM_MAP_MAX_CELL_COUNT = 2_200_000;
+const CUSTOM_MAP_MIN_WIDTH = 64;
+const CUSTOM_MAP_MIN_HEIGHT = 32;
+const CUSTOM_MAP_MAX_WIDTH = 4096;
+const CUSTOM_MAP_MAX_HEIGHT = 2048;
+const CUSTOM_MAP_DEFAULT_NAME = "Custom Map";
+const CUSTOM_MAP_MAX_COUNT = 48;
+const CUSTOM_MAP_WATER_BIOMES = new Set([
+  BIOME.OCEAN_DEEP,
+  BIOME.OCEAN_SHALLOW,
+  BIOME.CORAL_REEF
+]);
+const CUSTOM_MAP_BIOME_ENTRIES = Object.freeze(
+  Object.keys(BIOME)
+    .map((key) => {
+      const id = Number(BIOME[key]);
+      if (!Number.isFinite(id) || id < 0 || id > 255) return null;
+      return {
+        id: id | 0,
+        key,
+        label: key
+          .toLowerCase()
+          .split("_")
+          .filter(Boolean)
+          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+          .join(" ")
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.id - b.id)
+);
+
+function clampCustomMapBiomeId(raw, fallback = BIOME.OCEAN_SHALLOW) {
+  const id = Number(raw);
+  if (Number.isFinite(id) && id >= 0 && id <= 255) return id | 0;
+  return fallback | 0;
+}
+
+function customMapBiomeLabelById(id) {
+  const bid = clampCustomMapBiomeId(id, BIOME.GRASS);
+  for (let i = 0; i < CUSTOM_MAP_BIOME_ENTRIES.length; i++) {
+    const row = CUSTOM_MAP_BIOME_ENTRIES[i];
+    if ((row.id | 0) === bid) return row.label;
+  }
+  return `Biome ${bid}`;
+}
+
+function isWaterBiomeId(id) {
+  return CUSTOM_MAP_WATER_BIOMES.has(clampCustomMapBiomeId(id, BIOME.OCEAN_SHALLOW));
+}
+
+function normalizeCustomMapName(raw, fallback = CUSTOM_MAP_DEFAULT_NAME) {
+  const text = String(raw || "").trim().replace(/\s+/g, " ");
+  if (!text) return fallback;
+  return text.slice(0, 32);
+}
+
+function resolveCustomMapSizePreset(sizePresetRaw) {
+  const key = String(sizePresetRaw || WORLD_SIZE_PRESET.LARGE);
+  return CUSTOM_MAP_EDITOR_SIZE_PRESETS[key] || CUSTOM_MAP_EDITOR_SIZE_PRESETS[WORLD_SIZE_PRESET.LARGE];
+}
+
+function encodeBytesBase64(bytes) {
+  if (!(bytes instanceof Uint8Array) || !bytes.length) return "";
+  let binary = "";
+  const chunk = 0x4000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    const slice = bytes.subarray(i, i + chunk);
+    binary += String.fromCharCode(...slice);
+  }
+  return btoa(binary);
+}
+
+function decodeBytesBase64(raw, expectedLen = 0) {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+  try {
+    const binary = atob(text);
+    if (expectedLen > 0 && binary.length !== expectedLen) return null;
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i) & 255;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function readCustomMapsStore() {
+  try {
+    if (typeof localStorage === "undefined") return [];
+    const raw = localStorage.getItem(CUSTOM_MAPS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === "object" && Array.isArray(parsed.maps)) return parsed.maps;
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCustomMapsStore(records) {
+  try {
+    if (typeof localStorage === "undefined") return false;
+    const maps = Array.isArray(records) ? records : [];
+    localStorage.setItem(CUSTOM_MAPS_STORAGE_KEY, JSON.stringify({ v: 1, maps }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeCustomMapMeta(raw) {
+  const src = (raw && typeof raw === "object") ? raw : null;
+  if (!src) return null;
+  const id = String(src.id || "").trim();
+  if (!id) return null;
+  const width = clampInt(Number(src.width) || 0, CUSTOM_MAP_MIN_WIDTH, CUSTOM_MAP_MAX_WIDTH);
+  const height = clampInt(Number(src.height) || 0, CUSTOM_MAP_MIN_HEIGHT, CUSTOM_MAP_MAX_HEIGHT);
+  const cellCount = width * height;
+  if (cellCount <= 0 || cellCount > CUSTOM_MAP_MAX_CELL_COUNT) return null;
+  const biomeData = String(src.biomeData || src.biomes || "").trim();
+  if (!biomeData) return null;
+  const createdAt = Math.max(0, Math.floor(Number(src.createdAt) || 0));
+  const updatedAt = Math.max(createdAt, Math.floor(Number(src.updatedAt) || createdAt || Date.now()));
+  return {
+    id,
+    name: normalizeCustomMapName(src.name, CUSTOM_MAP_DEFAULT_NAME),
+    width,
+    height,
+    createdAt: createdAt || updatedAt,
+    updatedAt,
+    biomeData
+  };
+}
+
+function listCustomMapMetas() {
+  const raw = readCustomMapsStore();
+  const out = [];
+  for (let i = 0; i < raw.length; i++) {
+    const meta = sanitizeCustomMapMeta(raw[i]);
+    if (!meta) continue;
+    out.push({
+      id: meta.id,
+      name: meta.name,
+      width: meta.width,
+      height: meta.height,
+      createdAt: meta.createdAt,
+      updatedAt: meta.updatedAt
+    });
+  }
+  out.sort((a, b) => (b.updatedAt - a.updatedAt));
+  return out;
+}
+
+function loadCustomMapById(mapIdRaw) {
+  const mapId = String(mapIdRaw || "").trim();
+  if (!mapId) return null;
+  const raw = readCustomMapsStore();
+  for (let i = 0; i < raw.length; i++) {
+    const meta = sanitizeCustomMapMeta(raw[i]);
+    if (!meta || meta.id !== mapId) continue;
+    const cellCount = meta.width * meta.height;
+    const decoded = decodeBytesBase64(meta.biomeData, cellCount);
+    if (!decoded || decoded.length !== cellCount) return null;
+    const biomeGrid = new Uint8Array(cellCount);
+    for (let j = 0; j < cellCount; j++) biomeGrid[j] = clampCustomMapBiomeId(decoded[j], BIOME.OCEAN_SHALLOW);
+    return {
+      id: meta.id,
+      name: meta.name,
+      width: meta.width,
+      height: meta.height,
+      createdAt: meta.createdAt,
+      updatedAt: meta.updatedAt,
+      biomeGrid
+    };
+  }
+  return null;
+}
+
+function saveCustomMap(definition, options = null) {
+  const src = (definition && typeof definition === "object") ? definition : null;
+  if (!src) return null;
+  const forceNew = !!options?.forceNew;
+  const width = clampInt(Number(src.width) || 0, CUSTOM_MAP_MIN_WIDTH, CUSTOM_MAP_MAX_WIDTH);
+  const height = clampInt(Number(src.height) || 0, CUSTOM_MAP_MIN_HEIGHT, CUSTOM_MAP_MAX_HEIGHT);
+  const cellCount = width * height;
+  if (cellCount <= 0 || cellCount > CUSTOM_MAP_MAX_CELL_COUNT) return null;
+  const gridSrc = src.biomeGrid instanceof Uint8Array ? src.biomeGrid : null;
+  if (!gridSrc || gridSrc.length !== cellCount) return null;
+  const biomeGrid = new Uint8Array(cellCount);
+  for (let i = 0; i < cellCount; i++) biomeGrid[i] = clampCustomMapBiomeId(gridSrc[i], BIOME.OCEAN_SHALLOW);
+  const biomeData = encodeBytesBase64(biomeGrid);
+  if (!biomeData) return null;
+
+  const now = Date.now();
+  const baseId = String(src.id || "").trim();
+  const id = (!forceNew && baseId)
+    ? baseId
+    : `map_${now.toString(36)}_${Math.floor(Math.random() * 0xfffff).toString(36)}`;
+  const createdAt = (!forceNew && Number(src.createdAt) > 0) ? Math.floor(Number(src.createdAt)) : now;
+  const record = {
+    id,
+    name: normalizeCustomMapName(src.name, CUSTOM_MAP_DEFAULT_NAME),
+    width,
+    height,
+    biomeData,
+    createdAt,
+    updatedAt: now
+  };
+
+  const raw = readCustomMapsStore();
+  const next = [];
+  let replaced = false;
+  for (let i = 0; i < raw.length; i++) {
+    const row = sanitizeCustomMapMeta(raw[i]);
+    if (!row) continue;
+    if (row.id === id && !replaced) {
+      next.push(record);
+      replaced = true;
+    } else {
+      next.push(row);
+    }
+  }
+  if (!replaced) next.push(record);
+  next.sort((a, b) => ((b.updatedAt | 0) - (a.updatedAt | 0)));
+  if (next.length > CUSTOM_MAP_MAX_COUNT) next.length = CUSTOM_MAP_MAX_COUNT;
+  if (!writeCustomMapsStore(next)) return null;
+  return loadCustomMapById(id);
+}
+
+function deleteCustomMapById(mapIdRaw) {
+  const mapId = String(mapIdRaw || "").trim();
+  if (!mapId) return false;
+  const raw = readCustomMapsStore();
+  const next = [];
+  let removed = false;
+  for (let i = 0; i < raw.length; i++) {
+    const row = sanitizeCustomMapMeta(raw[i]);
+    if (!row) continue;
+    if (row.id === mapId) {
+      removed = true;
+      continue;
+    }
+    next.push(row);
+  }
+  if (!removed) return false;
+  return writeCustomMapsStore(next);
+}
+
+function createBlankCustomMap(sizePresetRaw, nameRaw = "") {
+  const dims = resolveCustomMapSizePreset(sizePresetRaw);
+  const width = clampInt(dims.width, CUSTOM_MAP_MIN_WIDTH, CUSTOM_MAP_MAX_WIDTH);
+  const height = clampInt(dims.height, CUSTOM_MAP_MIN_HEIGHT, CUSTOM_MAP_MAX_HEIGHT);
+  const biomeGrid = new Uint8Array(width * height);
+  biomeGrid.fill(BIOME.OCEAN_SHALLOW);
+  return {
+    id: "",
+    name: normalizeCustomMapName(nameRaw, `Custom ${sizePresetRaw || WORLD_SIZE_PRESET.LARGE}`),
+    width,
+    height,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    biomeGrid
+  };
+}
+
+function customMapToEarthData(definition) {
+  const map = (definition && typeof definition === "object") ? definition : null;
+  if (!map || !(map.biomeGrid instanceof Uint8Array)) return null;
+  const width = clampInt(Number(map.width) || 0, CUSTOM_MAP_MIN_WIDTH, CUSTOM_MAP_MAX_WIDTH);
+  const height = clampInt(Number(map.height) || 0, CUSTOM_MAP_MIN_HEIGHT, CUSTOM_MAP_MAX_HEIGHT);
+  const cellCount = width * height;
+  if (cellCount <= 0 || cellCount > CUSTOM_MAP_MAX_CELL_COUNT) return null;
+  if (map.biomeGrid.length !== cellCount) return null;
+
+  const biomeIdGrid = new Uint8Array(cellCount);
+  const landGrid = new Uint8Array(cellCount);
+  const classIdGrid = new Uint8Array(cellCount);
+  for (let i = 0; i < cellCount; i++) {
+    const biomeId = clampCustomMapBiomeId(map.biomeGrid[i], BIOME.OCEAN_SHALLOW);
+    biomeIdGrid[i] = biomeId;
+    if (isWaterBiomeId(biomeId)) {
+      landGrid[i] = 0;
+      classIdGrid[i] = 0;
+    } else {
+      landGrid[i] = 1;
+      classIdGrid[i] = 1;
+    }
+  }
+  return {
+    gridW: width,
+    gridH: height,
+    landGrid,
+    classIdGrid,
+    classCodes: ["", "Cfa"],
+    biomeIdGrid,
+    isCustomMap: true,
+    mapId: String(map.id || "").trim(),
+    mapName: normalizeCustomMapName(map.name, CUSTOM_MAP_DEFAULT_NAME)
+  };
+}
+
+function clampLibraryRating(valueRaw) {
+  const n = Math.floor(Number(valueRaw) || 0);
+  if (n < 1 || n > 5) return 0;
+  return n;
+}
+
+function readMapLibraryRatingsStore() {
+  try {
+    if (typeof localStorage === "undefined") return {};
+    const raw = localStorage.getItem(MAP_LIBRARY_RATINGS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const out = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const mapId = String(key || "").trim();
+      const rating = clampLibraryRating(value);
+      if (!mapId || !rating) continue;
+      out[mapId] = rating;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeMapLibraryRatingsStore(nextRaw) {
+  try {
+    if (typeof localStorage === "undefined") return false;
+    const src = (nextRaw && typeof nextRaw === "object") ? nextRaw : {};
+    const out = {};
+    for (const [key, value] of Object.entries(src)) {
+      const mapId = String(key || "").trim();
+      const rating = clampLibraryRating(value);
+      if (!mapId || !rating) continue;
+      out[mapId] = rating;
+    }
+    if (Object.keys(out).length <= 0) {
+      localStorage.removeItem(MAP_LIBRARY_RATINGS_STORAGE_KEY);
+    } else {
+      localStorage.setItem(MAP_LIBRARY_RATINGS_STORAGE_KEY, JSON.stringify(out));
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getLocalMapLibraryRating(mapIdRaw) {
+  const mapId = String(mapIdRaw || "").trim();
+  if (!mapId) return 0;
+  const store = readMapLibraryRatingsStore();
+  return clampLibraryRating(store[mapId]);
+}
+
+function setLocalMapLibraryRating(mapIdRaw, ratingRaw) {
+  const mapId = String(mapIdRaw || "").trim();
+  if (!mapId) return false;
+  const store = readMapLibraryRatingsStore();
+  const rating = clampLibraryRating(ratingRaw);
+  if (!rating) {
+    delete store[mapId];
+  } else {
+    store[mapId] = rating;
+  }
+  return writeMapLibraryRatingsStore(store);
+}
+
+function normalizeLibraryMapRow(raw, includeBiomeData = false) {
+  const src = (raw && typeof raw === "object") ? raw : null;
+  if (!src) return null;
+  const id = String(src.id || "").trim();
+  const name = normalizeCustomMapName(src.name, "");
+  if (!id || !name) return null;
+  const width = clampInt(Number(src.width) || 0, CUSTOM_MAP_MIN_WIDTH, CUSTOM_MAP_MAX_WIDTH);
+  const height = clampInt(Number(src.height) || 0, CUSTOM_MAP_MIN_HEIGHT, CUSTOM_MAP_MAX_HEIGHT);
+  if ((width * height) <= 0 || (width * height) > CUSTOM_MAP_MAX_CELL_COUNT) return null;
+  const downloads = Math.max(0, Math.floor(Number(src.downloads) || 0));
+  const createdAt = String(src.created_at || src.createdAt || "");
+  const updatedAt = String(src.updated_at || src.updatedAt || createdAt);
+  const authorName = normalizeCustomMapName(src.author_name || src.authorName || "Anonymous", "Anonymous");
+  const description = String(src.description || "").trim().slice(0, 360);
+  const ratingCountRaw = (
+    src.rating_count ?? src.ratingCount ??
+    src.ratings_count ?? src.ratingsCount ??
+    src.total_ratings ?? src.totalRatings ??
+    src.votes ?? src.vote_count ?? src.voteCount ??
+    0
+  );
+  const ratingCount = Math.max(0, Math.floor(Number(ratingCountRaw) || 0));
+  const ratingSumRaw = (
+    src.rating_sum ?? src.ratingSum ??
+    src.ratings_sum ?? src.ratingsSum ??
+    src.total_rating ?? src.totalRating ??
+    0
+  );
+  const ratingAverageRaw = (
+    src.rating_average ?? src.ratingAverage ??
+    src.average_rating ?? src.averageRating ??
+    src.avg_rating ?? src.avgRating ??
+    src.rating_avg ?? src.ratingAvg ??
+    0
+  );
+  const parsedAverage = Math.max(0, Math.min(5, Number(ratingAverageRaw) || 0));
+  let ratingSum = Math.max(0, Number(ratingSumRaw) || 0);
+  let ratingAverage = parsedAverage;
+  if (ratingCount > 0 && ratingAverage <= 0 && ratingSum > 0) {
+    ratingAverage = Math.max(0, Math.min(5, ratingSum / ratingCount));
+  }
+  if (ratingCount > 0 && ratingSum <= 0 && ratingAverage > 0) {
+    ratingSum = ratingAverage * ratingCount;
+  }
+  ratingSum = Math.max(0, ratingSum);
+  const out = {
+    id,
+    name,
+    description,
+    authorName,
+    width,
+    height,
+    downloads,
+    ratingSum,
+    ratingCount,
+    ratingAverage,
+    createdAt,
+    updatedAt
+  };
+  if (includeBiomeData) {
+    const biomeData = String(src.biome_data || src.biomeData || "").trim();
+    if (!biomeData) return null;
+    out.biomeData = biomeData;
+  }
+  return out;
+}
+
+function isLikelyMissingColumnError(err) {
+  const msg = String(err?.message || err || "").toLowerCase();
+  if (!msg) return false;
+  return (
+    msg.includes("column") && msg.includes("does not exist")
+  ) || msg.includes("could not find the");
+}
+
+function decodeLibraryBiomeData(biomeDataRaw, width, height) {
+  const cellCount = (width | 0) * (height | 0);
+  if (cellCount <= 0 || cellCount > CUSTOM_MAP_MAX_CELL_COUNT) return null;
+  const decoded = decodeBytesBase64(biomeDataRaw, cellCount);
+  if (!decoded || decoded.length !== cellCount) return null;
+  const biomeGrid = new Uint8Array(cellCount);
+  for (let i = 0; i < cellCount; i++) biomeGrid[i] = clampCustomMapBiomeId(decoded[i], BIOME.OCEAN_SHALLOW);
+  return biomeGrid;
+}
+
+async function fetchPublicLibraryMaps(searchRaw = "", limitRaw = 80) {
+  if (!supabase) throw new Error("Map Library is not configured. Missing Supabase URL or anon key.");
+  const limit = clampInt(Number(limitRaw) || 80, 1, 200);
+  const search = String(searchRaw || "").trim();
+  const baseSelect = "id,name,description,author_name,width,height,downloads,created_at,updated_at,is_public";
+  const ratingSelect = `${baseSelect},rating_sum,rating_count`;
+  const baseFilter = (query) => {
+    let q = query
+      .eq("is_public", true)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    if (search) q = q.ilike("name", `%${search.replace(/[%_]/g, "")}%`);
+    return q;
+  };
+  let res;
+  if (supabasePublicMapsHasRatingColumns === false) {
+    res = await baseFilter(
+      supabase
+        .from(SUPABASE_TABLE_PUBLIC_MAPS)
+        .select(baseSelect)
+    );
+  } else {
+    res = await baseFilter(
+      supabase
+        .from(SUPABASE_TABLE_PUBLIC_MAPS)
+        .select(ratingSelect)
+    );
+    if (res.error && isLikelyMissingColumnError(res.error)) {
+      supabasePublicMapsHasRatingColumns = false;
+      res = await baseFilter(
+        supabase
+          .from(SUPABASE_TABLE_PUBLIC_MAPS)
+          .select(baseSelect)
+      );
+    } else if (!res.error) {
+      supabasePublicMapsHasRatingColumns = true;
+    }
+  }
+  const { data, error } = res;
+  if (error) throw new Error(error.message || "Failed to load public maps.");
+  const out = [];
+  for (let i = 0; i < (Array.isArray(data) ? data.length : 0); i++) {
+    const row = normalizeLibraryMapRow(data[i], false);
+    if (!row) continue;
+    out.push(row);
+  }
+  return out;
+}
+
+async function fetchPublicLibraryMapDetail(mapIdRaw) {
+  if (!supabase) throw new Error("Map Library is not configured. Missing Supabase URL or anon key.");
+  const mapId = String(mapIdRaw || "").trim();
+  if (!mapId) throw new Error("Missing map id.");
+  const baseSelect = "id,name,description,author_name,width,height,downloads,created_at,updated_at,biome_data,is_public";
+  const ratingSelect = `${baseSelect},rating_sum,rating_count`;
+  let res;
+  if (supabasePublicMapsHasRatingColumns === false) {
+    res = await supabase
+      .from(SUPABASE_TABLE_PUBLIC_MAPS)
+      .select(baseSelect)
+      .eq("id", mapId)
+      .eq("is_public", true)
+      .maybeSingle();
+  } else {
+    res = await supabase
+      .from(SUPABASE_TABLE_PUBLIC_MAPS)
+      .select(ratingSelect)
+      .eq("id", mapId)
+      .eq("is_public", true)
+      .maybeSingle();
+    if (res.error && isLikelyMissingColumnError(res.error)) {
+      supabasePublicMapsHasRatingColumns = false;
+      res = await supabase
+        .from(SUPABASE_TABLE_PUBLIC_MAPS)
+        .select(baseSelect)
+        .eq("id", mapId)
+        .eq("is_public", true)
+        .maybeSingle();
+    } else if (!res.error) {
+      supabasePublicMapsHasRatingColumns = true;
+    }
+  }
+  const { data, error } = res;
+  if (error) throw new Error(error.message || "Failed to load selected map.");
+  const row = normalizeLibraryMapRow(data, true);
+  if (!row) throw new Error("Selected map is invalid.");
+  return row;
+}
+
+async function incrementPublicMapDownloads(mapIdRaw) {
+  if (!supabase) return;
+  const mapId = String(mapIdRaw || "").trim();
+  if (!mapId) return;
+  try {
+    const rpcRes = await supabase.rpc(SUPABASE_RPC_INCREMENT_DOWNLOADS, { p_map_id: mapId });
+    if (!rpcRes?.error) return;
+  } catch {
+    // Fallback below.
+  }
+  try {
+    const detail = await fetchPublicLibraryMapDetail(mapId);
+    await supabase
+      .from(SUPABASE_TABLE_PUBLIC_MAPS)
+      .update({ downloads: Math.max(0, (detail.downloads | 0) + 1) })
+      .eq("id", mapId);
+  } catch {
+    // Ignore download-count update failures.
+  }
+}
+
+async function submitPublicMapRating(mapIdRaw, ratingRaw, previousRatingRaw = 0) {
+  if (!supabase) throw new Error("Map Library is not configured. Missing Supabase URL or anon key.");
+  const mapId = String(mapIdRaw || "").trim();
+  if (!mapId) throw new Error("Missing map id.");
+  const rating = clampLibraryRating(ratingRaw);
+  if (!rating) throw new Error("Pick between 1 and 5 stars.");
+  const previousRating = clampLibraryRating(previousRatingRaw);
+
+  try {
+    const rpcRes = await supabase.rpc(SUPABASE_RPC_SUBMIT_RATING, {
+      p_map_id: mapId,
+      p_rating: rating,
+      p_previous_rating: previousRating || null
+    });
+    if (!rpcRes?.error) {
+      const rpcPayload = Array.isArray(rpcRes?.data) ? rpcRes.data[0] : rpcRes?.data;
+      const normalized = normalizeLibraryMapRow(rpcPayload, false);
+      if (normalized) return normalized;
+      return null;
+    }
+  } catch {
+    // Fallback below.
+  }
+
+  const detail = await fetchPublicLibraryMapDetail(mapId);
+  if (supabasePublicMapsHasRatingColumns === false) {
+    throw new Error("Rating columns are not enabled on this Supabase table.");
+  }
+  const currentCount = Math.max(0, Math.floor(Number(detail.ratingCount) || 0));
+  const currentAvg = Math.max(0, Math.min(5, Number(detail.ratingAverage) || 0));
+  const currentSum = Math.max(
+    0,
+    Number(detail.ratingSum) || ((currentCount > 0 && currentAvg > 0) ? (currentAvg * currentCount) : 0)
+  );
+  const nextSum = (previousRating > 0)
+    ? Math.max(0, currentSum - previousRating + rating)
+    : Math.max(0, currentSum + rating);
+  const nextCount = (previousRating > 0)
+    ? currentCount
+    : (currentCount + 1);
+  const nextAverage = nextCount > 0 ? Math.max(0, Math.min(5, nextSum / nextCount)) : 0;
+
+  const baseSelect = "id,name,description,author_name,width,height,downloads,created_at,updated_at,is_public";
+  const updateAttempts = [
+    { rating_sum: Math.round(nextSum), rating_count: nextCount },
+    { rating_average: nextAverage, rating_count: nextCount },
+    { average_rating: nextAverage, rating_count: nextCount },
+    { rating_average: nextAverage, ratings_count: nextCount },
+    { average_rating: nextAverage, ratings_count: nextCount },
+    { rating_average: nextAverage },
+    { average_rating: nextAverage }
+  ];
+  let updateRes = null;
+  for (let i = 0; i < updateAttempts.length; i++) {
+    const attempt = await supabase
+      .from(SUPABASE_TABLE_PUBLIC_MAPS)
+      .update(updateAttempts[i])
+      .eq("id", mapId)
+      .eq("is_public", true)
+      .select(baseSelect)
+      .maybeSingle();
+    if (!attempt.error) {
+      if (Object.prototype.hasOwnProperty.call(updateAttempts[i], "rating_sum") || Object.prototype.hasOwnProperty.call(updateAttempts[i], "rating_count")) {
+        supabasePublicMapsHasRatingColumns = true;
+      }
+      updateRes = attempt;
+      break;
+    }
+    if (!isLikelyMissingColumnError(attempt.error)) {
+      updateRes = attempt;
+      break;
+    }
+  }
+  if (!updateRes) {
+    supabasePublicMapsHasRatingColumns = false;
+    throw new Error("Rating fields are missing in Supabase. Add rating columns or submit-map-rating RPC.");
+  }
+  if (updateRes.error) throw new Error(updateRes.error.message || "Failed to submit rating.");
+  const row = normalizeLibraryMapRow(updateRes.data, false);
+  if (row) {
+    return {
+      ...row,
+      ratingSum: nextSum,
+      ratingCount: nextCount,
+      ratingAverage: nextAverage
+    };
+  }
+
+  return {
+    ...detail,
+    ratingSum: nextSum,
+    ratingCount: nextCount,
+    ratingAverage: nextAverage
+  };
+}
+
+async function publishCustomMapToLibrary(mapDef, options = null) {
+  if (!supabase) throw new Error("Map Library is not configured. Missing Supabase URL or anon key.");
+  const map = (mapDef && typeof mapDef === "object") ? mapDef : null;
+  if (!map || !(map.biomeGrid instanceof Uint8Array)) {
+    throw new Error("No valid custom map data to publish.");
+  }
+  const width = clampInt(Number(map.width) || 0, CUSTOM_MAP_MIN_WIDTH, CUSTOM_MAP_MAX_WIDTH);
+  const height = clampInt(Number(map.height) || 0, CUSTOM_MAP_MIN_HEIGHT, CUSTOM_MAP_MAX_HEIGHT);
+  const cellCount = width * height;
+  if (map.biomeGrid.length !== cellCount) throw new Error("Map data size mismatch.");
+  const biomeGrid = new Uint8Array(cellCount);
+  for (let i = 0; i < cellCount; i++) biomeGrid[i] = clampCustomMapBiomeId(map.biomeGrid[i], BIOME.OCEAN_SHALLOW);
+  const biomeData = encodeBytesBase64(biomeGrid);
+  if (!biomeData) throw new Error("Failed to encode map data.");
+
+  const name = normalizeCustomMapName(options?.name || map.name || CUSTOM_MAP_DEFAULT_NAME, CUSTOM_MAP_DEFAULT_NAME);
+  const authorName = normalizeCustomMapName(options?.authorName || "Anonymous", "Anonymous");
+  const description = String(options?.description || "").trim().slice(0, 360);
+  const payload = {
+    name,
+    description,
+    author_name: authorName,
+    width,
+    height,
+    biome_data: biomeData,
+    is_public: true
+  };
+  const { data, error } = await supabase
+    .from(SUPABASE_TABLE_PUBLIC_MAPS)
+    .insert(payload)
+    .select("id,name,description,author_name,width,height,downloads,created_at,updated_at")
+    .single();
+  if (error) throw new Error(error.message || "Failed to publish map.");
+  const row = normalizeLibraryMapRow(data, false);
+  if (!row) throw new Error("Publish succeeded, but response was invalid.");
+  return row;
+}
+
+async function downloadPublicLibraryMapToLocal(mapIdRaw, localNameRaw = "") {
+  const detail = await fetchPublicLibraryMapDetail(mapIdRaw);
+  const biomeGrid = decodeLibraryBiomeData(detail.biomeData, detail.width, detail.height);
+  if (!biomeGrid) throw new Error("Public map biome data is invalid.");
+  const draft = {
+    id: "",
+    name: normalizeCustomMapName(localNameRaw || detail.name, detail.name),
+    width: detail.width,
+    height: detail.height,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    biomeGrid
+  };
+  const saved = saveCustomMap(draft, { forceNew: true });
+  if (!saved) throw new Error("Failed to save downloaded map locally.");
+  void incrementPublicMapDownloads(detail.id);
+  return saved;
+}
+
 function sanitizeMatchConfig(next) {
   const src = (next && typeof next === "object") ? next : {};
   const presetRaw = String(src.sizePreset ?? DEFAULT_MATCH_CONFIG.sizePreset);
@@ -2506,8 +3396,10 @@ function sanitizeMatchConfig(next) {
     ? difficultyRaw
     : DEFAULT_MATCH_CONFIG.difficulty;
 
-  // Main menu currently locks to Earth map source.
   const mapMode = MAP_MODE.WORLD_MAP;
+  const mapSourceRaw = String(src.mapSource ?? src.mapMode ?? DEFAULT_MATCH_CONFIG.mapSource).toLowerCase();
+  const mapSource = mapSourceRaw === MAP_SOURCE.CUSTOM ? MAP_SOURCE.CUSTOM : MAP_SOURCE.EARTH;
+  const customMapId = String(src.customMapId || "").trim();
 
   const parseBoost = (value, fallback) => {
     const n = Number(value);
@@ -2520,6 +3412,8 @@ function sanitizeMatchConfig(next) {
     aiCount,
     difficulty,
     mapMode,
+    mapSource,
+    customMapId,
     infiniteGold: Boolean(src.infiniteGold),
     infiniteTroops: Boolean(src.infiniteTroops),
     disableMissileSilo: Boolean(src.disableMissileSilo),
@@ -2916,6 +3810,7 @@ function applyClientSettings(next, opts = {}) {
   }
 
   applyBgmVolumes();
+  applyFullscreenPreference(clientSettings.fullscreen);
 
   if (syncHUD && hud && typeof hud.setSettings === "function") {
     hud.setSettings(clientSettings);
@@ -2928,6 +3823,34 @@ function applyClientSettings(next, opts = {}) {
   }
 }
 
+function applyFullscreenPreference(enabled) {
+  const wantFullscreen = !!enabled;
+  const doc = (typeof document !== "undefined") ? document : null;
+  const root = doc?.documentElement || null;
+  const inDomFullscreen = !!doc?.fullscreenElement;
+
+  const isLikelyTauri = !!(globalThis?.__TAURI__ || globalThis?.__TAURI_INTERNALS__);
+  if (isLikelyTauri) {
+    import("@tauri-apps/api/window")
+      .then((mod) => mod?.getCurrentWindow?.()?.setFullscreen?.(wantFullscreen))
+      .catch(() => {
+        // Fallback to DOM fullscreen below when native call fails.
+      });
+  }
+
+  if (!doc || !root) return;
+  if (wantFullscreen === inDomFullscreen) return;
+  if (wantFullscreen) {
+    if (typeof root.requestFullscreen === "function") {
+      root.requestFullscreen().catch(() => {});
+    }
+    return;
+  }
+  if (typeof doc.exitFullscreen === "function") {
+    doc.exitFullscreen().catch(() => {});
+  }
+}
+
 let selectedStructureId = null;
 let selectedShipId = null;
 let paused = false;
@@ -2937,6 +3860,7 @@ let selection = null; // { neutral:number[], warOwner:number, war:number[] }
 let intentArrows = null; // [{ x, y, dx, dy, kind, t }]
 let nukeLaunchMode = null; // { siloId:number, type:"atomic"|"hydrogen" }
 let airborneLaunchMode = null; // { airbaseId:number }
+let navalTransportLaunchMode = false; // true when quick-launching transport boats by click target
 let nukePreview = null; // curved arc preview payload from world.getMissileArcPreview()
 
 const leaderboard = createLeaderboardOverlay();
@@ -2992,6 +3916,13 @@ const BUILD_HOTKEY_BUTTON_IDS = Object.freeze({
   "6": "btnMissileSilo",
   "7": "btnAbmLauncher",
   "8": "btnAirbase"
+});
+
+const QUICK_LAUNCH_HOTKEY_BUTTON_IDS = Object.freeze({
+  x: "btnQuickAtomic",
+  v: "btnQuickHydrogen",
+  h: "btnQuickTransportBoat",
+  f: "btnQuickPlane"
 });
 
 function isSpawnPhaseActiveNow() {
@@ -3167,6 +4098,247 @@ function clearNukeLaunchMode() {
 
 function clearAirborneLaunchMode() {
   airborneLaunchMode = null;
+}
+
+function clearNavalTransportLaunchMode() {
+  navalTransportLaunchMode = false;
+}
+
+function activateNukeLaunchFromSilo(siloIdRaw) {
+  const sid = siloIdRaw | 0;
+  if (!sid) {
+    hud.setOpMessage("No missile silo selected.");
+    return false;
+  }
+  const status = world.getMissileSiloStatus
+    ? world.getMissileSiloStatus(sid, OWNER.PLAYER)
+    : { ok: false, reason: "Missile silo status API unavailable." };
+  if (!status.ok) {
+    hud.setOpMessage(status.reason);
+    return false;
+  }
+  if (!status.isReady || !status.readyType) {
+    hud.setOpMessage("No ready warhead to launch.");
+    return false;
+  }
+
+  hud.clearBuildMode();
+  clearAirborneLaunchMode();
+  clearNavalTransportLaunchMode();
+  clearSelection();
+  selectedStructureId = sid;
+  selectedShipId = null;
+  nukeLaunchMode = { siloId: sid, type: String(status.readyType) };
+  refreshNukePreview();
+  hud.setOpMessage(`Launch targeting active: ${warheadLabel(status.readyType)}. Click a target tile.`);
+  return true;
+}
+
+function activateAirborneLaunchFromAirbase(airbaseIdRaw) {
+  const sid = airbaseIdRaw | 0;
+  if (!sid) {
+    hud.setOpMessage("No airbase selected.");
+    return false;
+  }
+  const status = world.getAirbaseStatus
+    ? world.getAirbaseStatus(sid, OWNER.PLAYER)
+    : { ok: false, reason: "Airbase status API unavailable." };
+  if (!status.ok) {
+    hud.setOpMessage(status.reason);
+    return false;
+  }
+  if (!status.isReady) {
+    hud.setOpMessage("No ready transport plane to launch.");
+    return false;
+  }
+  if (!status.canLaunch) {
+    const need = Math.max(1, Math.floor(Number(status.transport?.launchMinInfantry) || 1));
+    const have = Math.max(0, Math.floor(Number(status.transport?.availableInfantry) || 0));
+    hud.setOpMessage(`Need ${need} free infantry to launch airborne transport (currently ${have}).`);
+    return false;
+  }
+
+  hud.clearBuildMode();
+  clearNukeLaunchMode();
+  clearNavalTransportLaunchMode();
+  clearSelection();
+  selectedStructureId = sid;
+  selectedShipId = null;
+  airborneLaunchMode = { airbaseId: sid };
+  const radius = Math.max(1, Math.floor(Number(status.transport?.launchRadiusTiles) || Number(AIRBASE_LAUNCH_RADIUS_TILES) || 1));
+  hud.setOpMessage(`Airborne targeting active (range ${radius} tiles). Click a land tile.`);
+  return true;
+}
+
+function findReadySiloByWarheadType(typeRaw) {
+  const wantedType = String(typeRaw || "").toLowerCase();
+  if (!world || typeof world.getMissileSiloStatus !== "function") return 0;
+  const structures = Array.isArray(world.structures) ? world.structures : [];
+  for (let i = 0; i < structures.length; i++) {
+    const st = structures[i];
+    if (!st || (st.owner | 0) !== OWNER.PLAYER) continue;
+    if (String(st.type || "") !== "missile_silo") continue;
+    const sid = st.id | 0;
+    if (!sid) continue;
+    const status = world.getMissileSiloStatus(sid, OWNER.PLAYER);
+    if (!status?.ok || !status.isReady) continue;
+    if (String(status.readyType || "").toLowerCase() !== wantedType) continue;
+    return sid;
+  }
+  return 0;
+}
+
+function findReadyAirbaseForLaunch() {
+  if (!world || typeof world.getAirbaseStatus !== "function") return 0;
+  const structures = Array.isArray(world.structures) ? world.structures : [];
+  for (let i = 0; i < structures.length; i++) {
+    const st = structures[i];
+    if (!st || (st.owner | 0) !== OWNER.PLAYER) continue;
+    if (String(st.type || "") !== "airbase") continue;
+    const sid = st.id | 0;
+    if (!sid) continue;
+    const status = world.getAirbaseStatus(sid, OWNER.PLAYER);
+    if (!status?.ok || !status.isReady || !status.canLaunch) continue;
+    return sid;
+  }
+  return 0;
+}
+
+function tryQuickLaunchNuke(typeRaw) {
+  if (!canPlayerIssueOrders()) return;
+  const wantedType = String(typeRaw || "").toLowerCase();
+  const sid = findReadySiloByWarheadType(wantedType);
+  if (!sid) {
+    hud.setOpMessage(`No ready ${warheadLabel(wantedType)} available.`);
+    refreshAllUI();
+    return;
+  }
+  activateNukeLaunchFromSilo(sid);
+  refreshAllUI();
+}
+
+function tryQuickLaunchTransportPlane() {
+  if (!canPlayerIssueOrders()) return;
+  const sid = findReadyAirbaseForLaunch();
+  if (!sid) {
+    hud.setOpMessage("No launch-ready Transport Plane available.");
+    refreshAllUI();
+    return;
+  }
+  activateAirborneLaunchFromAirbase(sid);
+  refreshAllUI();
+}
+
+function playerPortCountNow() {
+  if (!world) return 0;
+  const direct = Number(world?._portCount?.[OWNER.PLAYER]);
+  if (Number.isFinite(direct)) return Math.max(0, direct | 0);
+  const structures = Array.isArray(world.structures) ? world.structures : [];
+  let count = 0;
+  for (let i = 0; i < structures.length; i++) {
+    const st = structures[i];
+    if (!st || (st.owner | 0) !== OWNER.PLAYER) continue;
+    if (String(st.type || "") !== "port") continue;
+    count += Math.max(1, (st.count | 0) || 1);
+  }
+  return Math.max(0, count | 0);
+}
+
+function activateNavalTransportLaunchMode() {
+  if (!canPlayerIssueOrders()) return false;
+  if (playerPortCountNow() <= 0) {
+    hud.setOpMessage("Build a Port to launch transport boats.");
+    return false;
+  }
+  hud.clearBuildMode();
+  clearNukeLaunchMode();
+  clearAirborneLaunchMode();
+  clearNavalTransportLaunchMode();
+  clearSelection();
+  navalTransportLaunchMode = true;
+  hud.setOpMessage("Transport targeting active. Click a neutral or enemy land tile.");
+  return true;
+}
+
+function tryQuickLaunchTransportBoat() {
+  if (!activateNavalTransportLaunchMode()) {
+    refreshAllUI();
+    return;
+  }
+  refreshAllUI();
+}
+
+function getQuickLaunchAvailabilityState() {
+  const out = {
+    atomicReady: false,
+    hydrogenReady: false,
+    transportBoatReady: false,
+    transportReady: false
+  };
+  if (!world) return out;
+
+  const structures = Array.isArray(world.structures) ? world.structures : [];
+  for (let i = 0; i < structures.length; i++) {
+    const st = structures[i];
+    if (!st || (st.owner | 0) !== OWNER.PLAYER) continue;
+
+    const type = String(st.type || "");
+    const sid = st.id | 0;
+    if (!sid) continue;
+
+    if (type === "missile_silo" && typeof world.getMissileSiloStatus === "function") {
+      const status = world.getMissileSiloStatus(sid, OWNER.PLAYER);
+      if (status?.ok && status.isReady) {
+        const readyType = String(status.readyType || "").toLowerCase();
+        if (readyType === "atomic") out.atomicReady = true;
+        else if (readyType === "hydrogen") out.hydrogenReady = true;
+      }
+      continue;
+    }
+
+    if (type === "airbase" && typeof world.getAirbaseStatus === "function") {
+      const status = world.getAirbaseStatus(sid, OWNER.PLAYER);
+      if (status?.ok && status.isReady && status.canLaunch) out.transportReady = true;
+    }
+  }
+  out.transportBoatReady = playerPortCountNow() > 0;
+  return out;
+}
+
+function setQuickLaunchButtonEnabled(buttonId, enabled, readyTitle, blockedTitle) {
+  const btn = document.getElementById(buttonId);
+  if (!btn) return;
+  const isEnabled = !!enabled;
+  btn.disabled = !isEnabled;
+  btn.title = isEnabled ? String(readyTitle || "") : String(blockedTitle || "");
+}
+
+function updateQuickLaunchButtons() {
+  const state = getQuickLaunchAvailabilityState();
+  setQuickLaunchButtonEnabled(
+    "btnQuickAtomic",
+    state.atomicReady,
+    "Launch a ready Atomic Bomb instantly.",
+    "No ready Atomic Bomb available."
+  );
+  setQuickLaunchButtonEnabled(
+    "btnQuickHydrogen",
+    state.hydrogenReady,
+    "Launch a ready Hydrogen Bomb instantly.",
+    "No ready Hydrogen Bomb available."
+  );
+  setQuickLaunchButtonEnabled(
+    "btnQuickTransportBoat",
+    state.transportBoatReady,
+    "Launch transport boats by selecting a target tile.",
+    "Build a Port to launch transport boats."
+  );
+  setQuickLaunchButtonEnabled(
+    "btnQuickPlane",
+    state.transportReady,
+    "Launch a ready Transport Plane instantly.",
+    "No launch-ready Transport Plane available."
+  );
 }
 
 function refreshNukePreview() {
@@ -3669,6 +4841,16 @@ async function initAndBoot(matchConfig = null, opts = null) {
   const forcedWorldSpec = sanitizeMultiplayerWorldSpec(options.worldSpec);
   const strictWorldSpec = !!options.strictWorldSpec;
   const cfg = sanitizeMatchConfig(matchConfig || activeMatchConfig);
+  const requestedCustomMapId = String(options.customMapId || cfg.customMapId || "").trim();
+  const wantsCustomMap = (
+    !forcedWorldSpec &&
+    String(cfg.mapSource || MAP_SOURCE.EARTH).toLowerCase() === MAP_SOURCE.CUSTOM &&
+    !!requestedCustomMapId
+  );
+  const customMap = wantsCustomMap ? loadCustomMapById(requestedCustomMapId) : null;
+  if (wantsCustomMap && !customMap) {
+    throw new Error("Selected custom map is missing. Open Map Editor and save or select a valid map.");
+  }
   const rawMode = String(
     forcedWorldSpec?.mapMode ??
     cfg.mapMode ??
@@ -3679,15 +4861,25 @@ async function initAndBoot(matchConfig = null, opts = null) {
 
   if (onLoading) onLoading(12, "Loading map...");
   if (configuredMode === MAP_MODE.WORLD_MAP) {
-    try {
-      earthData = await loadEarthData();
-      console.info("[Earth] Earth assets loaded.");
-    } catch (err) {
-      if (strictWorldSpec || forcedWorldSpec) {
-        throw new Error("World map assets failed to load for this multiplayer match.");
+    if (customMap) {
+      earthData = customMapToEarthData(customMap);
+      if (!earthData) {
+        throw new Error("Custom map data is invalid. Open Map Editor and save the map again.");
       }
-      console.error("[Earth] Failed to load Earth assets, falling back to procedural map.", err);
+      console.info(`[Map] Loaded custom map "${earthData.mapName || customMap.name}" (${earthData.gridW}x${earthData.gridH}).`);
+    } else {
+      try {
+        earthData = await loadEarthData();
+        console.info("[Earth] Earth assets loaded.");
+      } catch (err) {
+        if (strictWorldSpec || forcedWorldSpec) {
+          throw new Error("World map assets failed to load for this multiplayer match.");
+        }
+        console.error("[Earth] Failed to load Earth assets, falling back to procedural map.", err);
+      }
     }
+  } else {
+    earthData = null;
   }
   if (onLoading) onLoading(44, "Preparing world...");
 
@@ -3705,7 +4897,25 @@ async function initAndBoot(matchConfig = null, opts = null) {
         maxTiles: forcedWorldSpec.width * forcedWorldSpec.height,
         sizePreset: "locked"
       }
-    : computeWorldSize(activeMapMode, cfg);
+    : (
+      customMap
+        ? (() => {
+            const fallback = computeWorldSize(activeMapMode, cfg);
+            const aiCount = cfg.aiCount
+              ? Math.max(1, Math.min(400, Math.floor(Number(cfg.aiCount) || fallback.aiCount)))
+              : fallback.aiCount;
+            return {
+              width: customMap.width,
+              height: customMap.height,
+              aiCount,
+              totalTiles: customMap.width * customMap.height,
+              requestedTiles: customMap.width * customMap.height,
+              maxTiles: customMap.width * customMap.height,
+              sizePreset: `custom:${customMap.name || "map"}`
+            };
+          })()
+        : computeWorldSize(activeMapMode, cfg)
+    );
   const worldW = worldSize.width;
   const worldH = worldSize.height;
 
@@ -3780,7 +4990,7 @@ async function initAndBoot(matchConfig = null, opts = null) {
 }
 
 async function startGameFromMainMenu(payload = null) {
-  if (bootInProgress || bootCompleted) return;
+  if (bootInProgress) return;
   const p = (payload && typeof payload === "object") ? payload : {};
   const matchConfigInput = p.matchConfig || payload || null;
   const playerName = resolvePlayerDisplayName(p.playerName || "");
@@ -3812,6 +5022,7 @@ async function startGameFromMainMenu(payload = null) {
     await initAndBoot(activeMatchConfig, {
       playerName,
       seed: seedOverride,
+      customMapId: String(activeMatchConfig?.customMapId || "").trim(),
       worldSpec: worldSpecOverride || multiplayerSession?.worldSpec || null,
       strictWorldSpec: !!multiplayerSession,
       onLoading: (pct, label) => {
@@ -3848,6 +5059,32 @@ async function startGameFromMainMenu(payload = null) {
   } finally {
     bootInProgress = false;
   }
+}
+
+function leaveCurrentGameToMainMenu() {
+  if (bootInProgress) return;
+
+  paused = true;
+  hud.setPaused(true);
+  hud.hideContextMenu();
+  if (hud.setSettingsOpen) hud.setSettingsOpen(false);
+  clearNukeLaunchMode();
+  clearAirborneLaunchMode();
+  clearSelection();
+
+  if (isMultiplayerMatchEnabled()) {
+    setActiveMultiplayerSession(null);
+  }
+
+  matchSummary.hide();
+  if (mainMenuLoadingController) mainMenuLoadingController.hide();
+  if (mainMenuController) {
+    mainMenuController.show();
+    mainMenuController.setStarting(false);
+    mainMenuController.setStatus("Returned to main menu.");
+  }
+  setBgmMode("menu");
+  bootCompleted = false;
 }
 
 function createMainMenuLoadingController() {
@@ -3899,10 +5136,12 @@ function createMainMenuController(options = null) {
   const playBtn = document.getElementById("mmPlayBtn");
   const multiplayerBtn = document.getElementById("mmMultiplayerBtn");
   const settingsBtn = document.getElementById("mmSettingsBtn");
+  const mapEditorBtn = document.getElementById("mmMapEditorBtn");
   const startBtn = document.getElementById("mmStartBtn");
   const settingsBackBtn = document.getElementById("mmSettingsBackBtn");
   const settingsDoneBtn = document.getElementById("mmSettingsDoneBtn");
   const configBackBtn = document.getElementById("mmConfigBackBtn");
+  const mapEditorBackBtn = document.getElementById("mmMapEditorBackBtn");
   const multiplayerBackBtn = document.getElementById("mmMultiplayerBackBtn");
   const createLobbyBtn = document.getElementById("mmCreateLobbyBtn");
   const joinLobbyBtn = document.getElementById("mmJoinLobbyBtn");
@@ -3919,12 +5158,51 @@ function createMainMenuController(options = null) {
   const playLobbyCard = document.getElementById("mmPlayLobbyCard");
   const playLobbyCode = document.getElementById("mmPlayLobbyCode");
   const playLobbyPlayers = document.getElementById("mmPlayLobbyPlayers");
+  const libraryBtn = document.getElementById("mmLibraryBtn");
   const flagBtn = document.getElementById("mmFlagBtn");
   const bookBtn = document.getElementById("mmBookBtn");
   const nameInput = document.getElementById("mmNameInput");
   const flagPreview = document.getElementById("mmPlayerFlagPreview");
   const statusText = document.getElementById("mmStatusText");
   const configSummary = document.getElementById("mmConfigSummary");
+  const mapEditorSummary = document.getElementById("mmMapEditorSummary");
+  const mapEditorSizePresetInput = document.getElementById("mmMapEditorSizePreset");
+  const mapEditorNameInput = document.getElementById("mmMapEditorNameInput");
+  const mapEditorSavedSelect = document.getElementById("mmMapEditorSavedSelect");
+  const mapEditorNewBtn = document.getElementById("mmMapEditorNewBtn");
+  const mapEditorLoadBtn = document.getElementById("mmMapEditorLoadBtn");
+  const mapEditorDeleteBtn = document.getElementById("mmMapEditorDeleteBtn");
+  const mapEditorModal = document.getElementById("mmMapEditorModal");
+  const mapEditorBackdrop = document.getElementById("mmMapEditorBackdrop");
+  const mapEditorCloseBtn = document.getElementById("mmMapEditorCloseBtn");
+  const mapEditorActiveName = document.getElementById("mmMapEditorActiveName");
+  const mapEditorCanvas = document.getElementById("mmMapEditorCanvas");
+  const mapEditorBrushSizeInput = document.getElementById("mmMapEditorBrushSize");
+  const mapEditorBrushSizeValue = document.getElementById("mmMapEditorBrushSizeValue");
+  const mapEditorZoomInput = document.getElementById("mmMapEditorZoom");
+  const mapEditorZoomValue = document.getElementById("mmMapEditorZoomValue");
+  const mapEditorToolBrushBtn = document.getElementById("mmMapEditorToolBrush");
+  const mapEditorToolEraseBtn = document.getElementById("mmMapEditorToolErase");
+  const mapEditorBiomeList = document.getElementById("mmMapEditorBiomeList");
+  const mapEditorSaveBtn = document.getElementById("mmMapEditorSaveBtn");
+  const mapEditorSaveAsBtn = document.getElementById("mmMapEditorSaveAsBtn");
+  const mapEditorUseBtn = document.getElementById("mmMapEditorUseBtn");
+  const mapEditorClearBtn = document.getElementById("mmMapEditorClearBtn");
+  const mapEditorStats = document.getElementById("mmMapEditorStats");
+  const mapEditorModalSavedSelect = document.getElementById("mmMapEditorModalSavedSelect");
+  const mapEditorLoadSavedBtn = document.getElementById("mmMapEditorLoadSavedBtn");
+  const mapLibraryModal = document.getElementById("mmMapLibraryModal");
+  const mapLibraryBackdrop = document.getElementById("mmMapLibraryBackdrop");
+  const mapLibraryCloseBtn = document.getElementById("mmMapLibraryCloseBtn");
+  const mapLibraryStatus = document.getElementById("mmMapLibraryStatus");
+  const mapLibraryPublishMapSelect = document.getElementById("mmMapLibraryPublishMapSelect");
+  const mapLibraryPublishName = document.getElementById("mmMapLibraryPublishName");
+  const mapLibraryPublishAuthor = document.getElementById("mmMapLibraryPublishAuthor");
+  const mapLibraryPublishDesc = document.getElementById("mmMapLibraryPublishDesc");
+  const mapLibraryPublishBtn = document.getElementById("mmMapLibraryPublishBtn");
+  const mapLibrarySearchInput = document.getElementById("mmMapLibrarySearchInput");
+  const mapLibraryRefreshBtn = document.getElementById("mmMapLibraryRefreshBtn");
+  const mapLibraryList = document.getElementById("mmMapLibraryList");
   const flagModal = document.getElementById("mmFlagEditorModal");
   const flagBackdrop = document.getElementById("mmFlagEditorBackdrop");
   const flagCloseBtn = document.getElementById("mmFlagCloseBtn");
@@ -3933,12 +5211,29 @@ function createMainMenuController(options = null) {
   const flagRandomBtn = document.getElementById("mmFlagRandomBtn");
   const flagResetBtn = document.getElementById("mmFlagResetBtn");
   const flagUndoBtn = document.getElementById("mmFlagUndoBtn");
+  const flagClearPaintBtn = document.getElementById("mmFlagClearPaintBtn");
+  const flagDeleteShapeBtn = document.getElementById("mmFlagDeleteShapeBtn");
   const flagPresetDefaultBtn = document.getElementById("mmFlagPresetDefault");
   const flagPresetNordicBtn = document.getElementById("mmFlagPresetNordic");
   const flagPresetTricolorBtn = document.getElementById("mmFlagPresetTricolor");
   const flagPresetCantonBtn = document.getElementById("mmFlagPresetCanton");
   const flagPresetQuarteredBtn = document.getElementById("mmFlagPresetQuartered");
   const flagPresetSaltireBtn = document.getElementById("mmFlagPresetSaltire");
+  const flagToolSelectBtn = document.getElementById("mmFlagToolSelect");
+  const flagToolBrushBtn = document.getElementById("mmFlagToolBrush");
+  const flagToolEraserBtn = document.getElementById("mmFlagToolEraser");
+  const flagToolRectBtn = document.getElementById("mmFlagToolRect");
+  const flagToolCircleBtn = document.getElementById("mmFlagToolCircle");
+  const flagToolTriangleBtn = document.getElementById("mmFlagToolTriangle");
+  const flagToolStarBtn = document.getElementById("mmFlagToolStar");
+  const flagToolDiamondBtn = document.getElementById("mmFlagToolDiamond");
+  const flagToolLineBtn = document.getElementById("mmFlagToolLine");
+  const flagToolCrossBtn = document.getElementById("mmFlagToolCross");
+  const flagToolRingBtn = document.getElementById("mmFlagToolRing");
+  const flagToolCrescentBtn = document.getElementById("mmFlagToolCrescent");
+  const flagToolChevronBtn = document.getElementById("mmFlagToolChevron");
+  const flagToolPentagonBtn = document.getElementById("mmFlagToolPentagon");
+  const flagToolHexagonBtn = document.getElementById("mmFlagToolHexagon");
   const flagEditorPreview = document.getElementById("mmFlagEditorPreview");
   const flagEditorOverlay = document.getElementById("mmFlagEditorOverlay");
   const flagLayerList = document.getElementById("mmFlagLayerList");
@@ -3963,7 +5258,8 @@ function createMainMenuController(options = null) {
     nukeDestinationOverlay: document.getElementById("mmSetNukeDestinationOverlay"),
     politicalMapMode: document.getElementById("mmSetPoliticalMapMode"),
     disableAtmosphere: document.getElementById("mmSetDisableAtmosphere"),
-    reduceMotion: document.getElementById("mmSetReduceMotion")
+    reduceMotion: document.getElementById("mmSetReduceMotion"),
+    fullscreen: document.getElementById("mmSetFullscreen")
   };
   const menuMusicVolumeInput = document.getElementById("mmSetMenuMusicVolume");
   const warMusicVolumeInput = document.getElementById("mmSetWarMusicVolume");
@@ -3975,6 +5271,7 @@ function createMainMenuController(options = null) {
     sizePreset: document.getElementById("mmCfgSizePreset"),
     difficulty: document.getElementById("mmCfgDifficulty"),
     mapMode: document.getElementById("mmCfgMapMode"),
+    customMapId: document.getElementById("mmCfgCustomMap"),
     infiniteGold: document.getElementById("mmCfgInfiniteGold"),
     infiniteTroops: document.getElementById("mmCfgInfiniteTroops"),
     disableMissileSilo: document.getElementById("mmCfgDisableMissileSilo"),
@@ -3995,6 +5292,9 @@ function createMainMenuController(options = null) {
     borderWidth: document.getElementById("mmFlagBorderWidth"),
     snapToGrid: document.getElementById("mmFlagSnapToGrid"),
     showGrid: document.getElementById("mmFlagShowGrid"),
+    paintColor: document.getElementById("mmFlagPaintColor"),
+    paintSize: document.getElementById("mmFlagPaintSize"),
+    paintOpacity: document.getElementById("mmFlagPaintOpacity"),
     shape: {
       enabled: document.getElementById("mmFlagShapeEnabled"),
       type: document.getElementById("mmFlagShapeType"),
@@ -4010,6 +5310,8 @@ function createMainMenuController(options = null) {
   const flagOutputs = {
     stripeCount: document.getElementById("mmFlagStripeCountValue"),
     borderWidth: document.getElementById("mmFlagBorderWidthValue"),
+    paintSize: document.getElementById("mmFlagPaintSizeValue"),
+    paintOpacity: document.getElementById("mmFlagPaintOpacityValue"),
     shapeX: document.getElementById("mmFlagShapeXValue"),
     shapeY: document.getElementById("mmFlagShapeYValue"),
     shapeW: document.getElementById("mmFlagShapeWValue"),
@@ -4022,6 +5324,7 @@ function createMainMenuController(options = null) {
     home: "Select your command.",
     settings: "These settings match your in-game client toggles.",
     play: "Configure match rules, then press Start.",
+    mapeditor: "Build and paint your custom map.",
     multiplayer: "Create or join a private multiplayer lobby.",
     mpjoin: "Enter a lobby code to join.",
     mplobby: "Lobby connected. Waiting for host."
@@ -4036,9 +5339,63 @@ function createMainMenuController(options = null) {
   let syncingFlagForm = false;
   let activeFlagLayer = "base";
   let flagOverlayDrag = null;
+  let flagPaintDrag = null;
+  let flagEditorTool = "select";
   const FLAG_EDITOR_HISTORY_LIMIT = 140;
   const FLAG_EDITOR_SNAP_STEP = 0.025;
   const FLAG_EDITOR_MIN_SHAPE_SIZE = 0.04;
+  const FLAG_EDITOR_MIN_BRUSH_SIZE = 0.01;
+  const FLAG_EDITOR_MAX_BRUSH_SIZE = 0.2;
+  const FLAG_EDITOR_MAX_STROKES = FLAG_MAX_STROKES;
+  const flagToolButtons = {
+    select: flagToolSelectBtn,
+    brush: flagToolBrushBtn,
+    eraser: flagToolEraserBtn,
+    rect: flagToolRectBtn,
+    circle: flagToolCircleBtn,
+    triangle: flagToolTriangleBtn,
+    star: flagToolStarBtn,
+    diamond: flagToolDiamondBtn,
+    line: flagToolLineBtn,
+    cross: flagToolCrossBtn,
+    ring: flagToolRingBtn,
+    crescent: flagToolCrescentBtn,
+    chevron: flagToolChevronBtn,
+    pentagon: flagToolPentagonBtn,
+    hexagon: flagToolHexagonBtn
+  };
+  const mapEditorToolButtons = {
+    brush: mapEditorToolBrushBtn,
+    erase: mapEditorToolEraseBtn
+  };
+  const mapEditorCtx = (mapEditorCanvas && typeof mapEditorCanvas.getContext === "function")
+    ? mapEditorCanvas.getContext("2d", { alpha: false })
+    : null;
+  const mapEditorBitmapCanvas = (typeof document !== "undefined" && typeof document.createElement === "function")
+    ? document.createElement("canvas")
+    : null;
+  const mapEditorBitmapCtx = (mapEditorBitmapCanvas && typeof mapEditorBitmapCanvas.getContext === "function")
+    ? mapEditorBitmapCanvas.getContext("2d", { alpha: false })
+    : null;
+  if (mapEditorCtx) mapEditorCtx.imageSmoothingEnabled = false;
+  if (mapEditorBitmapCtx) mapEditorBitmapCtx.imageSmoothingEnabled = false;
+  let mapEditorWorkingMap = null;
+  let mapEditorTool = "brush";
+  let mapEditorSelectedBiome = BIOME.GRASS;
+  let mapEditorBrushRadius = 8;
+  let mapEditorZoomPct = 100;
+  let mapEditorPanX = 0;
+  let mapEditorPanY = 0;
+  let mapEditorHoverCell = null;
+  let mapEditorImageData = null;
+  let mapEditorPointerState = null;
+  let mapEditorDirtyRect = null;
+  let mapEditorSavedMetas = [];
+  let mapLibraryRows = [];
+  let mapLibraryLoading = false;
+  let mapLibraryPublishing = false;
+  let mapLibraryLoadToken = 0;
+  let mapLibrarySearchDebounceTimer = 0;
 
   const safeStorageRead = (key) => {
     try {
@@ -4065,6 +5422,791 @@ function createMainMenuController(options = null) {
   const playerNameFromInput = () => {
     const raw = nameInput ? String(nameInput.value || "").trim() : "";
     return resolvePlayerDisplayName(raw);
+  };
+
+  const cloneCustomMapForEditor = (map) => {
+    const src = (map && typeof map === "object") ? map : null;
+    if (!src || !(src.biomeGrid instanceof Uint8Array)) return null;
+    return {
+      id: String(src.id || "").trim(),
+      name: normalizeCustomMapName(src.name, CUSTOM_MAP_DEFAULT_NAME),
+      width: clampInt(Number(src.width) || 0, CUSTOM_MAP_MIN_WIDTH, CUSTOM_MAP_MAX_WIDTH),
+      height: clampInt(Number(src.height) || 0, CUSTOM_MAP_MIN_HEIGHT, CUSTOM_MAP_MAX_HEIGHT),
+      createdAt: Math.max(0, Number(src.createdAt) || Date.now()),
+      updatedAt: Math.max(0, Number(src.updatedAt) || Date.now()),
+      biomeGrid: new Uint8Array(src.biomeGrid)
+    };
+  };
+
+  const getBiomeColor = (biomeId) => {
+    const id = clampCustomMapBiomeId(biomeId, BIOME.OCEAN_SHALLOW);
+    return BIOME_COLORS[id] || BIOME_COLORS[BIOME.GRASS] || { r: 120, g: 120, b: 120 };
+  };
+
+  const findCustomMapMetaById = (mapIdRaw) => {
+    const mapId = String(mapIdRaw || "").trim();
+    if (!mapId) return null;
+    for (let i = 0; i < mapEditorSavedMetas.length; i++) {
+      const row = mapEditorSavedMetas[i];
+      if (String(row?.id || "") === mapId) return row;
+    }
+    return null;
+  };
+
+  const refreshMapEditorSummary = () => {
+    if (!mapEditorSummary) return;
+    const count = mapEditorSavedMetas.length;
+    if (count <= 0) {
+      mapEditorSummary.textContent = "No saved maps yet. Pick a size and create one.";
+      return;
+    }
+    const selected = findCustomMapMetaById(mapEditorSavedSelect?.value || "");
+    if (!selected) {
+      mapEditorSummary.textContent = `${count} saved maps ready. Select one to edit or delete.`;
+      return;
+    }
+    mapEditorSummary.textContent = `${selected.name} | ${selected.width}x${selected.height} | Updated ${new Date(selected.updatedAt).toLocaleString()}`;
+  };
+
+  const refreshMapSourceUi = () => {
+    const hasMaps = mapEditorSavedMetas.length > 0;
+    if (matchInputs.mapMode) {
+      if (!hasMaps && String(matchInputs.mapMode.value || "").toLowerCase() === MAP_SOURCE.CUSTOM) {
+        matchInputs.mapMode.value = MAP_SOURCE.EARTH;
+      }
+    }
+    if (matchInputs.customMapId) {
+      const source = String(matchInputs.mapMode?.value || MAP_SOURCE.EARTH).toLowerCase();
+      const showCustom = source === MAP_SOURCE.CUSTOM;
+      if (!hasMaps) matchInputs.customMapId.value = "";
+      matchInputs.customMapId.disabled = !showCustom || !hasMaps;
+      matchInputs.customMapId.parentElement?.classList.toggle("isDisabled", !showCustom || !hasMaps);
+    }
+  };
+
+  const fillSelectWithMaps = (el, includeEmptyLabel = "No saved maps") => {
+    if (!el) return;
+    const previous = String(el.value || "").trim();
+    el.innerHTML = "";
+    if (mapEditorSavedMetas.length <= 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = includeEmptyLabel;
+      el.appendChild(option);
+      el.value = "";
+      return;
+    }
+    for (let i = 0; i < mapEditorSavedMetas.length; i++) {
+      const row = mapEditorSavedMetas[i];
+      const option = document.createElement("option");
+      option.value = row.id;
+      option.textContent = `${row.name} (${row.width}x${row.height})`;
+      el.appendChild(option);
+    }
+    if (previous && findCustomMapMetaById(previous)) {
+      el.value = previous;
+    } else {
+      el.selectedIndex = 0;
+    }
+  };
+
+  const refreshCustomMapPickers = () => {
+    mapEditorSavedMetas = listCustomMapMetas();
+    fillSelectWithMaps(matchInputs.customMapId, "No saved maps");
+    fillSelectWithMaps(mapEditorSavedSelect, "No saved maps");
+    fillSelectWithMaps(mapEditorModalSavedSelect, "No saved maps");
+    fillSelectWithMaps(mapLibraryPublishMapSelect, "No local maps");
+    refreshMapSourceUi();
+    refreshMapEditorSummary();
+    syncMapLibraryControls();
+  };
+
+  const syncMapEditorReadouts = () => {
+    if (mapEditorBrushSizeValue) mapEditorBrushSizeValue.textContent = String(mapEditorBrushRadius);
+    if (mapEditorZoomValue) mapEditorZoomValue.textContent = `${Math.round(mapEditorZoomPct)}%`;
+    if (mapEditorBrushSizeInput) mapEditorBrushSizeInput.value = String(clampInt(mapEditorBrushRadius, 1, 72));
+    if (mapEditorZoomInput) mapEditorZoomInput.value = String(clampInt(Math.round(mapEditorZoomPct), 30, 600));
+  };
+
+  const refreshMapEditorToolButtons = () => {
+    for (const [tool, btn] of Object.entries(mapEditorToolButtons)) {
+      if (!btn) continue;
+      const active = tool === mapEditorTool;
+      btn.classList.toggle("isActive", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+  };
+
+  const populateMapEditorBiomePalette = () => {
+    if (!mapEditorBiomeList) return;
+    mapEditorBiomeList.innerHTML = "";
+    for (let i = 0; i < CUSTOM_MAP_BIOME_ENTRIES.length; i++) {
+      const row = CUSTOM_MAP_BIOME_ENTRIES[i];
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mainMenuMapEditorBiomeBtn";
+      btn.dataset.biomeId = String(row.id);
+
+      const sw = document.createElement("span");
+      sw.className = "mainMenuMapEditorBiomeSwatch";
+      const col = getBiomeColor(row.id);
+      sw.style.background = `rgb(${col.r | 0}, ${col.g | 0}, ${col.b | 0})`;
+
+      const text = document.createElement("span");
+      text.textContent = row.label;
+
+      btn.appendChild(sw);
+      btn.appendChild(text);
+      btn.addEventListener("click", () => {
+        mapEditorSelectedBiome = row.id;
+        if (mapEditorTool !== "brush") mapEditorTool = "brush";
+        refreshMapEditorToolButtons();
+        for (let j = 0; j < mapEditorBiomeList.children.length; j++) {
+          const child = mapEditorBiomeList.children[j];
+          child.classList.toggle("isActive", child === btn);
+        }
+      });
+      if (row.id === mapEditorSelectedBiome) btn.classList.add("isActive");
+      mapEditorBiomeList.appendChild(btn);
+    }
+  };
+
+  const resizeMapEditorCanvasToDisplay = () => {
+    if (!mapEditorCanvas || !mapEditorCtx) return;
+    const rect = mapEditorCanvas.getBoundingClientRect();
+    const cssW = Math.max(320, Math.floor(rect.width || 0));
+    const cssH = Math.max(220, Math.floor(rect.height || 0));
+    const dpr = Math.max(1, Math.min(2, Number(window.devicePixelRatio) || 1));
+    const nextW = Math.max(1, Math.floor(cssW * dpr));
+    const nextH = Math.max(1, Math.floor(cssH * dpr));
+    if (mapEditorCanvas.width !== nextW || mapEditorCanvas.height !== nextH) {
+      mapEditorCanvas.width = nextW;
+      mapEditorCanvas.height = nextH;
+      mapEditorCtx.imageSmoothingEnabled = false;
+    }
+  };
+
+  const rebuildMapEditorBitmap = () => {
+    if (!mapEditorBitmapCanvas || !mapEditorBitmapCtx) return;
+    const map = mapEditorWorkingMap;
+    if (!map || !(map.biomeGrid instanceof Uint8Array)) return;
+    const w = map.width | 0;
+    const h = map.height | 0;
+    if (w <= 0 || h <= 0) return;
+    if (mapEditorBitmapCanvas.width !== w) mapEditorBitmapCanvas.width = w;
+    if (mapEditorBitmapCanvas.height !== h) mapEditorBitmapCanvas.height = h;
+    mapEditorImageData = mapEditorBitmapCtx.createImageData(w, h);
+    const data = mapEditorImageData.data;
+    for (let i = 0; i < map.biomeGrid.length; i++) {
+      const biomeId = clampCustomMapBiomeId(map.biomeGrid[i], BIOME.OCEAN_SHALLOW);
+      const col = getBiomeColor(biomeId);
+      const o = i * 4;
+      data[o] = col.r | 0;
+      data[o + 1] = col.g | 0;
+      data[o + 2] = col.b | 0;
+      data[o + 3] = 255;
+    }
+    mapEditorBitmapCtx.putImageData(mapEditorImageData, 0, 0);
+    mapEditorDirtyRect = null;
+  };
+
+  const markMapEditorDirtyCell = (x, y) => {
+    if (!mapEditorDirtyRect) {
+      mapEditorDirtyRect = { x0: x, y0: y, x1: x, y1: y };
+      return;
+    }
+    if (x < mapEditorDirtyRect.x0) mapEditorDirtyRect.x0 = x;
+    if (y < mapEditorDirtyRect.y0) mapEditorDirtyRect.y0 = y;
+    if (x > mapEditorDirtyRect.x1) mapEditorDirtyRect.x1 = x;
+    if (y > mapEditorDirtyRect.y1) mapEditorDirtyRect.y1 = y;
+  };
+
+  const flushMapEditorDirtyBitmap = () => {
+    if (!mapEditorBitmapCtx || !mapEditorImageData || !mapEditorDirtyRect) return;
+    const r = mapEditorDirtyRect;
+    const w = Math.max(1, (r.x1 - r.x0 + 1));
+    const h = Math.max(1, (r.y1 - r.y0 + 1));
+    mapEditorBitmapCtx.putImageData(mapEditorImageData, 0, 0, r.x0, r.y0, w, h);
+    mapEditorDirtyRect = null;
+  };
+
+  const getMapEditorTransform = () => {
+    const map = mapEditorWorkingMap;
+    if (!map || !mapEditorCanvas) return null;
+    const cw = mapEditorCanvas.width | 0;
+    const ch = mapEditorCanvas.height | 0;
+    if (cw <= 0 || ch <= 0) return null;
+    const fit = Math.min(cw / Math.max(1, map.width), ch / Math.max(1, map.height));
+    const zoom = Math.max(0.3, Math.min(6.0, mapEditorZoomPct / 100));
+    const scale = Math.max(0.01, fit * zoom);
+    const drawW = map.width * scale;
+    const drawH = map.height * scale;
+    const left = ((cw - drawW) * 0.5) + mapEditorPanX;
+    const top = ((ch - drawH) * 0.5) + mapEditorPanY;
+    return { scale, drawW, drawH, left, top, cw, ch };
+  };
+
+  const mapEditorCellFromClient = (clientX, clientY) => {
+    if (!mapEditorCanvas || !mapEditorWorkingMap) return null;
+    const rect = mapEditorCanvas.getBoundingClientRect();
+    const tx = getMapEditorTransform();
+    if (!tx) return null;
+    const px = (clientX - rect.left) * (mapEditorCanvas.width / Math.max(1, rect.width));
+    const py = (clientY - rect.top) * (mapEditorCanvas.height / Math.max(1, rect.height));
+    const fx = (px - tx.left) / tx.scale;
+    const fy = (py - tx.top) / tx.scale;
+    const x = Math.floor(fx);
+    const y = Math.floor(fy);
+    if (x < 0 || y < 0 || x >= mapEditorWorkingMap.width || y >= mapEditorWorkingMap.height) return null;
+    return { x, y, px, py };
+  };
+
+  const writeMapEditorCell = (x, y, biomeId) => {
+    const map = mapEditorWorkingMap;
+    if (!map || !(map.biomeGrid instanceof Uint8Array)) return false;
+    if (x < 0 || y < 0 || x >= map.width || y >= map.height) return false;
+    const idx = y * map.width + x;
+    const next = clampCustomMapBiomeId(biomeId, BIOME.OCEAN_SHALLOW);
+    if ((map.biomeGrid[idx] | 0) === next) return false;
+    map.biomeGrid[idx] = next;
+    if (mapEditorImageData && mapEditorImageData.data) {
+      const col = getBiomeColor(next);
+      const o = idx * 4;
+      mapEditorImageData.data[o] = col.r | 0;
+      mapEditorImageData.data[o + 1] = col.g | 0;
+      mapEditorImageData.data[o + 2] = col.b | 0;
+      mapEditorImageData.data[o + 3] = 255;
+      markMapEditorDirtyCell(x, y);
+    }
+    return true;
+  };
+
+  const stampMapEditorBrush = (x, y) => {
+    const map = mapEditorWorkingMap;
+    if (!map) return false;
+    const radius = Math.max(1, mapEditorBrushRadius | 0);
+    const toolBiome = (mapEditorTool === "erase") ? BIOME.OCEAN_SHALLOW : mapEditorSelectedBiome;
+    let changed = false;
+    for (let oy = -radius; oy <= radius; oy++) {
+      const py = y + oy;
+      if (py < 0 || py >= map.height) continue;
+      for (let ox = -radius; ox <= radius; ox++) {
+        if ((ox * ox) + (oy * oy) > (radius * radius)) continue;
+        const px = x + ox;
+        if (px < 0 || px >= map.width) continue;
+        if (writeMapEditorCell(px, py, toolBiome)) changed = true;
+      }
+    }
+    return changed;
+  };
+
+  const paintMapEditorLine = (x0, y0, x1, y1) => {
+    let changed = false;
+    let cx = x0 | 0;
+    let cy = y0 | 0;
+    const tx = x1 | 0;
+    const ty = y1 | 0;
+    const dx = Math.abs(tx - cx);
+    const dy = Math.abs(ty - cy);
+    const sx = cx < tx ? 1 : -1;
+    const sy = cy < ty ? 1 : -1;
+    let err = dx - dy;
+    while (true) {
+      if (stampMapEditorBrush(cx, cy)) changed = true;
+      if (cx === tx && cy === ty) break;
+      const e2 = err << 1;
+      if (e2 > -dy) { err -= dy; cx += sx; }
+      if (e2 < dx) { err += dx; cy += sy; }
+    }
+    return changed;
+  };
+
+  const refreshMapEditorStats = () => {
+    if (!mapEditorStats) return;
+    const map = mapEditorWorkingMap;
+    if (!map) {
+      mapEditorStats.textContent = "No map loaded.";
+      return;
+    }
+    let land = 0;
+    let water = 0;
+    for (let i = 0; i < map.biomeGrid.length; i++) {
+      if (isWaterBiomeId(map.biomeGrid[i])) water++;
+      else land++;
+    }
+    const total = Math.max(1, map.biomeGrid.length);
+    mapEditorStats.textContent =
+      `${map.name}\n${map.width}x${map.height} (${total.toLocaleString()} cells)\nLand ${land.toLocaleString()} (${((land / total) * 100).toFixed(1)}%)\nWater ${water.toLocaleString()} (${((water / total) * 100).toFixed(1)}%)`;
+  };
+
+  const renderMapEditorCanvas = () => {
+    if (!mapEditorCtx || !mapEditorCanvas) return;
+    resizeMapEditorCanvasToDisplay();
+    const tx = getMapEditorTransform();
+    mapEditorCtx.save();
+    mapEditorCtx.fillStyle = "rgb(8,14,18)";
+    mapEditorCtx.fillRect(0, 0, mapEditorCanvas.width, mapEditorCanvas.height);
+    if (!tx || !mapEditorBitmapCanvas) {
+      mapEditorCtx.restore();
+      return;
+    }
+    flushMapEditorDirtyBitmap();
+    mapEditorCtx.imageSmoothingEnabled = false;
+    mapEditorCtx.drawImage(mapEditorBitmapCanvas, tx.left, tx.top, tx.drawW, tx.drawH);
+    mapEditorCtx.strokeStyle = "rgba(233,247,255,0.18)";
+    mapEditorCtx.lineWidth = 1;
+    mapEditorCtx.strokeRect(tx.left, tx.top, tx.drawW, tx.drawH);
+    if (mapEditorHoverCell) {
+      const cx = tx.left + ((mapEditorHoverCell.x + 0.5) * tx.scale);
+      const cy = tx.top + ((mapEditorHoverCell.y + 0.5) * tx.scale);
+      const radiusPx = Math.max(2, mapEditorBrushRadius * tx.scale);
+      mapEditorCtx.beginPath();
+      mapEditorCtx.arc(cx, cy, radiusPx, 0, Math.PI * 2);
+      mapEditorCtx.strokeStyle = "rgba(255,255,255,0.86)";
+      mapEditorCtx.lineWidth = 1.25;
+      mapEditorCtx.stroke();
+    }
+    mapEditorCtx.restore();
+  };
+
+  const setMapEditorWorkingMap = (map) => {
+    mapEditorWorkingMap = cloneCustomMapForEditor(map);
+    mapEditorPointerState = null;
+    mapEditorHoverCell = null;
+    mapEditorPanX = 0;
+    mapEditorPanY = 0;
+    mapEditorZoomPct = 100;
+    if (mapEditorActiveName) mapEditorActiveName.value = mapEditorWorkingMap?.name || "";
+    rebuildMapEditorBitmap();
+    syncMapEditorReadouts();
+    refreshMapEditorStats();
+    renderMapEditorCanvas();
+  };
+
+  const clearMapEditorToOcean = () => {
+    const map = mapEditorWorkingMap;
+    if (!map || !(map.biomeGrid instanceof Uint8Array)) return;
+    map.biomeGrid.fill(BIOME.OCEAN_SHALLOW);
+    rebuildMapEditorBitmap();
+    refreshMapEditorStats();
+    renderMapEditorCanvas();
+  };
+
+  const saveMapEditorWorkingMap = (forceNew = false) => {
+    const map = mapEditorWorkingMap;
+    if (!map) return null;
+    map.name = normalizeCustomMapName(mapEditorActiveName?.value || map.name, CUSTOM_MAP_DEFAULT_NAME);
+    if (mapEditorActiveName) mapEditorActiveName.value = map.name;
+    const saved = saveCustomMap(map, { forceNew });
+    if (!saved) return null;
+    mapEditorWorkingMap = cloneCustomMapForEditor(saved);
+    refreshCustomMapPickers();
+    if (mapEditorSavedSelect) mapEditorSavedSelect.value = saved.id;
+    if (mapEditorModalSavedSelect) mapEditorModalSavedSelect.value = saved.id;
+    refreshMapEditorStats();
+    return saved;
+  };
+
+  const closeMapEditorModal = () => {
+    if (!mapEditorModal) return;
+    mapEditorModal.hidden = true;
+    mapEditorModal.setAttribute("aria-hidden", "true");
+    mapEditorPointerState = null;
+    mapEditorHoverCell = null;
+  };
+
+  const openMapEditorModal = (map) => {
+    if (!mapEditorModal) return;
+    setMapEditorWorkingMap(map);
+    const mapId = String(mapEditorWorkingMap?.id || "").trim();
+    if (mapId) {
+      if (mapEditorSavedSelect) mapEditorSavedSelect.value = mapId;
+      if (mapEditorModalSavedSelect) mapEditorModalSavedSelect.value = mapId;
+    }
+    mapEditorModal.hidden = false;
+    mapEditorModal.removeAttribute("aria-hidden");
+    refreshMapEditorToolButtons();
+    populateMapEditorBiomePalette();
+    renderMapEditorCanvas();
+  };
+
+  const applySavedCustomMapToConfig = (savedMap) => {
+    if (!savedMap || !matchInputs.mapMode || !matchInputs.customMapId) return;
+    matchInputs.mapMode.value = MAP_SOURCE.CUSTOM;
+    refreshCustomMapPickers();
+    matchInputs.customMapId.value = String(savedMap.id || "");
+    refreshMapSourceUi();
+  };
+
+  const setMapLibraryStatus = (text) => {
+    if (!mapLibraryStatus) return;
+    const next = String(text || "").trim();
+    mapLibraryStatus.textContent = next || "Browse public maps, download locally, or publish your own.";
+  };
+
+  const syncMapLibraryControls = () => {
+    const hasLocalMaps = mapEditorSavedMetas.length > 0;
+    const connected = !!supabase;
+    if (mapLibraryPublishBtn) mapLibraryPublishBtn.disabled = !connected || !hasLocalMaps || mapLibraryPublishing;
+    if (mapLibraryRefreshBtn) mapLibraryRefreshBtn.disabled = !connected || mapLibraryLoading;
+    if (mapLibrarySearchInput) mapLibrarySearchInput.disabled = !connected || mapLibraryLoading;
+  };
+
+  const renderMapLibraryList = () => {
+    if (!mapLibraryList) return;
+    mapLibraryList.innerHTML = "";
+
+    if (!supabase) {
+      const row = document.createElement("article");
+      row.className = "mainMenuMapLibraryItem";
+      const info = document.createElement("p");
+      info.className = "mainMenuMapLibraryItemDesc";
+      info.textContent = `Map Library is offline. ${SUPABASE_CONFIG_HINT || "Supabase config not detected."} Restart dev server after editing .env.`;
+      row.appendChild(info);
+      mapLibraryList.appendChild(row);
+      return;
+    }
+
+    if (mapLibraryLoading) {
+      const row = document.createElement("article");
+      row.className = "mainMenuMapLibraryItem";
+      const info = document.createElement("p");
+      info.className = "mainMenuMapLibraryItemDesc";
+      info.textContent = "Loading public maps...";
+      row.appendChild(info);
+      mapLibraryList.appendChild(row);
+      return;
+    }
+
+    if (mapLibraryRows.length <= 0) {
+      const row = document.createElement("article");
+      row.className = "mainMenuMapLibraryItem";
+      const info = document.createElement("p");
+      info.className = "mainMenuMapLibraryItemDesc";
+      info.textContent = "No maps found. Publish one from the left panel.";
+      row.appendChild(info);
+      mapLibraryList.appendChild(row);
+      return;
+    }
+
+    const formatDate = (tsRaw) => {
+      const ms = Date.parse(String(tsRaw || ""));
+      if (!Number.isFinite(ms) || ms <= 0) return "";
+      return new Date(ms).toLocaleDateString();
+    };
+    const formatRatingSummary = (countRaw, localRatingRaw = 0) => {
+      const count = Math.max(0, Math.floor(Number(countRaw) || 0));
+      const localRating = Math.max(0, Math.min(5, Number(localRatingRaw) || 0));
+      if (count > 0) return String(count);
+      if (localRating > 0) return "1";
+      return "none";
+    };
+
+    const handleDownload = async (row, useNow = false, sourceBtn = null) => {
+      const mapRow = (row && typeof row === "object") ? row : null;
+      if (!mapRow || !supabase) return;
+      const trigger = sourceBtn instanceof HTMLButtonElement ? sourceBtn : null;
+      const prevLabel = trigger ? String(trigger.textContent || "Download") : "";
+      if (trigger) {
+        trigger.disabled = true;
+        trigger.textContent = "Working...";
+      }
+      try {
+        const saved = await downloadPublicLibraryMapToLocal(mapRow.id, mapRow.name);
+        refreshCustomMapPickers();
+        if (mapEditorSavedSelect) mapEditorSavedSelect.value = String(saved.id || "");
+        if (mapEditorModalSavedSelect) mapEditorModalSavedSelect.value = String(saved.id || "");
+        if (useNow) {
+          applySavedCustomMapToConfig(saved);
+          persistMatchConfigFromForm();
+          closeMapLibraryModal();
+          setView("play");
+          setStatus(`Downloaded and selected "${saved.name}" in Match Configuration.`);
+        } else {
+          setMapLibraryStatus(`Downloaded "${saved.name}" to local maps.`);
+          setStatus(`Downloaded "${saved.name}" from public library.`);
+        }
+        const idx = mapLibraryRows.findIndex((entry) => String(entry?.id || "") === String(mapRow.id || ""));
+        if (idx >= 0) {
+          mapLibraryRows[idx] = {
+            ...mapLibraryRows[idx],
+            downloads: Math.max(0, Number(mapLibraryRows[idx].downloads) + 1)
+          };
+          renderMapLibraryList();
+        }
+      } catch (err) {
+        const msg = err?.message || "Download failed.";
+        setMapLibraryStatus(msg);
+        setStatus(msg);
+      } finally {
+        if (trigger) {
+          trigger.disabled = false;
+          trigger.textContent = prevLabel;
+        }
+      }
+    };
+
+    const handleRate = async (row, starsRaw, sourceBtn = null) => {
+      const mapRow = (row && typeof row === "object") ? row : null;
+      if (!mapRow || !supabase) return;
+      const stars = clampLibraryRating(starsRaw);
+      if (!stars) return;
+      const previous = getLocalMapLibraryRating(mapRow.id);
+      const trigger = sourceBtn instanceof HTMLButtonElement ? sourceBtn : null;
+      const starGroup = trigger ? trigger.closest(".mainMenuMapLibraryRatingStars") : null;
+      const starButtons = starGroup ? starGroup.querySelectorAll("button") : [];
+      for (let i = 0; i < starButtons.length; i++) {
+        if (starButtons[i] instanceof HTMLButtonElement) starButtons[i].disabled = true;
+      }
+      try {
+        const updated = await submitPublicMapRating(mapRow.id, stars, previous);
+        setLocalMapLibraryRating(mapRow.id, stars);
+        const idx = mapLibraryRows.findIndex((entry) => String(entry?.id || "") === String(mapRow.id || ""));
+        if (idx >= 0) {
+          if (updated) {
+            mapLibraryRows[idx] = {
+              ...mapLibraryRows[idx],
+              ...updated
+            };
+          } else {
+            const current = mapLibraryRows[idx];
+            const nextCount = (previous > 0)
+              ? Math.max(0, Number(current.ratingCount) || 0)
+              : Math.max(0, (Number(current.ratingCount) || 0) + 1);
+            const nextSum = (previous > 0)
+              ? Math.max(0, (Number(current.ratingSum) || 0) - previous + stars)
+              : Math.max(0, (Number(current.ratingSum) || 0) + stars);
+            mapLibraryRows[idx] = {
+              ...current,
+              ratingCount: nextCount,
+              ratingSum: nextSum,
+              ratingAverage: nextCount > 0 ? (nextSum / nextCount) : 0
+            };
+          }
+        }
+        renderMapLibraryList();
+        const ratedName = String(mapRow.name || "map");
+        setMapLibraryStatus(`Rated "${ratedName}" with ${stars} star${stars === 1 ? "" : "s"}.`);
+      } catch (err) {
+        const msg = err?.message || "Failed to submit rating.";
+        setMapLibraryStatus(msg);
+        setStatus(msg);
+      } finally {
+        for (let i = 0; i < starButtons.length; i++) {
+          if (starButtons[i] instanceof HTMLButtonElement) starButtons[i].disabled = false;
+        }
+      }
+    };
+
+    for (let i = 0; i < mapLibraryRows.length; i++) {
+      const row = mapLibraryRows[i];
+      const card = document.createElement("article");
+      card.className = "mainMenuMapLibraryItem";
+
+      const top = document.createElement("div");
+      top.className = "mainMenuMapLibraryItemTop";
+      const name = document.createElement("div");
+      name.className = "mainMenuMapLibraryItemName";
+      name.textContent = row.name;
+      const localRating = getLocalMapLibraryRating(row.id);
+      const meta = document.createElement("div");
+      meta.className = "mainMenuMapLibraryItemMeta";
+      const dateLabel = formatDate(row.createdAt);
+      const ratingText = formatRatingSummary(row.ratingCount, localRating);
+      meta.textContent =
+        `${row.width}x${row.height} | by ${row.authorName} | ${Math.max(0, row.downloads | 0)} downloads | Ratings: ${ratingText}${dateLabel ? ` | ${dateLabel}` : ""}`;
+      top.append(name, meta);
+
+      const desc = document.createElement("p");
+      desc.className = "mainMenuMapLibraryItemDesc";
+      desc.textContent = String(row.description || "").trim() || "No description.";
+
+      const actions = document.createElement("div");
+      actions.className = "mainMenuMapLibraryItemActions";
+      const dlBtn = document.createElement("button");
+      dlBtn.type = "button";
+      dlBtn.className = "mainMenuMiniBtn";
+      dlBtn.textContent = "Download";
+      dlBtn.addEventListener("click", () => {
+        void handleDownload(row, false, dlBtn);
+      });
+      const useBtn = document.createElement("button");
+      useBtn.type = "button";
+      useBtn.className = "mainMenuMiniBtn";
+      useBtn.textContent = "Download + Use";
+      useBtn.addEventListener("click", () => {
+        void handleDownload(row, true, useBtn);
+      });
+
+      const starFill = localRating > 0
+        ? localRating
+        : Math.max(0, Math.min(5, Math.round(Number(row.ratingAverage) || 0)));
+      const ratingWrap = document.createElement("div");
+      ratingWrap.className = "mainMenuMapLibraryRatingWrap";
+      const ratingStars = document.createElement("div");
+      ratingStars.className = "mainMenuMapLibraryRatingStars";
+      for (let s = 1; s <= 5; s++) {
+        const starBtn = document.createElement("button");
+        starBtn.type = "button";
+        starBtn.className = "mainMenuMapLibraryStarBtn";
+        starBtn.textContent = (s <= starFill) ? "★" : "☆";
+        starBtn.title = `Rate ${s} star${s === 1 ? "" : "s"}`;
+        starBtn.setAttribute("aria-label", `Rate ${row.name} ${s} star${s === 1 ? "" : "s"}`);
+        if (s <= starFill) starBtn.classList.add("isFilled");
+        if (localRating > 0 && s <= localRating) starBtn.classList.add("isMine");
+        starBtn.addEventListener("click", () => {
+          void handleRate(row, s, starBtn);
+        });
+        ratingStars.appendChild(starBtn);
+      }
+      ratingWrap.appendChild(ratingStars);
+
+      actions.append(dlBtn, useBtn, ratingWrap);
+
+      card.append(top, desc, actions);
+      mapLibraryList.appendChild(card);
+    }
+  };
+
+  const loadMapLibraryRows = async (opts = null) => {
+    const quiet = !!opts?.quiet;
+    const wasLoadingMessage = String(mapLibraryStatus?.textContent || "").toLowerCase().includes("loading public maps");
+    if (!supabase) {
+      mapLibraryRows = [];
+      mapLibraryLoading = false;
+      syncMapLibraryControls();
+      renderMapLibraryList();
+      if (!quiet) {
+        setMapLibraryStatus(`Map Library is offline. ${SUPABASE_CONFIG_HINT || "Supabase config not detected."} Restart dev server.`);
+      }
+      return [];
+    }
+    const token = ++mapLibraryLoadToken;
+    const search = String(mapLibrarySearchInput?.value || "").trim();
+    mapLibraryLoading = true;
+    syncMapLibraryControls();
+    renderMapLibraryList();
+    if (!quiet) setMapLibraryStatus("Loading public maps...");
+    try {
+      const rows = await fetchPublicLibraryMaps(search, 120);
+      if (token !== mapLibraryLoadToken) return mapLibraryRows;
+      mapLibraryRows = rows;
+      renderMapLibraryList();
+      if (!quiet || wasLoadingMessage) {
+        if (rows.length > 0) {
+          setMapLibraryStatus(`Loaded ${rows.length} public map${rows.length === 1 ? "" : "s"}.`);
+        } else if (search) {
+          setMapLibraryStatus(`No public maps found for "${search}".`);
+        } else {
+          setMapLibraryStatus("No public maps found.");
+        }
+      }
+      return rows;
+    } catch (err) {
+      if (token !== mapLibraryLoadToken) return mapLibraryRows;
+      const msg = err?.message || "Failed to load public maps.";
+      mapLibraryRows = [];
+      renderMapLibraryList();
+      setMapLibraryStatus(msg);
+      setStatus(msg);
+      return [];
+    } finally {
+      if (token === mapLibraryLoadToken) {
+        mapLibraryLoading = false;
+        syncMapLibraryControls();
+        renderMapLibraryList();
+        const stillLoading = String(mapLibraryStatus?.textContent || "").toLowerCase().includes("loading public maps");
+        if (stillLoading) {
+          const searchNow = String(mapLibrarySearchInput?.value || "").trim();
+          if (mapLibraryRows.length > 0) {
+            setMapLibraryStatus(`Loaded ${mapLibraryRows.length} public map${mapLibraryRows.length === 1 ? "" : "s"}.`);
+          } else if (searchNow) {
+            setMapLibraryStatus(`No public maps found for "${searchNow}".`);
+          } else {
+            setMapLibraryStatus("No public maps found.");
+          }
+        }
+      }
+    }
+  };
+
+  const closeMapLibraryModal = () => {
+    if (!mapLibraryModal) return;
+    mapLibraryModal.hidden = true;
+    mapLibraryModal.setAttribute("aria-hidden", "true");
+    if (mapLibrarySearchDebounceTimer) {
+      clearTimeout(mapLibrarySearchDebounceTimer);
+      mapLibrarySearchDebounceTimer = 0;
+    }
+  };
+
+  const openMapLibraryModal = async () => {
+    if (!mapLibraryModal) return;
+    refreshCustomMapPickers();
+    if (mapLibraryPublishAuthor) {
+      if (!String(mapLibraryPublishAuthor.value || "").trim()) {
+        mapLibraryPublishAuthor.value = safeStorageRead(MAP_LIBRARY_AUTHOR_STORAGE_KEY) || "";
+      }
+    }
+    if (mapLibraryPublishMapSelect) {
+      const mapId = String(mapLibraryPublishMapSelect.value || "").trim();
+      const selected = mapId ? loadCustomMapById(mapId) : null;
+      if (selected && mapLibraryPublishName && !String(mapLibraryPublishName.value || "").trim()) {
+        mapLibraryPublishName.value = selected.name;
+      }
+    }
+    mapLibraryModal.hidden = false;
+    mapLibraryModal.removeAttribute("aria-hidden");
+    syncMapLibraryControls();
+    renderMapLibraryList();
+    if (!supabase) {
+      setMapLibraryStatus(`Map Library is offline. ${SUPABASE_CONFIG_HINT || "Supabase config not detected."} Restart dev server after .env edits.`);
+      return;
+    }
+    await loadMapLibraryRows({ quiet: false });
+  };
+
+  const publishSelectedMapToLibrary = async () => {
+    if (!supabase) {
+      setMapLibraryStatus(`Map Library is offline. ${SUPABASE_CONFIG_HINT || "Supabase config not detected."} Restart dev server after .env edits.`);
+      return;
+    }
+    const mapId = String(mapLibraryPublishMapSelect?.value || "").trim();
+    if (!mapId) {
+      setMapLibraryStatus("Select a local map to publish.");
+      return;
+    }
+    const map = loadCustomMapById(mapId);
+    if (!map) {
+      setMapLibraryStatus("Selected local map could not be loaded.");
+      refreshCustomMapPickers();
+      return;
+    }
+    const author = normalizeCustomMapName(mapLibraryPublishAuthor?.value || "", "Anonymous");
+    const name = normalizeCustomMapName(mapLibraryPublishName?.value || map.name || "", map.name || CUSTOM_MAP_DEFAULT_NAME);
+    const description = String(mapLibraryPublishDesc?.value || "").trim();
+    if (mapLibraryPublishAuthor) mapLibraryPublishAuthor.value = author;
+    if (mapLibraryPublishName) mapLibraryPublishName.value = name;
+    safeStorageWrite(MAP_LIBRARY_AUTHOR_STORAGE_KEY, author);
+
+    mapLibraryPublishing = true;
+    syncMapLibraryControls();
+    const prevLabel = mapLibraryPublishBtn ? String(mapLibraryPublishBtn.textContent || "") : "";
+    if (mapLibraryPublishBtn) mapLibraryPublishBtn.textContent = "Publishing...";
+    try {
+      const published = await publishCustomMapToLibrary(map, { name, authorName: author, description });
+      setMapLibraryStatus(`Published "${published.name}" by ${published.authorName}.`);
+      setStatus(`Published "${published.name}" to public map library.`);
+      await loadMapLibraryRows({ quiet: true });
+    } catch (err) {
+      const msg = err?.message || "Publish failed.";
+      setMapLibraryStatus(msg);
+      setStatus(msg);
+    } finally {
+      mapLibraryPublishing = false;
+      if (mapLibraryPublishBtn) mapLibraryPublishBtn.textContent = prevLabel || "Publish To Public Library";
+      syncMapLibraryControls();
+    }
   };
 
   let multiplayerSessionId = "";
@@ -4631,6 +6773,7 @@ function createMainMenuController(options = null) {
     const next = (
       view === "settings" ||
       view === "play" ||
+      view === "mapeditor" ||
       view === "multiplayer" ||
       view === "mpjoin" ||
       view === "mplobby"
@@ -4744,12 +6887,118 @@ function createMainMenuController(options = null) {
     };
   };
 
+  const isShapeTool = (tool) => (
+    tool === "rect" ||
+    tool === "circle" ||
+    tool === "triangle" ||
+    tool === "star" ||
+    tool === "diamond" ||
+    tool === "line" ||
+    tool === "cross" ||
+    tool === "ring" ||
+    tool === "crescent" ||
+    tool === "chevron" ||
+    tool === "pentagon" ||
+    tool === "hexagon"
+  );
+
+  const readPaintColor = () => {
+    const value = String(flagInputs.paintColor?.value || "#ffffff").trim().toLowerCase();
+    return /^#[0-9a-f]{6}$/i.test(value) ? value : "#ffffff";
+  };
+
+  const readPaintSizeNorm = () => {
+    const pct = clampInt(flagInputs.paintSize?.value, 1, 20);
+    return Math.max(FLAG_EDITOR_MIN_BRUSH_SIZE, Math.min(FLAG_EDITOR_MAX_BRUSH_SIZE, pct / 100));
+  };
+
+  const readPaintOpacityNorm = () => {
+    const pct = clampInt(flagInputs.paintOpacity?.value, 10, 100);
+    return clamp01(pct / 100);
+  };
+
+  const drawLiveBrushSegment = (stroke, fromNorm, toNorm) => {
+    if (!flagEditorPreview || !stroke || String(stroke.tool || "brush") !== "brush") return;
+    const ctx = (typeof flagEditorPreview.getContext === "function")
+      ? flagEditorPreview.getContext("2d", { alpha: true })
+      : null;
+    if (!ctx) return;
+    const w = Math.max(1, flagEditorPreview.width || 480);
+    const h = Math.max(1, flagEditorPreview.height || 320);
+    const fx = clamp01(fromNorm?.x) * w;
+    const fy = clamp01(fromNorm?.y) * h;
+    const tx = clamp01(toNorm?.x) * w;
+    const ty = clamp01(toNorm?.y) * h;
+    const widthPx = Math.max(1, Math.min(w, h) * Math.max(0.003, Number(stroke.size) || 0.02));
+    const color = /^#[0-9a-f]{6}$/i.test(String(stroke.color || ""))
+      ? String(stroke.color)
+      : "#ffffff";
+    ctx.save();
+    ctx.globalAlpha = clamp01(stroke.opacity ?? 1);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = widthPx;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(fx, fy);
+    ctx.lineTo(tx, ty);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawLiveBrushDot = (stroke, pNorm) => {
+    if (!flagEditorPreview || !stroke || String(stroke.tool || "brush") !== "brush") return;
+    const ctx = (typeof flagEditorPreview.getContext === "function")
+      ? flagEditorPreview.getContext("2d", { alpha: true })
+      : null;
+    if (!ctx) return;
+    const w = Math.max(1, flagEditorPreview.width || 480);
+    const h = Math.max(1, flagEditorPreview.height || 320);
+    const x = clamp01(pNorm?.x) * w;
+    const y = clamp01(pNorm?.y) * h;
+    const radius = Math.max(0.6, Math.min(w, h) * Math.max(0.003, Number(stroke.size) || 0.02) * 0.5);
+    const color = /^#[0-9a-f]{6}$/i.test(String(stroke.color || ""))
+      ? String(stroke.color)
+      : "#ffffff";
+    ctx.save();
+    ctx.globalAlpha = clamp01(stroke.opacity ?? 1);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  };
+
+  const refreshFlagToolButtons = () => {
+    for (const [tool, btn] of Object.entries(flagToolButtons)) {
+      if (!btn) continue;
+      btn.classList.toggle("isActive", tool === flagEditorTool);
+      btn.setAttribute("aria-pressed", tool === flagEditorTool ? "true" : "false");
+    }
+  };
+
+  const setFlagTool = (tool) => {
+    const next = Object.prototype.hasOwnProperty.call(flagToolButtons, tool) ? tool : "select";
+    flagEditorTool = next;
+    refreshFlagToolButtons();
+    renderFlagOverlay();
+    if (flagEditorOverlay) {
+      flagEditorOverlay.style.cursor = (next === "select") ? "crosshair" : "crosshair";
+    }
+  };
+
   const setFlagRangeOutputs = () => {
     if (flagOutputs.stripeCount && flagInputs.stripeCount) {
       flagOutputs.stripeCount.textContent = String(flagInputs.stripeCount.value || "3");
     }
     if (flagOutputs.borderWidth && flagInputs.borderWidth) {
       flagOutputs.borderWidth.textContent = `${flagInputs.borderWidth.value || "1"}px`;
+    }
+    if (flagOutputs.paintSize && flagInputs.paintSize) {
+      flagOutputs.paintSize.textContent = `${flagInputs.paintSize.value || "3"}%`;
+    }
+    if (flagOutputs.paintOpacity && flagInputs.paintOpacity) {
+      flagOutputs.paintOpacity.textContent = `${flagInputs.paintOpacity.value || "100"}%`;
     }
     if (flagOutputs.shapeX && flagInputs.shape.x) flagOutputs.shapeX.textContent = `${flagInputs.shape.x.value || "50"}%`;
     if (flagOutputs.shapeY && flagInputs.shape.y) flagOutputs.shapeY.textContent = `${flagInputs.shape.y.value || "50"}%`;
@@ -4810,6 +7059,7 @@ function createMainMenuController(options = null) {
 
   const refreshFlagEditorButtons = () => {
     const shapes = Array.isArray(workingFlag?.shapes) ? workingFlag.shapes : [];
+    const strokes = Array.isArray(workingFlag?.strokes) ? workingFlag.strokes : [];
     const idx = getActiveShapeIndex(workingFlag);
     const hasShape = idx >= 0;
     if (flagLayerAddBtn) flagLayerAddBtn.disabled = shapes.length >= FLAG_MAX_SHAPES;
@@ -4818,6 +7068,8 @@ function createMainMenuController(options = null) {
     if (flagLayerDownBtn) flagLayerDownBtn.disabled = !hasShape || idx <= 0;
     if (flagLayerUpBtn) flagLayerUpBtn.disabled = !hasShape || idx >= shapes.length - 1;
     if (flagUndoBtn) flagUndoBtn.disabled = flagHistory.length === 0;
+    if (flagClearPaintBtn) flagClearPaintBtn.disabled = strokes.length === 0;
+    if (flagDeleteShapeBtn) flagDeleteShapeBtn.disabled = !hasShape;
   };
 
   const ensureFlagEditorOptions = () => {
@@ -4848,6 +7100,17 @@ function createMainMenuController(options = null) {
     const x = ((Number(ev.clientX) - rect.left) / rect.width) * flagEditorOverlay.width;
     const y = ((Number(ev.clientY) - rect.top) / rect.height) * flagEditorOverlay.height;
     return { x, y };
+  };
+
+  const getFlagOverlayNormPoint = (ev, shiftKey = false, noSnap = false) => {
+    const p = getFlagOverlayPoint(ev);
+    if (!p || !flagEditorOverlay) return null;
+    const ow = Math.max(1, flagEditorOverlay.width || 480);
+    const oh = Math.max(1, flagEditorOverlay.height || 320);
+    return {
+      x: noSnap ? clamp01(p.x / ow) : snapNorm(p.x / ow, shiftKey),
+      y: noSnap ? clamp01(p.y / oh) : snapNorm(p.y / oh, shiftKey)
+    };
   };
 
   const getShapeMetrics = (shape) => {
@@ -4972,6 +7235,7 @@ function createMainMenuController(options = null) {
 
     const shapes = Array.isArray(workingFlag?.shapes) ? workingFlag.shapes : [];
     const activeIdx = getActiveShapeIndex(workingFlag);
+    const showHandles = flagEditorTool === "select";
     for (let i = 0; i < shapes.length; i++) {
       const s = shapes[i];
       if (!s || !s.enabled || String(s.type || "none") === "none") continue;
@@ -4981,13 +7245,15 @@ function createMainMenuController(options = null) {
       ctx.save();
       ctx.translate(m.sx, m.sy);
       ctx.rotate((m.rot * Math.PI) / 180);
-      ctx.strokeStyle = isActive ? "rgba(242, 248, 255, 0.96)" : "rgba(207, 223, 248, 0.56)";
+      ctx.strokeStyle = isActive
+        ? "rgba(242, 248, 255, 0.96)"
+        : "rgba(207, 223, 248, 0.48)";
       ctx.lineWidth = isActive ? 2 : 1;
-      ctx.setLineDash(isActive ? [] : [5, 4]);
+      ctx.setLineDash((showHandles && isActive) ? [] : [5, 4]);
       ctx.strokeRect(-m.hw, -m.hh, m.sw, m.sh);
       ctx.setLineDash([]);
 
-      if (isActive) {
+      if (showHandles && isActive) {
         const drawHandle = (hx, hy, r = 7) => {
           ctx.beginPath();
           ctx.arc(hx, hy, r, 0, Math.PI * 2);
@@ -5011,10 +7277,38 @@ function createMainMenuController(options = null) {
       }
       ctx.restore();
     }
+
+    if (flagPaintDrag && flagPaintDrag.mode === "shape" && isShapeTool(flagPaintDrag.tool)) {
+      const sx = clamp01(flagPaintDrag.startNorm?.x) * w;
+      const sy = clamp01(flagPaintDrag.startNorm?.y) * h;
+      const ex = clamp01(flagPaintDrag.currentNorm?.x) * w;
+      const ey = clamp01(flagPaintDrag.currentNorm?.y) * h;
+      const left = Math.min(sx, ex);
+      const top = Math.min(sy, ey);
+      const width = Math.max(2, Math.abs(ex - sx));
+      const height = Math.max(2, Math.abs(ey - sy));
+      ctx.save();
+      ctx.strokeStyle = "rgba(243, 248, 255, 0.95)";
+      ctx.fillStyle = "rgba(151, 190, 255, 0.14)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([7, 5]);
+      ctx.strokeRect(left, top, width, height);
+      ctx.setLineDash([]);
+      ctx.fillRect(left, top, width, height);
+      ctx.restore();
+    }
   };
 
   const setFlagOverlayCursor = (ev) => {
     if (!flagEditorOverlay || flagOverlayDrag) return;
+    if (flagPaintDrag) {
+      flagEditorOverlay.style.cursor = "crosshair";
+      return;
+    }
+    if (flagEditorTool !== "select") {
+      flagEditorOverlay.style.cursor = "crosshair";
+      return;
+    }
     const p = getFlagOverlayPoint(ev);
     if (!p) {
       flagEditorOverlay.style.cursor = "crosshair";
@@ -5075,6 +7369,7 @@ function createMainMenuController(options = null) {
     setFlagRangeOutputs();
     renderFlagLayerList();
     refreshFlagEditorButtons();
+    refreshFlagToolButtons();
     renderFlagOverlay();
   };
 
@@ -5199,6 +7494,23 @@ function createMainMenuController(options = null) {
     }
   };
 
+  const clearFlagPaint = () => {
+    const strokes = Array.isArray(workingFlag?.strokes) ? workingFlag.strokes : [];
+    if (strokes.length <= 0) return;
+    const next = cloneFlag(workingFlag);
+    next.strokes = [];
+    if (setWorkingFlag(next, { track: true })) setStatus("Paint layer cleared.");
+  };
+
+  const deleteSelectedShape = () => {
+    const idx = getActiveShapeIndex(workingFlag);
+    if (idx < 0) {
+      setStatus("Select a shape first, then delete.");
+      return;
+    }
+    deleteFlagLayer();
+  };
+
   const undoFlag = () => {
     if (!flagHistory.length) return;
     let raw = flagHistory.pop();
@@ -5214,6 +7526,175 @@ function createMainMenuController(options = null) {
     } catch {
       setStatus("Nothing to undo.");
     }
+  };
+
+  const clearFlagPaintDrag = () => {
+    if (!flagPaintDrag || !flagEditorOverlay) {
+      flagPaintDrag = null;
+      return;
+    }
+    try {
+      if (flagEditorOverlay.hasPointerCapture(flagPaintDrag.pointerId)) {
+        flagEditorOverlay.releasePointerCapture(flagPaintDrag.pointerId);
+      }
+    } catch {
+      // Ignore pointer capture release errors.
+    }
+    flagPaintDrag = null;
+  };
+
+  const beginPaintStroke = (ev) => {
+    const p = getFlagOverlayNormPoint(ev, ev.shiftKey, true);
+    if (!p) return false;
+    const next = cloneFlag(workingFlag);
+    if (!Array.isArray(next.strokes)) next.strokes = [];
+    if (next.strokes.length >= FLAG_EDITOR_MAX_STROKES) {
+      setStatus(`Paint stroke limit reached (${FLAG_EDITOR_MAX_STROKES}).`);
+      return false;
+    }
+    const stroke = {
+      tool: flagEditorTool === "eraser" ? "eraser" : "brush",
+      color: readPaintColor(),
+      size: readPaintSizeNorm(),
+      opacity: readPaintOpacityNorm(),
+      points: [{ x: p.x, y: p.y }]
+    };
+    next.strokes.push(stroke);
+    const strokeIndex = next.strokes.length - 1;
+    const startSig = workingFlagSig;
+    pushFlagHistorySig(startSig);
+    setWorkingFlag(next, { track: false, syncForm: false });
+    flagPaintDrag = {
+      pointerId: ev.pointerId,
+      mode: "stroke",
+      tool: flagEditorTool,
+      startSig,
+      tracked: true,
+      strokeIndex,
+      lastNorm: p,
+      capped: false,
+      dirty: false
+    };
+    const liveStroke = Array.isArray(workingFlag?.strokes) ? workingFlag.strokes[strokeIndex] : null;
+    if (liveStroke) drawLiveBrushDot(liveStroke, p);
+    flagEditorOverlay.setPointerCapture(ev.pointerId);
+    flagEditorOverlay.style.cursor = "crosshair";
+    return true;
+  };
+
+  const appendPaintStrokePoint = (ev) => {
+    if (!flagPaintDrag || flagPaintDrag.mode !== "stroke") return;
+    const p = getFlagOverlayNormPoint(ev, ev.shiftKey, true);
+    if (!p) return;
+    if (!Array.isArray(workingFlag?.strokes)) return;
+    const stroke = workingFlag.strokes[flagPaintDrag.strokeIndex];
+    if (!stroke || !Array.isArray(stroke.points)) return;
+    const lp = flagPaintDrag.lastNorm || p;
+    const dx = p.x - lp.x;
+    const dy = p.y - lp.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist <= 0.000001) return;
+    if (stroke.points.length >= FLAG_MAX_STROKE_POINTS) {
+      flagPaintDrag.lastNorm = p;
+      if (!flagPaintDrag.capped) {
+        flagPaintDrag.capped = true;
+        setStatus(`Stroke point limit reached (${FLAG_MAX_STROKE_POINTS}).`);
+      }
+      return;
+    }
+
+    const spacing = Math.max(0.001, Math.min(0.01, (Number(stroke.size) || 0.02) * 0.14));
+    const steps = Math.max(1, Math.ceil(dist / spacing));
+    let prev = lp;
+    for (let i = 1; i <= steps; i++) {
+      if (stroke.points.length >= FLAG_MAX_STROKE_POINTS) break;
+      const t = i / steps;
+      const np = {
+        x: clamp01(lp.x + (dx * t)),
+        y: clamp01(lp.y + (dy * t))
+      };
+      stroke.points.push(np);
+      drawLiveBrushSegment(stroke, prev, np);
+      prev = np;
+    }
+    flagPaintDrag.lastNorm = p;
+    if (!flagPaintDrag.tracked) {
+      pushFlagHistorySig(flagPaintDrag.startSig);
+      flagPaintDrag.tracked = true;
+    }
+    flagPaintDrag.dirty = true;
+    renderFlagOverlay();
+  };
+
+  const beginShapeToolDrag = (ev) => {
+    const p = getFlagOverlayNormPoint(ev, ev.shiftKey);
+    if (!p) return false;
+    flagPaintDrag = {
+      pointerId: ev.pointerId,
+      mode: "shape",
+      tool: flagEditorTool,
+      startSig: workingFlagSig,
+      tracked: false,
+      startNorm: p,
+      currentNorm: p
+    };
+    flagEditorOverlay.setPointerCapture(ev.pointerId);
+    flagEditorOverlay.style.cursor = "crosshair";
+    renderFlagOverlay();
+    return true;
+  };
+
+  const updateShapeToolDrag = (ev) => {
+    if (!flagPaintDrag || flagPaintDrag.mode !== "shape") return;
+    const p = getFlagOverlayNormPoint(ev, ev.shiftKey);
+    if (!p) return;
+    flagPaintDrag.currentNorm = p;
+    renderFlagOverlay();
+  };
+
+  const commitShapeToolDrag = () => {
+    if (!flagPaintDrag || flagPaintDrag.mode !== "shape" || !isShapeTool(flagPaintDrag.tool)) return false;
+    const start = flagPaintDrag.startNorm || { x: 0.5, y: 0.5 };
+    const end = flagPaintDrag.currentNorm || start;
+    const left = Math.min(start.x, end.x);
+    const right = Math.max(start.x, end.x);
+    const top = Math.min(start.y, end.y);
+    const bottom = Math.max(start.y, end.y);
+    const next = cloneFlag(workingFlag);
+    if (!Array.isArray(next.shapes)) next.shapes = [];
+    if (next.shapes.length >= FLAG_MAX_SHAPES) {
+      setStatus(`Layer limit reached (${FLAG_MAX_SHAPES}).`);
+      return false;
+    }
+    const shapeTypeMap = {
+      rect: "rect",
+      circle: "circle",
+      triangle: "triangle",
+      star: "star",
+      diamond: "diamond",
+      line: "line",
+      cross: "cross",
+      ring: "ring",
+      crescent: "crescent",
+      chevron: "chevron",
+      pentagon: "pentagon",
+      hexagon: "hexagon"
+    };
+    const type = shapeTypeMap[flagPaintDrag.tool] || "rect";
+    const shape = {
+      enabled: true,
+      type,
+      color: readPaintColor(),
+      x: clamp01((left + right) * 0.5),
+      y: clamp01((top + bottom) * 0.5),
+      w: snapSizeNorm(Math.max(FLAG_EDITOR_MIN_SHAPE_SIZE, right - left)),
+      h: snapSizeNorm(Math.max(FLAG_EDITOR_MIN_SHAPE_SIZE, bottom - top)),
+      rotation: 0,
+      opacity: readPaintOpacityNorm()
+    };
+    next.shapes.push(shape);
+    activeFlagLayer = next.shapes.length - 1;
+    return setWorkingFlag(next, { track: true });
   };
 
   const clearFlagOverlayDrag = () => {
@@ -5233,6 +7714,14 @@ function createMainMenuController(options = null) {
 
   const onFlagOverlayPointerDown = (ev) => {
     if (!flagEditorOverlay || !flagModal || flagModal.hidden) return;
+    if (flagEditorTool === "brush" || flagEditorTool === "eraser") {
+      if (beginPaintStroke(ev)) ev.preventDefault();
+      return;
+    }
+    if (isShapeTool(flagEditorTool)) {
+      if (beginShapeToolDrag(ev)) ev.preventDefault();
+      return;
+    }
     const p = getFlagOverlayPoint(ev);
     if (!p) return;
     const hit = getShapeAtPoint(p.x, p.y, true);
@@ -5275,6 +7764,11 @@ function createMainMenuController(options = null) {
 
   const onFlagOverlayPointerMove = (ev) => {
     if (!flagEditorOverlay) return;
+    if (flagPaintDrag && ev.pointerId === flagPaintDrag.pointerId) {
+      if (flagPaintDrag.mode === "stroke") appendPaintStrokePoint(ev);
+      else if (flagPaintDrag.mode === "shape") updateShapeToolDrag(ev);
+      return;
+    }
     if (!flagOverlayDrag || ev.pointerId !== flagOverlayDrag.pointerId) {
       setFlagOverlayCursor(ev);
       return;
@@ -5331,6 +7825,29 @@ function createMainMenuController(options = null) {
   };
 
   const onFlagOverlayPointerUp = (ev) => {
+    if (flagPaintDrag && ev.pointerId === flagPaintDrag.pointerId) {
+      const mode = flagPaintDrag.mode;
+      if (mode === "shape") {
+        const committed = commitShapeToolDrag();
+        clearFlagPaintDrag();
+        renderFlagOverlay();
+        setStatus(committed ? "Shape added." : "Shape cancelled.");
+      } else {
+        appendPaintStrokePoint(ev);
+        const dirty = !!flagPaintDrag.dirty;
+        const strokeChanged = !!flagPaintDrag.tracked;
+        if (dirty) {
+          workingFlag = sanitizeFlag(workingFlag);
+          workingFlagSig = JSON.stringify(workingFlag);
+          renderFlagTargets(workingFlag);
+          refreshFlagEditorButtons();
+        }
+        clearFlagPaintDrag();
+        renderFlagOverlay();
+        setStatus(strokeChanged ? "Paint updated." : "Paint stroke added.");
+      }
+      return;
+    }
     if (!flagOverlayDrag || ev.pointerId !== flagOverlayDrag.pointerId) return;
     const changed = !!flagOverlayDrag.tracked;
     clearFlagOverlayDrag();
@@ -5341,22 +7858,26 @@ function createMainMenuController(options = null) {
   const openFlagEditor = () => {
     if (!flagModal) return;
     flagHistory = [];
+    clearFlagOverlayDrag();
+    clearFlagPaintDrag();
     workingFlag = cloneFlag(activePlayerFlag);
     savedFlag = cloneFlag(activePlayerFlag);
     workingFlagSig = JSON.stringify(workingFlag);
     activeFlagLayer = "base";
+    setFlagTool("brush");
     ensureFlagEditorOptions();
     flagModal.classList.toggle("isGridOn", !!flagInputs.showGrid?.checked);
     applyFlagToForm(workingFlag);
     renderFlagTargets(workingFlag);
     flagModal.hidden = false;
     flagModal.removeAttribute("aria-hidden");
-    setStatus("Flag studio opened.");
+    setStatus("Flag paint opened.");
   };
 
   const closeFlagEditor = (saveChanges = false) => {
     if (!flagModal) return;
     clearFlagOverlayDrag();
+    clearFlagPaintDrag();
     if (saveChanges) {
       activePlayerFlag = cloneFlag(workingFlag);
       savedFlag = cloneFlag(workingFlag);
@@ -5402,10 +7923,8 @@ function createMainMenuController(options = null) {
     if (matchInputs.aiCount) matchInputs.aiCount.value = cfg.aiCount ? String(cfg.aiCount) : "";
     if (matchInputs.sizePreset) matchInputs.sizePreset.value = cfg.sizePreset;
     if (matchInputs.difficulty) matchInputs.difficulty.value = cfg.difficulty;
-    if (matchInputs.mapMode) {
-      matchInputs.mapMode.value = MAP_MODE.WORLD_MAP;
-      matchInputs.mapMode.disabled = true;
-    }
+    if (matchInputs.mapMode) matchInputs.mapMode.value = String(cfg.mapSource || MAP_SOURCE.EARTH).toLowerCase();
+    if (matchInputs.customMapId) matchInputs.customMapId.value = String(cfg.customMapId || "");
     if (matchInputs.infiniteGold) matchInputs.infiniteGold.checked = !!cfg.infiniteGold;
     if (matchInputs.infiniteTroops) matchInputs.infiniteTroops.checked = !!cfg.infiniteTroops;
     if (matchInputs.disableMissileSilo) matchInputs.disableMissileSilo.checked = !!cfg.disableMissileSilo;
@@ -5413,16 +7932,23 @@ function createMainMenuController(options = null) {
     if (matchInputs.disableDefencePost) matchInputs.disableDefencePost.checked = !!cfg.disableDefencePost;
     if (matchInputs.playerGoldBoost) matchInputs.playerGoldBoost.value = String(cfg.playerGoldBoost);
     if (matchInputs.playerTroopsBoost) matchInputs.playerTroopsBoost.value = String(cfg.playerTroopsBoost);
+    refreshMapSourceUi();
   };
 
   const readMatchConfigFromForm = () => {
     const rawAi = matchInputs.aiCount ? String(matchInputs.aiCount.value || "").trim() : "";
     const aiCount = rawAi ? Number(rawAi) : null;
+    const mapSource = matchInputs.mapMode ? String(matchInputs.mapMode.value || MAP_SOURCE.EARTH).toLowerCase() : MAP_SOURCE.EARTH;
+    const customMapId = (mapSource === MAP_SOURCE.CUSTOM && matchInputs.customMapId)
+      ? String(matchInputs.customMapId.value || "").trim()
+      : "";
     return sanitizeMatchConfig({
       aiCount,
       sizePreset: matchInputs.sizePreset ? matchInputs.sizePreset.value : undefined,
       difficulty: matchInputs.difficulty ? matchInputs.difficulty.value : undefined,
       mapMode: MAP_MODE.WORLD_MAP,
+      mapSource,
+      customMapId,
       infiniteGold: !!matchInputs.infiniteGold?.checked,
       infiniteTroops: !!matchInputs.infiniteTroops?.checked,
       disableMissileSilo: !!matchInputs.disableMissileSilo?.checked,
@@ -5442,7 +7968,12 @@ function createMainMenuController(options = null) {
     if (cfg.disableAbmLauncher) disabled.push("ABM Launcher");
     if (cfg.disableDefencePost) disabled.push("Defence Post");
     const ruleText = disabled.length ? `Disabled: ${disabled.join(", ")}` : "No structure bans";
-    configSummary.textContent = `Mode: Earth | Size: ${cfg.sizePreset} | Bots: ${botsText} | Difficulty: ${cfg.difficulty.toUpperCase()} | ${ruleText}`;
+    let modeText = "Earth";
+    if (String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.CUSTOM) {
+      const meta = findCustomMapMetaById(cfg.customMapId);
+      modeText = meta ? `Custom (${meta.name})` : "Custom (Select map)";
+    }
+    configSummary.textContent = `Mode: ${modeText} | Size: ${cfg.sizePreset} | Bots: ${botsText} | Difficulty: ${cfg.difficulty.toUpperCase()} | ${ruleText}`;
   };
 
   const persistSettingsFromForm = () => {
@@ -5471,7 +8002,7 @@ function createMainMenuController(options = null) {
 
   const syncInteractiveState = () => {
     if (flagBtn) flagBtn.disabled = false;
-    if (matchInputs.mapMode) matchInputs.mapMode.disabled = true;
+    refreshMapSourceUi();
     if (multiplayerBtn) {
       multiplayerBtn.disabled = true;
       multiplayerBtn.classList.add("isDisabled");
@@ -5508,6 +8039,8 @@ function createMainMenuController(options = null) {
   setHint(playBtn, "Open match configuration.");
   setHint(multiplayerBtn, "Multiplayer is currently disabled.");
   setHint(settingsBtn, "Open client settings.");
+  setHint(mapEditorBtn, "Open advanced map editor.");
+  setHint(libraryBtn, "Browse and publish community maps.");
   setHint(flagBtn, "Open flag editor.");
   setHint(bookBtn, "Guide is empty for now.");
 
@@ -5534,12 +8067,343 @@ function createMainMenuController(options = null) {
       setView("settings");
     });
   }
+  if (mapEditorBtn) {
+    mapEditorBtn.addEventListener("click", () => {
+      refreshCustomMapPickers();
+      setView("mapeditor");
+    });
+  }
+  if (mapEditorBackBtn) {
+    mapEditorBackBtn.addEventListener("click", () => {
+      setView("home");
+    });
+  }
+  if (libraryBtn) {
+    libraryBtn.addEventListener("click", () => {
+      void openMapLibraryModal();
+    });
+  }
+  if (mapLibraryBackdrop) {
+    mapLibraryBackdrop.addEventListener("click", () => {
+      closeMapLibraryModal();
+      setStatus("Map library closed.");
+    });
+  }
+  if (mapLibraryCloseBtn) {
+    mapLibraryCloseBtn.addEventListener("click", () => {
+      closeMapLibraryModal();
+      setStatus("Map library closed.");
+    });
+  }
+  if (mapLibraryPublishMapSelect) {
+    mapLibraryPublishMapSelect.addEventListener("change", () => {
+      const mapId = String(mapLibraryPublishMapSelect.value || "").trim();
+      const selected = mapId ? loadCustomMapById(mapId) : null;
+      if (selected && mapLibraryPublishName && !String(mapLibraryPublishName.value || "").trim()) {
+        mapLibraryPublishName.value = selected.name;
+      }
+      syncMapLibraryControls();
+    });
+  }
+  if (mapLibraryPublishAuthor) {
+    mapLibraryPublishAuthor.addEventListener("change", () => {
+      const author = normalizeCustomMapName(mapLibraryPublishAuthor.value || "", "Anonymous");
+      mapLibraryPublishAuthor.value = author;
+      safeStorageWrite(MAP_LIBRARY_AUTHOR_STORAGE_KEY, author);
+    });
+  }
+  if (mapLibraryPublishBtn) {
+    mapLibraryPublishBtn.addEventListener("click", () => {
+      void publishSelectedMapToLibrary();
+    });
+  }
+  if (mapLibraryRefreshBtn) {
+    mapLibraryRefreshBtn.addEventListener("click", () => {
+      void loadMapLibraryRows({ quiet: false });
+    });
+  }
+  if (mapLibrarySearchInput) {
+    mapLibrarySearchInput.addEventListener("input", () => {
+      if (!supabase) return;
+      if (mapLibrarySearchDebounceTimer) clearTimeout(mapLibrarySearchDebounceTimer);
+      mapLibrarySearchDebounceTimer = setTimeout(() => {
+        mapLibrarySearchDebounceTimer = 0;
+        void loadMapLibraryRows({ quiet: true });
+      }, 260);
+    });
+    mapLibrarySearchInput.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      if (mapLibrarySearchDebounceTimer) {
+        clearTimeout(mapLibrarySearchDebounceTimer);
+        mapLibrarySearchDebounceTimer = 0;
+      }
+      void loadMapLibraryRows({ quiet: false });
+    });
+  }
+  if (mapEditorSizePresetInput && Object.prototype.hasOwnProperty.call(CUSTOM_MAP_EDITOR_SIZE_PRESETS, activeMatchConfig.sizePreset)) {
+    mapEditorSizePresetInput.value = activeMatchConfig.sizePreset;
+  }
+  if (mapEditorSavedSelect) {
+    mapEditorSavedSelect.addEventListener("change", () => {
+      refreshMapEditorSummary();
+    });
+  }
+  if (mapEditorModalSavedSelect) {
+    mapEditorModalSavedSelect.addEventListener("change", () => {
+      // Keep selection in setup panel in sync.
+      if (mapEditorSavedSelect) mapEditorSavedSelect.value = mapEditorModalSavedSelect.value;
+      refreshMapEditorSummary();
+    });
+  }
+  if (mapEditorNewBtn) {
+    mapEditorNewBtn.addEventListener("click", () => {
+      const preset = String(mapEditorSizePresetInput?.value || WORLD_SIZE_PRESET.LARGE);
+      const baseName = normalizeCustomMapName(mapEditorNameInput?.value || "", `Custom ${preset}`);
+      const blank = createBlankCustomMap(preset, baseName);
+      openMapEditorModal(blank);
+      setStatus(`Editing new ${preset} map.`);
+    });
+  }
+  if (mapEditorLoadBtn) {
+    mapEditorLoadBtn.addEventListener("click", () => {
+      const mapId = String(mapEditorSavedSelect?.value || "").trim();
+      if (!mapId) {
+        setStatus("Select a saved map first.");
+        return;
+      }
+      const existing = loadCustomMapById(mapId);
+      if (!existing) {
+        setStatus("Saved map could not be loaded.");
+        return;
+      }
+      openMapEditorModal(existing);
+      setStatus(`Loaded map "${existing.name}".`);
+    });
+  }
+  if (mapEditorDeleteBtn) {
+    mapEditorDeleteBtn.addEventListener("click", () => {
+      const mapId = String(mapEditorSavedSelect?.value || "").trim();
+      if (!mapId) {
+        setStatus("Select a saved map to delete.");
+        return;
+      }
+      const meta = findCustomMapMetaById(mapId);
+      const label = meta?.name || "this map";
+      const confirmed = window.confirm(`Delete "${label}" from local storage?`);
+      if (!confirmed) return;
+      const removed = deleteCustomMapById(mapId);
+      if (!removed) {
+        setStatus("Delete failed.");
+        return;
+      }
+      if (String(activeMatchConfig.customMapId || "") === mapId) {
+        activeMatchConfig = sanitizeMatchConfig({ ...activeMatchConfig, mapSource: MAP_SOURCE.EARTH, customMapId: "" });
+        saveMatchConfig(activeMatchConfig);
+      }
+      refreshCustomMapPickers();
+      applyMatchConfigToForm(activeMatchConfig);
+      refreshConfigSummary();
+      setStatus(`Deleted "${label}".`);
+    });
+  }
+  if (mapEditorBackdrop) {
+    mapEditorBackdrop.addEventListener("click", () => {
+      closeMapEditorModal();
+      setStatus("Map editor closed.");
+    });
+  }
+  if (mapEditorCloseBtn) {
+    mapEditorCloseBtn.addEventListener("click", () => {
+      closeMapEditorModal();
+      setStatus("Map editor closed.");
+    });
+  }
+  if (mapEditorToolBrushBtn) {
+    mapEditorToolBrushBtn.addEventListener("click", () => {
+      mapEditorTool = "brush";
+      refreshMapEditorToolButtons();
+      setStatus("Brush tool active.");
+    });
+  }
+  if (mapEditorToolEraseBtn) {
+    mapEditorToolEraseBtn.addEventListener("click", () => {
+      mapEditorTool = "erase";
+      refreshMapEditorToolButtons();
+      setStatus("Erase tool active.");
+    });
+  }
+  if (mapEditorBrushSizeInput) {
+    mapEditorBrushSizeInput.addEventListener("input", () => {
+      mapEditorBrushRadius = clampInt(mapEditorBrushSizeInput.value, 1, 72);
+      syncMapEditorReadouts();
+      renderMapEditorCanvas();
+    });
+    mapEditorBrushSizeInput.addEventListener("change", () => {
+      mapEditorBrushRadius = clampInt(mapEditorBrushSizeInput.value, 1, 72);
+      syncMapEditorReadouts();
+      renderMapEditorCanvas();
+      setStatus(`Brush radius ${mapEditorBrushRadius} cells.`);
+    });
+  }
+  if (mapEditorZoomInput) {
+    mapEditorZoomInput.addEventListener("input", () => {
+      mapEditorZoomPct = clampInt(mapEditorZoomInput.value, 30, 600);
+      syncMapEditorReadouts();
+      renderMapEditorCanvas();
+    });
+    mapEditorZoomInput.addEventListener("change", () => {
+      mapEditorZoomPct = clampInt(mapEditorZoomInput.value, 30, 600);
+      syncMapEditorReadouts();
+      renderMapEditorCanvas();
+      setStatus(`Zoom ${Math.round(mapEditorZoomPct)}%.`);
+    });
+  }
+  if (mapEditorActiveName) {
+    mapEditorActiveName.addEventListener("input", () => {
+      if (!mapEditorWorkingMap) return;
+      mapEditorWorkingMap.name = normalizeCustomMapName(mapEditorActiveName.value, CUSTOM_MAP_DEFAULT_NAME);
+      refreshMapEditorStats();
+    });
+  }
+  if (mapEditorSaveBtn) {
+    mapEditorSaveBtn.addEventListener("click", () => {
+      const saved = saveMapEditorWorkingMap(false);
+      if (!saved) {
+        setStatus("Save failed.");
+        return;
+      }
+      setStatus(`Saved "${saved.name}".`);
+    });
+  }
+  if (mapEditorSaveAsBtn) {
+    mapEditorSaveAsBtn.addEventListener("click", () => {
+      const saved = saveMapEditorWorkingMap(true);
+      if (!saved) {
+        setStatus("Save As failed.");
+        return;
+      }
+      setStatus(`Saved new map "${saved.name}".`);
+    });
+  }
+  if (mapEditorUseBtn) {
+    mapEditorUseBtn.addEventListener("click", () => {
+      let saved = saveMapEditorWorkingMap(false);
+      if (!saved) saved = saveMapEditorWorkingMap(true);
+      if (!saved) {
+        setStatus("Save before use failed.");
+        return;
+      }
+      applySavedCustomMapToConfig(saved);
+      persistMatchConfigFromForm();
+      setView("play");
+      setStatus(`Using "${saved.name}" in Match Configuration.`);
+    });
+  }
+  if (mapEditorClearBtn) {
+    mapEditorClearBtn.addEventListener("click", () => {
+      clearMapEditorToOcean();
+      setStatus("Map cleared to ocean.");
+    });
+  }
+  if (mapEditorLoadSavedBtn) {
+    mapEditorLoadSavedBtn.addEventListener("click", () => {
+      const mapId = String(mapEditorModalSavedSelect?.value || "").trim();
+      if (!mapId) {
+        setStatus("Select a saved map first.");
+        return;
+      }
+      const loaded = loadCustomMapById(mapId);
+      if (!loaded) {
+        setStatus("Saved map could not be loaded.");
+        return;
+      }
+      openMapEditorModal(loaded);
+      setStatus(`Loaded map "${loaded.name}" into editor.`);
+    });
+  }
+  if (mapEditorCanvas) {
+    mapEditorCanvas.addEventListener("contextmenu", (ev) => ev.preventDefault());
+    mapEditorCanvas.addEventListener("pointerdown", (ev) => {
+      if (!mapEditorModal || mapEditorModal.hidden) return;
+      if (!mapEditorWorkingMap) return;
+      mapEditorCanvas.setPointerCapture?.(ev.pointerId);
+      if (ev.button === 2) {
+        mapEditorPointerState = { mode: "pan", x: ev.clientX, y: ev.clientY };
+        return;
+      }
+      if (ev.button !== 0) return;
+      const cell = mapEditorCellFromClient(ev.clientX, ev.clientY);
+      if (!cell) return;
+      mapEditorPointerState = { mode: "paint", x: cell.x, y: cell.y };
+      stampMapEditorBrush(cell.x, cell.y);
+      renderMapEditorCanvas();
+    });
+    mapEditorCanvas.addEventListener("pointermove", (ev) => {
+      if (!mapEditorModal || mapEditorModal.hidden) return;
+      const cell = mapEditorCellFromClient(ev.clientX, ev.clientY);
+      mapEditorHoverCell = cell ? { x: cell.x, y: cell.y } : null;
+      if (!mapEditorPointerState) {
+        renderMapEditorCanvas();
+        return;
+      }
+      if (mapEditorPointerState.mode === "pan") {
+        mapEditorPanX += (ev.clientX - mapEditorPointerState.x) * (window.devicePixelRatio || 1);
+        mapEditorPanY += (ev.clientY - mapEditorPointerState.y) * (window.devicePixelRatio || 1);
+        mapEditorPointerState.x = ev.clientX;
+        mapEditorPointerState.y = ev.clientY;
+        renderMapEditorCanvas();
+        return;
+      }
+      if (mapEditorPointerState.mode === "paint" && cell) {
+        paintMapEditorLine(mapEditorPointerState.x, mapEditorPointerState.y, cell.x, cell.y);
+        mapEditorPointerState.x = cell.x;
+        mapEditorPointerState.y = cell.y;
+        renderMapEditorCanvas();
+      }
+    });
+    mapEditorCanvas.addEventListener("pointerup", (ev) => {
+      mapEditorCanvas.releasePointerCapture?.(ev.pointerId);
+      if (mapEditorPointerState?.mode === "paint") {
+        refreshMapEditorStats();
+      }
+      mapEditorPointerState = null;
+      renderMapEditorCanvas();
+    });
+    mapEditorCanvas.addEventListener("pointercancel", () => {
+      mapEditorPointerState = null;
+      renderMapEditorCanvas();
+    });
+    mapEditorCanvas.addEventListener("wheel", (ev) => {
+      if (!mapEditorModal || mapEditorModal.hidden) return;
+      ev.preventDefault();
+      const step = (ev.deltaY < 0) ? 12 : -12;
+      mapEditorZoomPct = clampInt(Math.round(mapEditorZoomPct + step), 30, 600);
+      syncMapEditorReadouts();
+      renderMapEditorCanvas();
+    }, { passive: false });
+  }
+  window.addEventListener("resize", () => {
+    if (!mapEditorModal || mapEditorModal.hidden) return;
+    renderMapEditorCanvas();
+  });
   if (startBtn) {
     startBtn.addEventListener("click", async () => {
       if (startLobbyInFlight) return;
       commitNameInput();
       persistSettingsFromForm();
       const cfg = persistMatchConfigFromForm();
+      if (String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.CUSTOM) {
+        const mapId = String(cfg.customMapId || "").trim();
+        if (!mapId) {
+          setStatus("Select a saved custom map in Match Configuration.");
+          return;
+        }
+        if (!loadCustomMapById(mapId)) {
+          setStatus("Selected custom map could not be loaded. Re-save it in Map Editor.");
+          return;
+        }
+      }
       const rawPlayerName = nameInput ? String(nameInput.value || "").trim() : "";
       if (playMenuMode === "multiplayer_host") {
         if (!hasMultiplayerApi()) {
@@ -5788,6 +8652,18 @@ function createMainMenuController(options = null) {
     });
   }
   document.addEventListener("keydown", (ev) => {
+    if (mapLibraryModal && !mapLibraryModal.hidden && ev.key === "Escape") {
+      ev.preventDefault();
+      closeMapLibraryModal();
+      setStatus("Map library closed.");
+      return;
+    }
+    if (mapEditorModal && !mapEditorModal.hidden && ev.key === "Escape") {
+      ev.preventDefault();
+      closeMapEditorModal();
+      setStatus("Map editor closed.");
+      return;
+    }
     if (!flagModal || flagModal.hidden) return;
     const tag = String(ev.target?.tagName || "").toUpperCase();
     const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
@@ -5801,7 +8677,7 @@ function createMainMenuController(options = null) {
       undoFlag();
       return;
     }
-    if (!typing && ev.key === "Delete") {
+    if (!typing && ev.key === "Delete" && flagEditorTool === "select") {
       const idx = getActiveShapeIndex(workingFlag);
       if (idx >= 0) {
         ev.preventDefault();
@@ -5846,6 +8722,30 @@ function createMainMenuController(options = null) {
       });
     }
   }
+  if (matchInputs.mapMode) {
+    matchInputs.mapMode.addEventListener("change", () => {
+      refreshMapSourceUi();
+      refreshConfigSummary();
+    });
+  }
+  if (matchInputs.customMapId) {
+    matchInputs.customMapId.addEventListener("change", () => {
+      refreshConfigSummary();
+    });
+  }
+  if (mapEditorSizePresetInput) {
+    mapEditorSizePresetInput.addEventListener("change", () => {
+      const preset = String(mapEditorSizePresetInput.value || WORLD_SIZE_PRESET.LARGE);
+      const dims = resolveCustomMapSizePreset(preset);
+      refreshMapEditorSummary();
+      setStatus(`Preset ${preset}: ${dims.width}x${dims.height}.`);
+    });
+  }
+  if (mapEditorNameInput) {
+    mapEditorNameInput.addEventListener("change", () => {
+      refreshMapEditorSummary();
+    });
+  }
 
   const bindFlagInput = (el, handler) => {
     if (!el) return;
@@ -5876,6 +8776,55 @@ function createMainMenuController(options = null) {
   bindFlagInput(flagInputs.shape.h, applyShapeInputsToWorkingFlag);
   bindFlagInput(flagInputs.shape.r, applyShapeInputsToWorkingFlag);
   bindFlagInput(flagInputs.shape.opacity, applyShapeInputsToWorkingFlag);
+  if (flagInputs.paintColor) {
+    flagInputs.paintColor.addEventListener("input", () => {
+      setStatus("Paint color updated.");
+    });
+    flagInputs.paintColor.addEventListener("change", () => {
+      setStatus("Paint color updated.");
+    });
+  }
+  if (flagInputs.paintSize) {
+    flagInputs.paintSize.addEventListener("input", () => {
+      setFlagRangeOutputs();
+    });
+    flagInputs.paintSize.addEventListener("change", () => {
+      setFlagRangeOutputs();
+      setStatus("Brush size updated.");
+    });
+  }
+  if (flagInputs.paintOpacity) {
+    flagInputs.paintOpacity.addEventListener("input", () => {
+      setFlagRangeOutputs();
+    });
+    flagInputs.paintOpacity.addEventListener("change", () => {
+      setFlagRangeOutputs();
+      setStatus("Paint opacity updated.");
+    });
+  }
+
+  const bindFlagToolButton = (btn, tool, label) => {
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      setFlagTool(tool);
+      setStatus(label);
+    });
+  };
+  bindFlagToolButton(flagToolSelectBtn, "select", "Select tool active.");
+  bindFlagToolButton(flagToolBrushBtn, "brush", "Brush tool active.");
+  bindFlagToolButton(flagToolEraserBtn, "eraser", "Eraser tool active.");
+  bindFlagToolButton(flagToolRectBtn, "rect", "Rectangle tool active.");
+  bindFlagToolButton(flagToolCircleBtn, "circle", "Circle tool active.");
+  bindFlagToolButton(flagToolTriangleBtn, "triangle", "Triangle tool active.");
+  bindFlagToolButton(flagToolStarBtn, "star", "Star tool active.");
+  bindFlagToolButton(flagToolDiamondBtn, "diamond", "Diamond tool active.");
+  bindFlagToolButton(flagToolLineBtn, "line", "Line tool active.");
+  bindFlagToolButton(flagToolCrossBtn, "cross", "Cross tool active.");
+  bindFlagToolButton(flagToolRingBtn, "ring", "Ring tool active.");
+  bindFlagToolButton(flagToolCrescentBtn, "crescent", "Crescent tool active.");
+  bindFlagToolButton(flagToolChevronBtn, "chevron", "Chevron tool active.");
+  bindFlagToolButton(flagToolPentagonBtn, "pentagon", "Pentagon tool active.");
+  bindFlagToolButton(flagToolHexagonBtn, "hexagon", "Hexagon tool active.");
 
   if (flagLayerList) {
     flagLayerList.addEventListener("click", (ev) => {
@@ -5920,7 +8869,12 @@ function createMainMenuController(options = null) {
     flagEditorOverlay.addEventListener("pointerdown", onFlagOverlayPointerDown);
     flagEditorOverlay.addEventListener("pointermove", onFlagOverlayPointerMove);
     flagEditorOverlay.addEventListener("pointerup", onFlagOverlayPointerUp);
-    flagEditorOverlay.addEventListener("pointercancel", onFlagOverlayPointerUp);
+    flagEditorOverlay.addEventListener("pointercancel", () => {
+      clearFlagOverlayDrag();
+      clearFlagPaintDrag();
+      renderFlagOverlay();
+      flagEditorOverlay.style.cursor = "crosshair";
+    });
     flagEditorOverlay.addEventListener("pointerleave", setFlagOverlayCursor);
   }
 
@@ -5943,6 +8897,16 @@ function createMainMenuController(options = null) {
   if (flagUndoBtn) {
     flagUndoBtn.addEventListener("click", () => {
       undoFlag();
+    });
+  }
+  if (flagClearPaintBtn) {
+    flagClearPaintBtn.addEventListener("click", () => {
+      clearFlagPaint();
+    });
+  }
+  if (flagDeleteShapeBtn) {
+    flagDeleteShapeBtn.addEventListener("click", () => {
+      deleteSelectedShape();
     });
   }
   if (flagPresetDefaultBtn) {
@@ -5999,10 +8963,20 @@ function createMainMenuController(options = null) {
   }
 
   applySavedName();
+  if (mapLibraryPublishAuthor && !String(mapLibraryPublishAuthor.value || "").trim()) {
+    mapLibraryPublishAuthor.value = safeStorageRead(MAP_LIBRARY_AUTHOR_STORAGE_KEY) || "";
+  }
   applySettingsToForm(clientSettings);
+  refreshCustomMapPickers();
+  syncMapLibraryControls();
+  renderMapLibraryList();
   applyMatchConfigToForm(activeMatchConfig);
+  syncMapEditorReadouts();
+  refreshMapEditorToolButtons();
+  populateMapEditorBiomePalette();
   ensureFlagEditorOptions();
   activeFlagLayer = "base";
+  setFlagTool("brush");
   if (flagModal) flagModal.classList.toggle("isGridOn", !!flagInputs.showGrid?.checked);
   applyFlagToForm(activePlayerFlag);
   renderFlagTargets(activePlayerFlag);
@@ -6014,6 +8988,8 @@ function createMainMenuController(options = null) {
     hide: () => {
       stopLobbyPolling();
       closeLobbySocket();
+      closeMapLibraryModal();
+      closeMapEditorModal();
       root.hidden = true;
       root.setAttribute("aria-hidden", "true");
     },
@@ -6120,6 +9096,7 @@ function boot() {
     }
     clearNukeLaunchMode();
     clearAirborneLaunchMode();
+    clearNavalTransportLaunchMode();
     clearSelection();
     hud.setOpMessage("Build mode: click inside your territory to place. Esc cancels.");
     refreshAllUI();
@@ -6309,10 +9286,12 @@ function boot() {
         if (isQueuedActionResult(res)) {
           clearNukeLaunchMode();
           clearAirborneLaunchMode();
+          clearNavalTransportLaunchMode();
           hud.setOpMessage(`${warheadLabel(type)} build queued.`);
         } else if (res.ok) {
           clearNukeLaunchMode();
           clearAirborneLaunchMode();
+          clearNavalTransportLaunchMode();
           hud.setOpMessage(`${warheadLabel(type)} production started.`);
         } else {
           hud.setOpMessage(res.reason);
@@ -6328,27 +9307,7 @@ function boot() {
           refreshAllUI();
           return;
         }
-
-        const status = world.getMissileSiloStatus
-          ? world.getMissileSiloStatus(sid, OWNER.PLAYER)
-          : { ok: false, reason: "Missile silo status API unavailable." };
-        if (!status.ok) {
-          hud.setOpMessage(status.reason);
-          refreshAllUI();
-          return;
-        }
-        if (!status.isReady || !status.readyType) {
-          hud.setOpMessage("No ready warhead to launch.");
-          refreshAllUI();
-          return;
-        }
-
-        hud.clearBuildMode();
-        clearAirborneLaunchMode();
-        clearSelection();
-        nukeLaunchMode = { siloId: sid, type: String(status.readyType) };
-        refreshNukePreview();
-        hud.setOpMessage(`Launch targeting active: ${warheadLabel(status.readyType)}. Click a target tile.`);
+        activateNukeLaunchFromSilo(sid);
         refreshAllUI();
         return;
       }
@@ -6359,9 +9318,11 @@ function boot() {
           : { ok: false, reason: "Airbase build API unavailable." };
         if (isQueuedActionResult(res)) {
           clearAirborneLaunchMode();
+          clearNavalTransportLaunchMode();
           hud.setOpMessage("Transport Plane build queued.");
         } else if (res.ok) {
           clearAirborneLaunchMode();
+          clearNavalTransportLaunchMode();
           hud.setOpMessage("Transport Plane production started.");
         } else {
           hud.setOpMessage(res.reason);
@@ -6377,38 +9338,549 @@ function boot() {
           refreshAllUI();
           return;
         }
-
-        const status = world.getAirbaseStatus
-          ? world.getAirbaseStatus(sid, OWNER.PLAYER)
-          : { ok: false, reason: "Airbase status API unavailable." };
-        if (!status.ok) {
-          hud.setOpMessage(status.reason);
-          refreshAllUI();
-          return;
-        }
-        if (!status.isReady) {
-          hud.setOpMessage("No ready transport plane to launch.");
-          refreshAllUI();
-          return;
-        }
-        if (!status.canLaunch) {
-          const need = Math.max(1, Math.floor(Number(status.transport?.launchMinInfantry) || 1));
-          const have = Math.max(0, Math.floor(Number(status.transport?.availableInfantry) || 0));
-          hud.setOpMessage(`Need ${need} free infantry to launch airborne transport (currently ${have}).`);
-          refreshAllUI();
-          return;
-        }
-
-        hud.clearBuildMode();
-        clearNukeLaunchMode();
-        clearSelection();
-        airborneLaunchMode = { airbaseId: sid };
-        const radius = Math.max(1, Math.floor(Number(status.transport?.launchRadiusTiles) || Number(AIRBASE_LAUNCH_RADIUS_TILES) || 1));
-        hud.setOpMessage(`Airborne targeting active (range ${radius} tiles). Click a land tile.`);
+        activateAirborneLaunchFromAirbase(sid);
         refreshAllUI();
       }
     });
   }
+
+  const btnQuickAtomic = document.getElementById("btnQuickAtomic");
+  if (btnQuickAtomic) btnQuickAtomic.addEventListener("click", () => tryQuickLaunchNuke("atomic"));
+  const btnQuickHydrogen = document.getElementById("btnQuickHydrogen");
+  if (btnQuickHydrogen) btnQuickHydrogen.addEventListener("click", () => tryQuickLaunchNuke("hydrogen"));
+  const btnQuickTransportBoat = document.getElementById("btnQuickTransportBoat");
+  if (btnQuickTransportBoat) btnQuickTransportBoat.addEventListener("click", () => tryQuickLaunchTransportBoat());
+  const btnQuickPlane = document.getElementById("btnQuickPlane");
+  if (btnQuickPlane) btnQuickPlane.addEventListener("click", () => tryQuickLaunchTransportPlane());
+  const researchModal = document.getElementById("researchModal");
+  const researchBackdrop = document.getElementById("researchBackdrop");
+  const researchClose = document.getElementById("researchClose");
+  const btnResearchPanel = document.getElementById("btnResearchPanel");
+  const researchViewport = document.getElementById("researchTreeViewport");
+  const researchCanvas = document.getElementById("researchTreeCanvas");
+  const researchLinks = document.getElementById("researchTreeLinks");
+  const researchNodesLayer = document.getElementById("researchTreeNodes");
+  const researchInfoIcon = document.getElementById("researchInfoIcon");
+  const researchInfoName = document.getElementById("researchInfoName");
+  const researchInfoStatus = document.getElementById("researchInfoStatus");
+  const researchInfoDesc = document.getElementById("researchInfoDesc");
+  const researchInfoPrice = document.getElementById("researchInfoPrice");
+  const researchInfoTime = document.getElementById("researchInfoTime");
+  const researchActionBtn = document.getElementById("researchActionBtn");
+  const researchTabButtons = Array.from(document.querySelectorAll("[data-research-tab]"));
+
+  const normalizeResearchTab = (tabRaw) => {
+    const t = String(tabRaw || "").toLowerCase();
+    if (t === "economy") return "economy";
+    if (t === "intel" || t === "intelligence") return "intel";
+    return "military";
+  };
+  const RESEARCH_NODE_W = 128;
+  const RESEARCH_NODE_H = 92;
+  const researchState = {
+    tab: "military",
+    selectedId: "",
+    scale: 1,
+    x: 0,
+    y: 0,
+    dragging: false,
+    dragX: 0,
+    dragY: 0,
+    initialized: false
+  };
+  const RESEARCH_TREES = Object.freeze({
+    military: Object.freeze([
+      { id: "mil_logistics", name: "Logistics Doctrine", desc: "Faster reinforcement and mobilization throughput.", icon: "/UI_Icons/Expressions/war.png", price: 600, time: "35s", state: "unlocked", x: 620, y: 1280, parents: [] },
+      { id: "mil_armored", name: "Armored Doctrine", desc: "Heavy armor focus with stronger frontline breakthroughs.", icon: "/UI_Icons/infantry.png", price: 900, time: "45s", state: "", x: 1240, y: 980, parents: ["mil_logistics"], exclusiveGroup: "mil_doctrine" },
+      { id: "mil_siege", name: "Siege Logistics", desc: "Attrition-heavy doctrine for prolonged assaults.", icon: "/UI_Icons/Expressions/war.png", price: 1050, time: "56s", state: "", x: 1240, y: 1280, parents: ["mil_logistics"], exclusiveGroup: "mil_doctrine" },
+      { id: "mil_tactical", name: "Tactical Command Net", desc: "Faster order relay and tactical synchronization.", icon: "/UI_Icons/Expressions/war.png", price: 950, time: "50s", state: "", x: 1240, y: 1580, parents: ["mil_logistics"] },
+      { id: "mil_ew", name: "Electronic Warfare", desc: "Disrupts hostile command efficiency in contested zones.", icon: "/UI_Icons/Expressions/war.png", price: 1350, time: "72s", state: "", x: 1860, y: 940, parents: ["mil_armored"] },
+      { id: "mil_drone", name: "Drone Recon Wing", desc: "Persistent battlefield reconnaissance and target correction.", icon: "/UI_Icons/stability.png", price: 1420, time: "74s", state: "", x: 1860, y: 1280, parents: ["mil_armored"], exclusiveGroup: "mil_support" },
+      { id: "mil_barrier", name: "Adaptive Barrier Units", desc: "Fortified push doctrine with stronger survival in assaults.", icon: "/UI_Icons/abmMissile.png", price: 1470, time: "78s", state: "", x: 1860, y: 1620, parents: ["mil_siege", "mil_tactical"], exclusiveGroup: "mil_support" },
+      { id: "mil_precision", name: "Precision Strike Net", desc: "Advanced strike coordination with stronger impact.", icon: "/UI_Icons/HydrogenMissile.png", price: 2000, time: "95s", state: "", x: 2480, y: 1280, parents: ["mil_tactical"], parentsAny: ["mil_ew", "mil_drone", "mil_barrier"] }
+    ]),
+    economy: Object.freeze([
+      { id: "eco_automation", name: "Industrial Automation", desc: "Higher output from factories and core industry.", icon: "/UI_Icons/gold.png", price: 800, time: "40s", state: "unlocked", x: 620, y: 1280, parents: [] },
+      { id: "eco_trade", name: "Trade Corridor Security", desc: "Protects critical market routes during conflict.", icon: "/UI_Icons/gold.png", price: 1200, time: "65s", state: "", x: 1240, y: 980, parents: ["eco_automation"], exclusiveGroup: "eco_policy" },
+      { id: "eco_tax", name: "Tax Modernization", desc: "Increases passive gold from controlled regions.", icon: "/UI_Icons/population.png", price: 1000, time: "58s", state: "", x: 1240, y: 1280, parents: ["eco_automation"], exclusiveGroup: "eco_policy" },
+      { id: "eco_supply", name: "Supply Chain Audits", desc: "Reduces internal wastage across production.", icon: "/UI_Icons/gold.png", price: 1120, time: "60s", state: "", x: 1240, y: 1580, parents: ["eco_automation"] },
+      { id: "eco_market", name: "Market Forecasting", desc: "Improves timing of strategic spending.", icon: "/UI_Icons/gold.png", price: 1380, time: "70s", state: "", x: 1860, y: 940, parents: ["eco_trade"] },
+      { id: "eco_hedge", name: "Resource Hedging", desc: "Reduces output volatility during major wars.", icon: "/UI_Icons/gold.png", price: 1450, time: "76s", state: "", x: 1860, y: 1280, parents: ["eco_tax"] },
+      { id: "eco_bank", name: "National Reserve Banking", desc: "Stabilizes growth during war-time pressure.", icon: "/UI_Icons/gold.png", price: 1540, time: "82s", state: "", x: 1860, y: 1620, parents: ["eco_supply"], parentsAny: ["eco_trade", "eco_tax"] },
+      { id: "eco_sovereign", name: "Sovereign Investment Grid", desc: "Unlocks long-term macro-economic multipliers.", icon: "/UI_Icons/gold.png", price: 2100, time: "105s", state: "", x: 2480, y: 1280, parents: ["eco_bank"], parentsAny: ["eco_market", "eco_hedge"] }
+    ]),
+    intel: Object.freeze([
+      { id: "int_decrypt", name: "Signals Decryption", desc: "Earlier warning on hostile movement and launches.", icon: "/UI_Icons/stability.png", price: 750, time: "38s", state: "unlocked", x: 620, y: 1280, parents: [] },
+      { id: "int_analyst", name: "Analyst Bureaus", desc: "Faster intel refresh and better battlefield reading.", icon: "/UI_Icons/stability.png", price: 1050, time: "54s", state: "", x: 1240, y: 980, parents: ["int_decrypt"], exclusiveGroup: "int_focus" },
+      { id: "int_counter", name: "Counter-Intel Mesh", desc: "Reduces enemy recon quality in your territory.", icon: "/UI_Icons/stability.png", price: 1350, time: "75s", state: "", x: 1240, y: 1280, parents: ["int_decrypt"], exclusiveGroup: "int_focus" },
+      { id: "int_signal", name: "Signal Intercept Cells", desc: "Improves hostile radio traffic interception.", icon: "/UI_Icons/stability.png", price: 1180, time: "62s", state: "", x: 1240, y: 1580, parents: ["int_decrypt"] },
+      { id: "int_pattern", name: "Pattern Analysis Core", desc: "Improves strategic event prediction accuracy.", icon: "/UI_Icons/stability.png", price: 1420, time: "73s", state: "", x: 1860, y: 940, parents: ["int_analyst"] },
+      { id: "int_recon", name: "Deep Recon Grid", desc: "Expands strategic vision radius and tracking detail.", icon: "/UI_Icons/stability.png", price: 1600, time: "82s", state: "", x: 1860, y: 1280, parents: ["int_counter"] },
+      { id: "int_cipher", name: "Adaptive Cipher Labs", desc: "Rapidly rotates encryption during open war.", icon: "/UI_Icons/stability.png", price: 1500, time: "79s", state: "", x: 1860, y: 1620, parents: ["int_signal"], parentsAny: ["int_analyst", "int_counter"] },
+      { id: "int_forecast", name: "Strategic Forecast Engine", desc: "Long-range conflict prediction and targeting insights.", icon: "/UI_Icons/stability.png", price: 2250, time: "110s", state: "", x: 2480, y: 1280, parents: ["int_cipher"], parentsAny: ["int_pattern", "int_recon"] }
+    ])
+  });
+  const RESEARCH_LINK_OVERRIDES = Object.freeze({
+    military: Object.freeze({
+      "mil_logistics->mil_armored": Object.freeze([{ x: 900, y: 980 }, { x: 1210, y: 980 }]),
+      "mil_logistics->mil_siege": Object.freeze([{ x: 930, y: 1280 }, { x: 1210, y: 1280 }]),
+      "mil_logistics->mil_tactical": Object.freeze([{ x: 960, y: 1580 }, { x: 1210, y: 1580 }]),
+      "mil_armored->mil_ew": Object.freeze([{ x: 1580, y: 980 }, { x: 1580, y: 940 }, { x: 1830, y: 940 }]),
+      "mil_armored->mil_drone": Object.freeze([{ x: 1600, y: 980 }, { x: 1600, y: 1280 }, { x: 1830, y: 1280 }]),
+      "mil_siege->mil_barrier": Object.freeze([{ x: 1620, y: 1280 }, { x: 1620, y: 1620 }, { x: 1830, y: 1620 }]),
+      "mil_tactical->mil_barrier": Object.freeze([{ x: 1650, y: 1580 }, { x: 1650, y: 1620 }, { x: 1830, y: 1620 }]),
+      "mil_tactical->mil_precision": Object.freeze([{ x: 2080, y: 1580 }, { x: 2080, y: 1320 }, { x: 2450, y: 1320 }]),
+      "mil_ew->mil_precision": Object.freeze([{ x: 2200, y: 940 }, { x: 2200, y: 1200 }, { x: 2450, y: 1200 }]),
+      "mil_drone->mil_precision": Object.freeze([{ x: 2230, y: 1280 }, { x: 2450, y: 1280 }]),
+      "mil_barrier->mil_precision": Object.freeze([{ x: 2260, y: 1620 }, { x: 2260, y: 1360 }, { x: 2450, y: 1360 }])
+    }),
+    economy: Object.freeze({
+      "eco_automation->eco_trade": Object.freeze([{ x: 900, y: 980 }, { x: 1210, y: 980 }]),
+      "eco_automation->eco_tax": Object.freeze([{ x: 930, y: 1280 }, { x: 1210, y: 1280 }]),
+      "eco_automation->eco_supply": Object.freeze([{ x: 960, y: 1580 }, { x: 1210, y: 1580 }]),
+      "eco_trade->eco_market": Object.freeze([{ x: 1580, y: 980 }, { x: 1580, y: 940 }, { x: 1830, y: 940 }]),
+      "eco_tax->eco_hedge": Object.freeze([{ x: 1600, y: 1280 }, { x: 1830, y: 1280 }]),
+      "eco_supply->eco_bank": Object.freeze([{ x: 1620, y: 1580 }, { x: 1620, y: 1620 }, { x: 1830, y: 1620 }]),
+      "eco_trade->eco_bank": Object.freeze([{ x: 1550, y: 980 }, { x: 1550, y: 1540 }, { x: 1830, y: 1540 }]),
+      "eco_tax->eco_bank": Object.freeze([{ x: 1585, y: 1280 }, { x: 1585, y: 1620 }, { x: 1830, y: 1620 }]),
+      "eco_bank->eco_sovereign": Object.freeze([{ x: 2220, y: 1620 }, { x: 2220, y: 1280 }, { x: 2450, y: 1280 }]),
+      "eco_market->eco_sovereign": Object.freeze([{ x: 2180, y: 940 }, { x: 2180, y: 1160 }, { x: 2450, y: 1160 }]),
+      "eco_hedge->eco_sovereign": Object.freeze([{ x: 2200, y: 1280 }, { x: 2450, y: 1280 }])
+    }),
+    intel: Object.freeze({
+      "int_decrypt->int_analyst": Object.freeze([{ x: 900, y: 980 }, { x: 1210, y: 980 }]),
+      "int_decrypt->int_counter": Object.freeze([{ x: 930, y: 1280 }, { x: 1210, y: 1280 }]),
+      "int_decrypt->int_signal": Object.freeze([{ x: 960, y: 1580 }, { x: 1210, y: 1580 }]),
+      "int_analyst->int_pattern": Object.freeze([{ x: 1580, y: 980 }, { x: 1580, y: 940 }, { x: 1830, y: 940 }]),
+      "int_counter->int_recon": Object.freeze([{ x: 1600, y: 1280 }, { x: 1830, y: 1280 }]),
+      "int_signal->int_cipher": Object.freeze([{ x: 1620, y: 1580 }, { x: 1620, y: 1620 }, { x: 1830, y: 1620 }]),
+      "int_analyst->int_cipher": Object.freeze([{ x: 1550, y: 980 }, { x: 1550, y: 1500 }, { x: 1830, y: 1500 }]),
+      "int_counter->int_cipher": Object.freeze([{ x: 1585, y: 1280 }, { x: 1585, y: 1620 }, { x: 1830, y: 1620 }]),
+      "int_cipher->int_forecast": Object.freeze([{ x: 2220, y: 1620 }, { x: 2220, y: 1280 }, { x: 2450, y: 1280 }]),
+      "int_pattern->int_forecast": Object.freeze([{ x: 2180, y: 940 }, { x: 2180, y: 1160 }, { x: 2450, y: 1160 }]),
+      "int_recon->int_forecast": Object.freeze([{ x: 2200, y: 1280 }, { x: 2450, y: 1280 }])
+    })
+  });
+  const RESEARCH_PROGRESS_BY_TAB = new Map();
+  const clampResearchScale = (v) => clamp(Number(v) || 1, 0.22, 3.1);
+  const fmtPrice = (n) => `${fmtCompactLocal(Math.max(0, Number(n) || 0))} Gold`;
+  const getOffsetWithin = (el, ancestor) => {
+    let x = 0;
+    let y = 0;
+    let cur = el;
+    while (cur && cur !== ancestor) {
+      x += cur.offsetLeft || 0;
+      y += cur.offsetTop || 0;
+      cur = cur.offsetParent;
+    }
+    return { x, y };
+  };
+  const isResearchedProgress = (status) => String(status || "").toLowerCase() === "researched";
+  const getResearchData = (tabRaw) => RESEARCH_TREES[normalizeResearchTab(tabRaw)] || RESEARCH_TREES.military;
+  const getCombinedParentIds = (node) => {
+    const out = [];
+    if (Array.isArray(node?.parents)) out.push(...node.parents);
+    if (Array.isArray(node?.parentsAny)) out.push(...node.parentsAny);
+    return Array.from(new Set(out.map((v) => String(v || "").trim()).filter(Boolean)));
+  };
+  const applyExclusiveLocks = (data, progress) => {
+    const chosenByGroup = new Map();
+    for (const node of data) {
+      const group = String(node?.exclusiveGroup || "").trim();
+      if (!group) continue;
+      if (!isResearchedProgress(progress.get(String(node.id || "")))) continue;
+      if (!chosenByGroup.has(group)) chosenByGroup.set(group, String(node.id || ""));
+    }
+    for (const node of data) {
+      const id = String(node.id || "");
+      if (!id || isResearchedProgress(progress.get(id))) continue;
+      const group = String(node?.exclusiveGroup || "").trim();
+      if (!group) continue;
+      const chosenId = chosenByGroup.get(group);
+      if (chosenId && chosenId !== id) progress.set(id, "blocked");
+      else if (String(progress.get(id) || "") === "blocked") progress.set(id, "unresearched");
+    }
+  };
+  const ensureResearchProgress = (tabRaw) => {
+    const tab = normalizeResearchTab(tabRaw);
+    const existing = RESEARCH_PROGRESS_BY_TAB.get(tab);
+    if (existing) return existing;
+    const data = getResearchData(tab);
+    const progress = new Map();
+    for (const node of data) {
+      const id = String(node.id || "");
+      if (!id) continue;
+      const seedState = String(node.state || "").toLowerCase();
+      if (seedState === "unlocked" || seedState === "active" || seedState === "researched") progress.set(id, "researched");
+      else progress.set(id, "unresearched");
+    }
+    applyExclusiveLocks(data, progress);
+    RESEARCH_PROGRESS_BY_TAB.set(tab, progress);
+    return progress;
+  };
+  const hasAllRequiredParents = (node, progress) => {
+    const req = Array.isArray(node?.parents) ? node.parents : [];
+    if (!req.length) return true;
+    return req.every((pid) => isResearchedProgress(progress.get(String(pid || ""))));
+  };
+  const hasAnyRequiredParents = (node, progress) => {
+    const req = Array.isArray(node?.parentsAny) ? node.parentsAny : [];
+    if (!req.length) return true;
+    return req.some((pid) => isResearchedProgress(progress.get(String(pid || ""))));
+  };
+  const getNodeViewState = (node, data, progress) => {
+    const id = String(node?.id || "");
+    if (!id) return "locked";
+    const p = String(progress.get(id) || "unresearched");
+    if (p === "researched") return "researched";
+    if (p === "blocked") return "blocked";
+    if (!hasAllRequiredParents(node, progress) || !hasAnyRequiredParents(node, progress)) return "locked";
+    return "available";
+  };
+  const getResearchNodeById = (tabRaw, idRaw) => {
+    const data = getResearchData(tabRaw);
+    const id = String(idRaw || "");
+    return data.find((n) => String(n.id || "") === id) || null;
+  };
+  const getResearchNodeView = (tabRaw, idRaw) => {
+    const data = getResearchData(tabRaw);
+    const progress = ensureResearchProgress(tabRaw);
+    applyExclusiveLocks(data, progress);
+    const node = getResearchNodeById(tabRaw, idRaw);
+    if (!node) return { node: null, state: "locked", data, progress };
+    return { node, state: getNodeViewState(node, data, progress), data, progress };
+  };
+  const applyResearchTreeTransform = () => {
+    if (!researchCanvas) return;
+    researchCanvas.style.transform = `translate(${Math.round(researchState.x)}px, ${Math.round(researchState.y)}px) scale(${researchState.scale.toFixed(3)})`;
+  };
+  const drawResearchTreeLinks = () => {
+    if (!researchCanvas || !researchLinks) return;
+    const nodes = Array.from(researchCanvas.querySelectorAll(".researchIconNode[data-node-id]"));
+    if (!nodes.length) {
+      researchLinks.innerHTML = "";
+      return;
+    }
+    const q = (n) => Math.round(Number(n) || 0);
+    const nodeMeta = new Map();
+    for (const node of nodes) {
+      const id = String(node.dataset?.nodeId || "").trim();
+      if (!id) continue;
+      const off = getOffsetWithin(node, researchCanvas);
+      const w = node.offsetWidth || RESEARCH_NODE_W;
+      const h = node.offsetHeight || RESEARCH_NODE_H;
+      nodeMeta.set(id, {
+        state: String(node.dataset?.nodeState || "locked"),
+        box: {
+          left: off.x,
+          right: off.x + w,
+          cy: off.y + (h * 0.5)
+        }
+      });
+    }
+    const paths = [];
+    for (const child of nodes) {
+      const childId = String(child.dataset?.nodeId || "").trim();
+      if (!childId) continue;
+      const childMeta = nodeMeta.get(childId);
+      if (!childMeta) continue;
+      const parentIds = String(child.dataset?.parentIds || "")
+        .split(",")
+        .map((s) => String(s || "").trim())
+        .filter(Boolean);
+      if (!parentIds.length) continue;
+      const parentEntries = parentIds
+        .map((pid) => ({ pid, meta: nodeMeta.get(pid) }))
+        .filter((entry) => !!entry.meta)
+        .map((entry) => ({ pid: entry.pid, meta: entry.meta }));
+      if (!parentEntries.length) continue;
+      parentEntries.sort((a, b) => a.meta.box.cy - b.meta.box.cy);
+      const childX = childMeta.box.left + 2;
+      const childY = childMeta.box.cy;
+      const overrideTable = RESEARCH_LINK_OVERRIDES[researchState.tab] || null;
+      const parentRightMax = Math.max(...parentEntries.map((entry) => entry.meta.box.right));
+      const laneCount = parentEntries.length;
+      const laneGap = laneCount > 3 ? 10 : 12;
+      const laneStartY = childY - (((laneCount - 1) * laneGap) * 0.5);
+      const portStepX = 5;
+      const firstPortX = childX - 10;
+      const minPortX = firstPortX - ((laneCount - 1) * portStepX);
+      const guardX = Math.max(parentRightMax + 12, minPortX - 18);
+      for (let i = 0; i < parentEntries.length; i += 1) {
+        const entry = parentEntries[i];
+        const parentState = String(entry.meta.state || "locked");
+        const sx = entry.meta.box.right - 2;
+        const sy = entry.meta.box.cy;
+        const edgeClass = (childMeta.state === "blocked" || parentState === "blocked")
+          ? " isDisabled"
+          : (isResearchedProgress(parentState) && (childMeta.state === "available" || childMeta.state === "researched"))
+            ? " isReady"
+            : " isPending";
+        const overridePoints = overrideTable && Array.isArray(overrideTable[`${entry.pid}->${childId}`])
+          ? overrideTable[`${entry.pid}->${childId}`]
+          : null;
+        if (overridePoints && overridePoints.length) {
+          let d = `M ${q(sx)} ${q(sy)}`;
+          let cx = sx;
+          let cy = sy;
+          for (const rawPoint of overridePoints) {
+            const px = Number(rawPoint?.x);
+            const py = Number(rawPoint?.y);
+            if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+            if (Math.abs(px - cx) > 0.5) {
+              d += ` H ${q(px)}`;
+              cx = px;
+            }
+            if (Math.abs(py - cy) > 0.5) {
+              d += ` V ${q(py)}`;
+              cy = py;
+            }
+          }
+          if (Math.abs(childY - cy) > 0.5) {
+            d += ` V ${q(childY)}`;
+            cy = childY;
+          }
+          if (Math.abs(childX - cx) > 0.5) d += ` H ${q(childX)}`;
+          paths.push(`<path class="researchLinkEdge${edgeClass}" d="${d}" />`);
+          continue;
+        }
+        const laneY = laneStartY + (i * laneGap);
+        const portX = firstPortX - (i * portStepX);
+        const maxElbowX = portX - 8;
+        let elbowX = sx + 16 + (i * 4);
+        if (elbowX > maxElbowX) elbowX = maxElbowX;
+        if (elbowX < sx + 8) elbowX = sx + 8;
+        if (elbowX < guardX) elbowX = Math.min(maxElbowX, guardX + (i * 2));
+        const d = `M ${q(sx)} ${q(sy)} H ${q(elbowX)} V ${q(laneY)} H ${q(portX)} V ${q(childY)} H ${q(childX)}`;
+        paths.push(`<path class="researchLinkEdge${edgeClass}" d="${d}" />`);
+      }
+    }
+    researchLinks.innerHTML = paths.join("");
+  };
+  const updateResearchInfoCard = (node, viewState = "locked") => {
+    if (!node) return;
+    const v = String(viewState || "locked");
+    if (researchInfoIcon) researchInfoIcon.src = String(node.icon || "/UI_Icons/stability.png");
+    if (researchInfoName) researchInfoName.textContent = String(node.name || "Research");
+    if (researchInfoDesc) researchInfoDesc.textContent = String(node.desc || "");
+    if (researchInfoPrice) researchInfoPrice.textContent = `Price: ${fmtPrice(node.price)}`;
+    if (researchInfoTime) researchInfoTime.textContent = `Time: ${String(node.time || "0s")}`;
+    if (researchInfoStatus) {
+      let status = "Requirements Missing";
+      if (v === "researched") status = "Researched";
+      else if (v === "available") status = "Ready to Research";
+      else if (v === "blocked") status = "Path Locked";
+      researchInfoStatus.textContent = status;
+    }
+    if (researchActionBtn) {
+      let label = "Requires Prerequisites";
+      let disabled = true;
+      if (v === "available") {
+        label = "Research";
+        disabled = false;
+      } else if (v === "researched") {
+        label = "Completed";
+      } else if (v === "blocked") {
+        label = "Path Locked";
+      }
+      researchActionBtn.textContent = label;
+      researchActionBtn.disabled = disabled;
+      researchActionBtn.dataset.nodeId = String(node.id || "");
+    }
+  };
+  const centerResearchTree = () => {
+    if (!researchViewport) return;
+    const nodes = RESEARCH_TREES[researchState.tab] || [];
+    if (!nodes.length) return;
+    const vw = researchViewport.clientWidth;
+    const vh = researchViewport.clientHeight;
+    if (!(vw > 0 && vh > 0)) {
+      requestAnimationFrame(() => {
+        if (isResearchOpen()) centerResearchTree();
+      });
+      return;
+    }
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const n of nodes) {
+      const x = Number(n.x) || 0;
+      const y = Number(n.y) || 0;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x + RESEARCH_NODE_W > maxX) maxX = x + RESEARCH_NODE_W;
+      if (y + RESEARCH_NODE_H > maxY) maxY = y + RESEARCH_NODE_H;
+    }
+    researchState.scale = 0.72;
+    researchState.x = ((vw - (maxX - minX)) * 0.5) - minX;
+    researchState.y = ((vh - (maxY - minY)) * 0.5) - minY;
+    applyResearchTreeTransform();
+  };
+  const zoomResearchTreeAt = (nextScaleRaw, px, py) => {
+    if (!researchViewport) return;
+    const nextScale = clampResearchScale(nextScaleRaw);
+    if (Math.abs(nextScale - researchState.scale) < 1e-4) return;
+    const x = Number(px) || 0;
+    const y = Number(py) || 0;
+    const worldX = (x - researchState.x) / researchState.scale;
+    const worldY = (y - researchState.y) / researchState.scale;
+    researchState.scale = nextScale;
+    researchState.x = x - (worldX * researchState.scale);
+    researchState.y = y - (worldY * researchState.scale);
+    applyResearchTreeTransform();
+  };
+  const renderResearchTree = (tabRaw, recenter = false) => {
+    const tab = normalizeResearchTab(tabRaw);
+    researchState.tab = tab;
+    if (!researchNodesLayer) return;
+    const data = getResearchData(tab);
+    if (!data.length) return;
+    const progress = ensureResearchProgress(tab);
+    applyExclusiveLocks(data, progress);
+    if (!data.some((n) => String(n.id) === String(researchState.selectedId || ""))) {
+      const preferred = data.find((n) => getNodeViewState(n, data, progress) === "available")
+        || data.find((n) => getNodeViewState(n, data, progress) === "researched")
+        || data[0];
+      researchState.selectedId = String(preferred?.id || "");
+    }
+    researchNodesLayer.innerHTML = "";
+    for (const node of data) {
+      const card = document.createElement("button");
+      card.type = "button";
+      const nodeState = getNodeViewState(node, data, progress);
+      const stateClass = ` is${nodeState.charAt(0).toUpperCase()}${nodeState.slice(1)}`;
+      const selectedClass = String(node.id || "") === String(researchState.selectedId || "") ? " isSelected" : "";
+      card.className = `researchIconNode${stateClass}${selectedClass}`;
+      card.dataset.nodeId = String(node.id || "");
+      card.dataset.nodeState = nodeState;
+      const parentIds = getCombinedParentIds(node);
+      if (parentIds.length) card.dataset.parentIds = parentIds.join(",");
+      else delete card.dataset.parentIds;
+      card.style.left = `${Math.round(Number(node.x) || 0)}px`;
+      card.style.top = `${Math.round(Number(node.y) || 0)}px`;
+      const icon = String(node.icon || "/UI_Icons/stability.png");
+      card.title = String(node.name || "Research");
+      const iconEl = document.createElement("img");
+      iconEl.src = icon;
+      iconEl.alt = "";
+      iconEl.setAttribute("aria-hidden", "true");
+      const nameEl = document.createElement("span");
+      nameEl.className = "researchNodeName";
+      nameEl.textContent = String(node.name || "Research");
+      card.appendChild(iconEl);
+      card.appendChild(nameEl);
+      researchNodesLayer.appendChild(card);
+    }
+    const infoNode = data.find((n) => String(n.id || "") === String(researchState.selectedId || "")) || data[0];
+    if (infoNode) updateResearchInfoCard(infoNode, getNodeViewState(infoNode, data, progress));
+    drawResearchTreeLinks();
+    if (recenter || !researchState.initialized) {
+      centerResearchTree();
+      researchState.initialized = true;
+    } else {
+      applyResearchTreeTransform();
+    }
+  };
+  const setResearchTab = (tabRaw) => {
+    const active = normalizeResearchTab(tabRaw);
+    for (const btn of researchTabButtons) {
+      if (!btn) continue;
+      const isActive = normalizeResearchTab(btn.dataset?.researchTab) === active;
+      btn.classList.toggle("isTabSelected", isActive);
+      btn.setAttribute("aria-selected", isActive ? "true" : "false");
+    }
+    requestAnimationFrame(() => renderResearchTree(active));
+  };
+
+  const isResearchOpen = () => !!(researchModal && !researchModal.hidden);
+  const setResearchOpen = (open) => {
+    if (!researchModal) return;
+    const shown = !!open;
+    researchModal.hidden = !shown;
+    if (shown) {
+      hud.hideContextMenu();
+      btnResearchPanel?.classList.add("isOpen");
+      setResearchTab("military");
+      requestAnimationFrame(() => renderResearchTree(researchState.tab, true));
+    } else {
+      btnResearchPanel?.classList.remove("isOpen");
+    }
+  };
+
+  if (researchViewport) {
+    researchViewport.addEventListener("pointerdown", (e) => {
+      const clickNode = e.target && typeof e.target.closest === "function"
+        ? e.target.closest(".researchIconNode")
+        : null;
+      if (clickNode) return;
+      if ((e.button | 0) !== 0) return;
+      researchState.dragging = true;
+      researchState.dragX = e.clientX;
+      researchState.dragY = e.clientY;
+      researchViewport.classList.add("isPanning");
+      try { researchViewport.setPointerCapture(e.pointerId); } catch {}
+      e.preventDefault();
+    });
+    researchViewport.addEventListener("pointermove", (e) => {
+      if (!researchState.dragging) return;
+      const dx = e.clientX - researchState.dragX;
+      const dy = e.clientY - researchState.dragY;
+      researchState.dragX = e.clientX;
+      researchState.dragY = e.clientY;
+      researchState.x += dx;
+      researchState.y += dy;
+      applyResearchTreeTransform();
+    });
+    const endResearchDrag = () => {
+      if (!researchState.dragging) return;
+      researchState.dragging = false;
+      researchViewport.classList.remove("isPanning");
+    };
+    researchViewport.addEventListener("pointerup", endResearchDrag);
+    researchViewport.addEventListener("pointercancel", endResearchDrag);
+    researchViewport.addEventListener("lostpointercapture", endResearchDrag);
+    researchViewport.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const rect = researchViewport.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const factor = e.deltaY < 0 ? 1.08 : 0.925;
+      zoomResearchTreeAt(researchState.scale * factor, px, py);
+    }, { passive: false });
+  }
+  if (researchNodesLayer) {
+    researchNodesLayer.addEventListener("click", (e) => {
+      const nodeEl = e.target && typeof e.target.closest === "function"
+        ? e.target.closest(".researchIconNode[data-node-id]")
+        : null;
+      if (!nodeEl) return;
+      const id = String(nodeEl.dataset?.nodeId || "");
+      if (!id) return;
+      researchState.selectedId = id;
+      renderResearchTree(researchState.tab, false);
+    });
+  }
+  if (researchActionBtn) {
+    researchActionBtn.addEventListener("click", () => {
+      const { node, state, data, progress } = getResearchNodeView(researchState.tab, researchState.selectedId);
+      if (!node || state !== "available") return;
+      progress.set(String(node.id || ""), "researched");
+      applyExclusiveLocks(data, progress);
+      hud.setOpMessage(`${String(node.name || "Research")} completed.`);
+      renderResearchTree(researchState.tab, false);
+    });
+  }
+  window.addEventListener("resize", () => {
+    if (isResearchOpen()) requestAnimationFrame(() => renderResearchTree(researchState.tab, true));
+  });
+  for (const btn of researchTabButtons) {
+    if (!btn) continue;
+    btn.addEventListener("click", () => setResearchTab(btn.dataset?.researchTab));
+  }
+  if (btnResearchPanel) btnResearchPanel.addEventListener("click", () => setResearchOpen(true));
+  if (researchClose) researchClose.addEventListener("click", () => setResearchOpen(false));
+  if (researchBackdrop) researchBackdrop.addEventListener("click", () => setResearchOpen(false));
 
   // RMB context menu Expand can either start burst expansion or launch a transport.
   hud.onBurstExpand((cellAction) => {
@@ -6526,9 +9998,16 @@ function boot() {
     hud.setOpMessage(paused ? "Paused." : "Resumed.");
   });
 
+  if (hud.onLeaveGame) {
+    hud.onLeaveGame(() => {
+      leaveCurrentGameToMainMenu();
+    });
+  }
+
   window.addEventListener("resize", () => {
     renderer.resizeToDisplay();
     rebindViewportOnly();
+    syncEventsCardHeightWithBuildCard();
   });
 
   window.addEventListener("keydown", (e) => {
@@ -6540,7 +10019,16 @@ function boot() {
     ));
 
     const settingsOpen = !!(hud.isSettingsOpen && hud.isSettingsOpen());
-    if (!isTextInput && !settingsOpen && !e.repeat && !e.altKey && !e.ctrlKey && !e.metaKey) {
+    const researchOpen = isResearchOpen();
+    if (!isTextInput && !settingsOpen && !researchOpen && !e.repeat && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      const quickLaunchBtnId = QUICK_LAUNCH_HOTKEY_BUTTON_IDS[String(e.key || "").toLowerCase()];
+      if (quickLaunchBtnId) {
+        e.preventDefault();
+        const btn = document.getElementById(quickLaunchBtnId);
+        if (btn) btn.click();
+        return;
+      }
+
       const hotBtnId = BUILD_HOTKEY_BUTTON_IDS[String(e.key || "")];
       if (hotBtnId) {
         e.preventDefault();
@@ -6551,6 +10039,10 @@ function boot() {
     }
 
     if (e.key === "Escape") {
+      if (researchOpen) {
+        setResearchOpen(false);
+        return;
+      }
       if (hud.isSettingsOpen && hud.isSettingsOpen()) {
         if (hud.setSettingsOpen) hud.setSettingsOpen(false);
         return;
@@ -6564,6 +10056,9 @@ function boot() {
       } else if (airborneLaunchMode) {
         clearAirborneLaunchMode();
         hud.setOpMessage("Airborne launch targeting cancelled.");
+      } else if (navalTransportLaunchMode) {
+        clearNavalTransportLaunchMode();
+        hud.setOpMessage("Transport targeting cancelled.");
       } else if (hud.getBuildMode()) {
         hud.clearBuildMode();
         hud.setOpMessage("Build mode cancelled.");
@@ -6578,7 +10073,7 @@ function boot() {
       hud.setEventsVisible(!hud.getEventsVisible());
     }
 
-    if (e.key === "x" || e.key === "X") {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "x" || e.key === "X")) {
       if (isMultiplayerMatchEnabled()) {
         hud.setOpMessage("Experimental toggles are disabled in multiplayer.");
         return;
@@ -6611,6 +10106,7 @@ function boot() {
       selectedShipId = null;
       clearNukeLaunchMode();
       clearAirborneLaunchMode();
+      clearNavalTransportLaunchMode();
       clearSelection();
       input.clear();
       hud.hideContextMenu();
@@ -7808,6 +11304,36 @@ function bindInput() {
       return;
     }
 
+    if (navalTransportLaunchMode) {
+      if (!canPlayerIssueOrders()) return;
+      const idx = ((cell.y | 0) * (world.w | 0) + (cell.x | 0)) | 0;
+      if (!world.land[idx]) {
+        hud.setOpMessage("Transport target must be on land.");
+        refreshAllUI();
+        return;
+      }
+      const owner = world.owner[idx] | 0;
+      let res = { ok: false, reason: "Select neutral or enemy land for transport." };
+      if (owner === OWNER.NONE) {
+        res = world.startNeutral([idx]);
+      } else if (owner > 0 && owner !== OWNER.PLAYER) {
+        res = world.startWarFocus(OWNER.PLAYER, owner, [idx]);
+      }
+      if (isQueuedActionResult(res)) {
+        clearNavalTransportLaunchMode();
+        clearSelection();
+        hud.setOpMessage("Transport launch queued.");
+      } else if (res.ok) {
+        clearNavalTransportLaunchMode();
+        clearSelection();
+        hud.setOpMessage("Transport launched.");
+      } else {
+        hud.setOpMessage(res.reason || "Unable to launch transport.");
+      }
+      refreshAllUI();
+      return;
+    }
+
     const buildType = hud.getBuildMode();
     if (buildType) {
       if (!canPlayerIssueOrders()) return;
@@ -7841,6 +11367,9 @@ function bindInput() {
     } else if (airborneLaunchMode) {
       clearAirborneLaunchMode();
       hud.setOpMessage("Airborne launch targeting cancelled.");
+    } else if (navalTransportLaunchMode) {
+      clearNavalTransportLaunchMode();
+      hud.setOpMessage("Transport targeting cancelled.");
     }
     if (!canPlayerIssueOrders()) {
       clearSelection();
@@ -8913,13 +12442,44 @@ function viewNationSmooth(nationId) {
 }
 
 function refreshAllUI() {
+  syncEventsCardHeightWithBuildCard();
   refreshNukePreview();
+  updateQuickLaunchButtons();
   hud.setStats(getPlayer());
   hud.setSelectedStructure(getSelectedStructure());
   refreshOpUI();
   refreshDiplomacyUI();
   refreshIntelUI();
   syncSpawnProgressUI();
+}
+
+function syncEventsCardHeightWithBuildCard() {
+  const eventsCard = document.getElementById("events");
+  if (eventsCard) {
+    if (eventsCard.style.height) eventsCard.style.height = "";
+    if (eventsCard.style.minHeight) eventsCard.style.minHeight = "";
+    if (eventsCard.style.maxHeight) eventsCard.style.maxHeight = "";
+  }
+
+  const buildCard = document.getElementById("structureBar");
+  const quickLaunchBar = document.getElementById("quickLaunchBar");
+  const hudRoot = document.getElementById("hud");
+  if (!buildCard || !quickLaunchBar || !hudRoot) return;
+
+  const buildRect = buildCard.getBoundingClientRect();
+  const hudRect = hudRoot.getBoundingClientRect();
+  const width = Math.max(1, Math.round(Number(buildRect.width) || 0));
+  if (!width) return;
+
+  const left = Math.round(buildRect.left - hudRect.left);
+  const bottom = Math.max(0, Math.round(hudRect.bottom - buildRect.top));
+
+  quickLaunchBar.style.left = `${left}px`;
+  quickLaunchBar.style.right = "auto";
+  quickLaunchBar.style.transform = "none";
+  quickLaunchBar.style.width = `${width}px`;
+  quickLaunchBar.style.maxWidth = `${width}px`;
+  quickLaunchBar.style.bottom = `${bottom}px`;
 }
 
 function getPlayerAnchorCell() {

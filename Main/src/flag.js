@@ -20,6 +20,7 @@ export const FLAG_LAYOUT_OPTIONS = Object.freeze([
 
 export const FLAG_SHAPE_OPTIONS = Object.freeze([
   "none",
+  "line",
   "rect",
   "circle",
   "diamond",
@@ -33,7 +34,9 @@ export const FLAG_SHAPE_OPTIONS = Object.freeze([
   "hexagon"
 ]);
 
-export const FLAG_MAX_SHAPES = 8;
+export const FLAG_MAX_SHAPES = 24;
+export const FLAG_MAX_STROKES = 240;
+export const FLAG_MAX_STROKE_POINTS = 420;
 
 export function createDefaultFlag() {
   return sanitizeFlag({
@@ -41,6 +44,7 @@ export function createDefaultFlag() {
     colors: ["#203a8f", "#f2f2f2", "#d42c2c"],
     stripeCount: 3,
     border: { enabled: true, color: "#121212", width: 1 },
+    strokes: [],
     shapes: [
       { enabled: true, type: "star", color: "#f2d85c", x: 0.5, y: 0.5, w: 0.28, h: 0.28, rotation: 0, opacity: 1 }
     ]
@@ -55,6 +59,7 @@ export function createPresetFlag(key = "default") {
       colors: ["#1f8b4c", "#f5f5f5", "#d73a3a"],
       stripeCount: 3,
       border: { enabled: true, color: "#101010", width: 1 },
+      strokes: [],
       shapes: []
     });
   }
@@ -64,6 +69,7 @@ export function createPresetFlag(key = "default") {
       colors: ["#17408f", "#f2d24f", "#f5f5f5"],
       stripeCount: 3,
       border: { enabled: true, color: "#101010", width: 1 },
+      strokes: [],
       shapes: []
     });
   }
@@ -73,6 +79,7 @@ export function createPresetFlag(key = "default") {
       colors: ["#b52323", "#203a8f", "#f5f5f5"],
       stripeCount: 3,
       border: { enabled: true, color: "#101010", width: 1 },
+      strokes: [],
       shapes: [
         { enabled: true, type: "star", color: "#ffffff", x: 0.72, y: 0.52, w: 0.24, h: 0.24, rotation: 0, opacity: 1 },
         { enabled: true, type: "star", color: "#ffffff", x: 0.20, y: 0.20, w: 0.10, h: 0.10, rotation: 0, opacity: 1 }
@@ -85,6 +92,7 @@ export function createPresetFlag(key = "default") {
       colors: ["#203a8f", "#f2f2f2", "#c62b2b"],
       stripeCount: 4,
       border: { enabled: true, color: "#101010", width: 1 },
+      strokes: [],
       shapes: [{ enabled: true, type: "ring", color: "#f2d24f", x: 0.5, y: 0.5, w: 0.34, h: 0.34, rotation: 0, opacity: 1 }]
     });
   }
@@ -94,6 +102,7 @@ export function createPresetFlag(key = "default") {
       colors: ["#17408f", "#f5f5f5", "#c62b2b"],
       stripeCount: 3,
       border: { enabled: true, color: "#101010", width: 1 },
+      strokes: [],
       shapes: []
     });
   }
@@ -135,6 +144,7 @@ export function createRandomFlag() {
     colors: [colorA, colorB, colorC],
     stripeCount: ((Math.random() * 6) | 0) + 2,
     border: { enabled: true, color: randColor(), width: ((Math.random() * 3) | 0) + 1 },
+    strokes: [],
     shapes
   });
 }
@@ -185,6 +195,7 @@ export function sanitizeFlag(next) {
     colors: ["#203a8f", "#f2f2f2", "#d42c2c"],
     stripeCount: 3,
     border: { enabled: true, color: "#121212", width: 1 },
+    strokes: [],
     shapes: []
   };
   const src = (next && typeof next === "object") ? next : {};
@@ -225,11 +236,37 @@ export function sanitizeFlag(next) {
     });
   }
 
+  const rawStrokes = Array.isArray(src.strokes) ? src.strokes : def.strokes;
+  const strokes = [];
+  const maxStrokes = FLAG_MAX_STROKES;
+  for (let i = 0; i < rawStrokes.length && i < maxStrokes; i++) {
+    const rs = (rawStrokes[i] && typeof rawStrokes[i] === "object") ? rawStrokes[i] : {};
+    const pointsRaw = Array.isArray(rs.points) ? rs.points : [];
+    const points = [];
+    for (let j = 0; j < pointsRaw.length && j < FLAG_MAX_STROKE_POINTS; j++) {
+      const p = (pointsRaw[j] && typeof pointsRaw[j] === "object") ? pointsRaw[j] : {};
+      points.push({
+        x: clamp01(p.x),
+        y: clamp01(p.y)
+      });
+    }
+    if (points.length <= 0) continue;
+    const tool = String(rs.tool || "brush").toLowerCase() === "eraser" ? "eraser" : "brush";
+    strokes.push({
+      tool,
+      color: sanitizeColor(rs.color, "#ffffff"),
+      size: clampRange(rs.size == null ? 0.032 : rs.size, 0.003, 0.24),
+      opacity: clampRange(rs.opacity == null ? 1 : rs.opacity, 0.05, 1),
+      points
+    });
+  }
+
   return {
     layout,
     colors,
     stripeCount: clampInt(src.stripeCount, 2, 7),
     border,
+    strokes,
     shapes
   };
 }
@@ -274,6 +311,14 @@ function drawShape(ctx, shape, x, y, w, h, color, rotationDeg, opacity = 1) {
 
   if (t === "rect") {
     ctx.fillRect(-hw, -hh, w, h);
+  } else if (t === "line") {
+    ctx.beginPath();
+    ctx.lineWidth = Math.max(2, hh * 2);
+    ctx.lineCap = "round";
+    ctx.moveTo(-hw, 0);
+    ctx.lineTo(hw, 0);
+    ctx.strokeStyle = color;
+    ctx.stroke();
   } else if (t === "circle") {
     ctx.beginPath();
     ctx.ellipse(0, 0, hw, hh, 0, 0, Math.PI * 2);
@@ -330,6 +375,73 @@ function drawShape(ctx, shape, x, y, w, h, color, rotationDeg, opacity = 1) {
   }
 
   ctx.restore();
+}
+
+function drawStrokes(ctx, w, h, flag) {
+  const strokes = Array.isArray(flag?.strokes) ? flag.strokes : [];
+  if (strokes.length <= 0) return;
+
+  // Draw paint strokes on an isolated layer so eraser only affects paint content.
+  const layer = (typeof document !== "undefined" && typeof document.createElement === "function")
+    ? document.createElement("canvas")
+    : null;
+  if (!layer || typeof layer.getContext !== "function") return;
+  layer.width = w;
+  layer.height = h;
+  const lctx = layer.getContext("2d", { alpha: true });
+  if (!lctx) return;
+  lctx.clearRect(0, 0, w, h);
+  lctx.lineJoin = "round";
+  lctx.lineCap = "round";
+
+  for (let i = 0; i < strokes.length; i++) {
+    const s = strokes[i];
+    if (!s || !Array.isArray(s.points) || s.points.length <= 0) continue;
+    const isEraser = String(s.tool || "brush") === "eraser";
+    const strokeWidthPx = Math.max(1, clampRange(s.size, 0.003, 0.24) * Math.min(w, h));
+    lctx.save();
+    lctx.globalCompositeOperation = isEraser ? "destination-out" : "source-over";
+    lctx.globalAlpha = clampRange(s.opacity, 0.05, 1);
+    lctx.strokeStyle = isEraser ? "#000000" : sanitizeColor(s.color, "#ffffff");
+    lctx.lineWidth = strokeWidthPx;
+    const points = s.points;
+    const p0 = points[0];
+    const x0 = clamp01(p0?.x) * w;
+    const y0 = clamp01(p0?.y) * h;
+    if (points.length === 1) {
+      lctx.beginPath();
+      lctx.arc(x0, y0, strokeWidthPx * 0.5, 0, Math.PI * 2);
+      lctx.fillStyle = isEraser ? "#000000" : sanitizeColor(s.color, "#ffffff");
+      lctx.fill();
+    } else if (points.length === 2) {
+      lctx.beginPath();
+      lctx.moveTo(x0, y0);
+      const p1 = points[1];
+      lctx.lineTo(clamp01(p1?.x) * w, clamp01(p1?.y) * h);
+      lctx.stroke();
+    } else {
+      // Quadratic midpoint smoothing for fluid brush lines.
+      lctx.beginPath();
+      lctx.moveTo(x0, y0);
+      for (let j = 1; j < points.length - 1; j++) {
+        const p = points[j];
+        const pn = points[j + 1];
+        const px = clamp01(p?.x) * w;
+        const py = clamp01(p?.y) * h;
+        const nx = clamp01(pn?.x) * w;
+        const ny = clamp01(pn?.y) * h;
+        const mx = (px + nx) * 0.5;
+        const my = (py + ny) * 0.5;
+        lctx.quadraticCurveTo(px, py, mx, my);
+      }
+      const pe = points[points.length - 1];
+      lctx.lineTo(clamp01(pe?.x) * w, clamp01(pe?.y) * h);
+      lctx.stroke();
+    }
+    lctx.restore();
+  }
+
+  ctx.drawImage(layer, 0, 0);
 }
 
 function drawLayout(ctx, w, h, flag) {
@@ -482,6 +594,8 @@ export function renderFlagToCanvas(canvas, flagInput, opts = null) {
     const sh = Math.max(2, clampRange(s.h, 0.04, 1) * h);
     drawShape(ctx, s.type, x, y, sw, sh, sanitizeColor(s.color, "#ffffff"), s.rotation, s.opacity);
   }
+
+  drawStrokes(ctx, w, h, flag);
 
   if (flag.border && flag.border.enabled) {
     const bw = clampInt(flag.border.width, 1, 8);

@@ -3291,6 +3291,53 @@ export class Renderer {
 
     ctx.restore();
 
+    const construction = st?.data?.construction;
+    const pendingCount = Math.max(0, Number(construction?.pendingCount) | 0);
+    const buildRemainingS = Math.max(0, Number(construction?.buildRemainingS) || 0);
+    const buildTotalS = Math.max(0, Number(construction?.buildTotalS) || 0);
+    const showProgress = pendingCount > 0 && (buildTotalS > 0.00001 || buildRemainingS > 0.00001);
+    if (showProgress) {
+      const progress01 = (buildTotalS > 0.00001 && buildRemainingS > 0.00001)
+        ? Math.max(0, Math.min(1, 1 - (buildRemainingS / Math.max(0.1, buildTotalS))))
+        : 0;
+      const barW = Math.max(1, box);
+      const barH = Math.max(2, Math.min(6, Math.round(box * 0.44)));
+      const barX = xBox;
+      const barY = Math.round(yBox - barH - 3);
+      const fillW = Math.max(1, Math.round(barW * progress01));
+
+      ctx.fillStyle = "rgba(0,0,0,0.78)";
+      ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+      ctx.fillStyle = "rgba(20,20,20,0.94)";
+      ctx.fillRect(barX, barY, barW, barH);
+      ctx.fillStyle = `rgba(${r},${g},${b},0.98)`;
+      ctx.fillRect(barX, barY, fillW, barH);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(255,255,255,0.78)";
+      ctx.strokeRect(barX + 0.5, barY + 0.5, Math.max(1, barW - 1), Math.max(1, barH - 1));
+
+      if (pendingCount > 1) {
+        const qLabel = `x${Math.min(99, pendingCount)}`;
+        const qFontPx = Math.max(8, Math.min(11, Math.round(box * 0.68)));
+        ctx.font = `700 ${qFontPx}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto`;
+        const qTextW = Math.ceil(ctx.measureText(qLabel).width);
+        const qW = Math.max(12, qTextW + 6);
+        const qH = Math.max(10, qFontPx + 2);
+        const qX = Math.round(sx - qW * 0.5);
+        const qY = Math.round(barY - qH - 2);
+
+        ctx.fillStyle = "rgba(0,0,0,0.84)";
+        ctx.fillRect(qX, qY, qW, qH);
+        ctx.strokeStyle = "rgba(255,255,255,0.70)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(qX + 0.5, qY + 0.5, Math.max(1, qW - 1), Math.max(1, qH - 1));
+        ctx.fillStyle = "rgba(255,255,255,0.98)";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(qLabel, qX + (qW * 0.5), qY + (qH * 0.5) + 0.5);
+      }
+    }
+
     // Stack badge (top-right of the 3x3 boundary)
     const count = (st.count | 0) || 1;
     // Hide stack badges when zoomed out (cleaner at macro view).

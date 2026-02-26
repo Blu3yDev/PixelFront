@@ -1339,51 +1339,85 @@ export function installAI(World) {
   World.prototype._aiFindOwnedEmptyWithPref = function(ownerId, cx, cy, radius, pref) {
       const A = ownerId | 0;
       const r = Math.max(4, radius | 0);
-      const tries = 260;
+      const prefMode = String(pref || "any");
+      const w = this.w | 0;
+      const h = this.h | 0;
+      const twoPi = Math.PI * 2;
 
-      for (let t = 0; t < tries; t++) {
-        const x = clampInt((cx + ((this._rng() * 2 - 1) * r) | 0), 1, this.w - 2);
-        const y = clampInt((cy + ((this._rng() * 2 - 1) * r) | 0), 1, this.h - 2);
-        const idx = y * this.w + x;
-        if (!this.land[idx]) continue;
-        if ((this.owner[idx] | 0) !== A) continue;
-        if (!this._canPlaceStructureFootprint(A, x, y)) continue;
+      const acceptAt = (x, y) => {
+        if (x < 1 || y < 1 || x >= w - 1 || y >= h - 1) return null;
+        const idx = y * w + x;
+        if (!this.land[idx]) return null;
+        if ((this.owner[idx] | 0) !== A) return null;
+        if (!this._canPlaceStructureFootprint(A, x, y)) return null;
 
-        const touchesWater = this._touchesWater4(idx);
-        if (pref === "coast" && !touchesWater) continue;
+        if (prefMode === "coast" && !this._touchesWater4(idx)) return null;
 
         const isBorder = this._aiIsBorderOwnedTile(A, idx);
-        if (pref === "interior" && isBorder) continue;
-        if (pref === "border" && !isBorder) continue;
+        if (prefMode === "interior" && isBorder) return null;
+        if (prefMode === "border" && !isBorder) return null;
 
         return { x, y };
-      }
+      };
 
+      // Global owned-tile sampling prevents "square cluster" placement around one center.
+      const ownerTiles = (typeof this._getOwnerTiles === "function") ? this._getOwnerTiles(A) : null;
+      if (ownerTiles && ownerTiles.length > 0) {
+        const len = ownerTiles.length | 0;
+        const sampleCount = clampInt(Math.round(28 + Math.sqrt(len) * 2.8), 28, 180);
+        const stride = Math.max(1, (len / sampleCount) | 0);
+        const jitterR = Math.max(2, Math.min(12, (r * 0.45) | 0));
+        let pos = (this._rng() * len) | 0;
 
-      // Fallback: deterministic scan (makes AI building reliable on tiny/skinny territories)
-      for (let dy = -r; dy <= r; dy++) {
-        const y = cy + dy;
-        if (y < 1 || y >= this.h - 1) continue;
-        for (let dx = -r; dx <= r; dx++) {
-          const x = cx + dx;
-          if (x < 1 || x >= this.w - 1) continue;
-          const idx = y * this.w + x;
-          if (!this.land[idx]) continue;
-          if ((this.owner[idx] | 0) !== A) continue;
-          if (!this._canPlaceStructureFootprint(A, x, y)) continue;
+        for (let i = 0; i < sampleCount; i++) {
+          const idx = ownerTiles[pos] | 0;
+          pos += stride;
+          if (pos >= len) pos -= len;
 
-          const touchesWater = this._touchesWater4(idx);
-          if (pref === "coast" && !touchesWater) continue;
+          const x = idx % w;
+          const y = (idx / w) | 0;
 
-          const isBorder = this._aiIsBorderOwnedTile(A, idx);
-          if (pref === "interior" && isBorder) continue;
-          if (pref === "border" && !isBorder) continue;
+          const exact = acceptAt(x, y);
+          if (exact) return exact;
 
-          return { x, y };
+          const a = this._rng() * twoPi;
+          const rr = Math.sqrt(this._rng()) * jitterR;
+          const xx = clampInt((x + Math.cos(a) * rr) | 0, 1, w - 2);
+          const yy = clampInt((y + Math.sin(a) * rr) | 0, 1, h - 2);
+          const near = acceptAt(xx, yy);
+          if (near) return near;
         }
       }
 
-  return null;
+      // Local scan around preferred center, but circular to avoid axis-aligned square bias.
+      const tries = 220;
+      for (let t = 0; t < tries; t++) {
+        const a = this._rng() * twoPi;
+        const rr = Math.sqrt(this._rng()) * r;
+        const x = clampInt((cx + Math.cos(a) * rr) | 0, 1, w - 2);
+        const y = clampInt((cy + Math.sin(a) * rr) | 0, 1, h - 2);
+        const hit = acceptAt(x, y);
+        if (hit) return hit;
+      }
+
+      // Fallback: deterministic, territory-wide probe without locking into square sweeps.
+      if (ownerTiles && ownerTiles.length > 0) {
+        const len = ownerTiles.length | 0;
+        const checks = clampInt(Math.round(220 + Math.sqrt(len) * 6), 220, 1600);
+        const stride = Math.max(1, (len / checks) | 0);
+        let pos = (this._rng() * len) | 0;
+        for (let i = 0; i < checks; i++) {
+          const idx = ownerTiles[pos] | 0;
+          pos += stride;
+          if (pos >= len) pos -= len;
+          const x = idx % w;
+          const y = (idx / w) | 0;
+          const hit = acceptAt(x, y);
+          if (hit) return hit;
+        }
+      }
+
+      return null;
     }
 
   World.prototype._aiTryBuildStructure = function(id, type, pref) {
@@ -1411,7 +1445,7 @@ export function installAI(World) {
       }
 
       const land = Math.max(0, this.landOwnedCount[A] | 0);
-      const radius = Math.min(34, 8 + ((Math.sqrt(land) / 2) | 0));
+      const radius = clampInt(Math.round(10 + Math.sqrt(land) * 0.70), 10, 96);
 
       let pos = this._aiFindOwnedEmptyWithPref(A, cx, cy, radius, pref);
       if (!pos && pref !== "coast") pos = this._aiFindOwnedEmptyWithPref(A, cx, cy, radius, "any");
@@ -2028,6 +2062,27 @@ export function installAI(World) {
       return false;
     }
 
+  World.prototype._aiTryRunHighTechDoctrine = function(id, persona = null) {
+      const A = id | 0;
+      const ai = this._ai[A];
+      const n = this.nation[A];
+      if (!ai || !n || !n.alive || n.collapsed) return false;
+
+      const atWar = this._anyWar(A);
+      const warCadence = Math.max(0.8, Number(ai.highTechEveryWar) || 2.2);
+      const peaceCadence = Math.max(1.6, Number(ai.highTechEveryPeace) || 4.8);
+      const cadence = atWar ? warCadence : peaceCadence;
+
+      ai.highTechAcc = Math.max(0, Number(ai.highTechAcc) || 0);
+      if (ai.highTechAcc < cadence) return false;
+      ai.highTechAcc = Math.max(0, ai.highTechAcc - cadence);
+
+      const p = persona || ai.persona || AI_PERSONAS[0];
+      if (this._aiRunNuclearDoctrine(A, p)) return true;
+      if (this._aiRunAirbaseDoctrine(A, p)) return true;
+      return false;
+    }
+
   World.prototype._aiTuneStance = function(id) {
       const A = id | 0;
       const ai = this._ai[A];
@@ -2342,8 +2397,7 @@ export function installAI(World) {
       // Active war doctrine: pressure with operations, seek allies, and cut losses when needed.
       if (wars > 0) {
         const now = Number(this.time) || 0;
-        if (this._aiRunNuclearDoctrine(A, p)) return;
-        if (this._aiRunAirbaseDoctrine(A, p)) return;
+        if (this._aiTryRunHighTechDoctrine(A, p)) return;
         const warOffenseDelayUntil = Number(ai.warOffenseDelayUntil) || 0;
         const warOffenseDelayed = warOffenseDelayUntil > this.time;
 
@@ -2509,8 +2563,7 @@ export function installAI(World) {
       }
 
       // Peace doctrine: expand, form blocs, and decide if a war is worth it.
-      if (this._aiRunNuclearDoctrine(A, p)) return;
-      if (this._aiRunAirbaseDoctrine(A, p)) return;
+      if (this._aiTryRunHighTechDoctrine(A, p)) return;
 
       const canBurstExpandNow =
         ((this._burstExpandCooldownUntil[A] || 0) <= this.time) &&
@@ -2597,7 +2650,9 @@ export function installAI(World) {
             const sameIntent = ((ai.warIntentTarget | 0) === (warPick.id | 0));
             if (!sameIntent) {
               ai.warIntentTarget = warPick.id | 0;
-              ai.warIntentUntil = this.time + (endgameMode ? (3.4 + this._rng() * 5.2) : (7 + this._rng() * 10));
+              const intentBase = endgameMode ? (3.4 + this._rng() * 5.2) : (7 + this._rng() * 10);
+              const intentHoldMul = underThreat ? 0.82 : 1.30;
+              ai.warIntentUntil = this.time + intentBase * intentHoldMul;
             }
 
             const intentReady = sameIntent && ((ai.warIntentUntil || 0) <= this.time);
@@ -2692,12 +2747,14 @@ export function installAI(World) {
         ai.buildAcc += elapsed;
         ai.strategyAcc += elapsed;
         ai.tuneAcc += elapsed;
+        ai.highTechAcc += elapsed;
         ai.donateAcc += elapsed;
 
         const atWar = this._anyWar(id);
 
-        if (ai.tuneAcc >= 0.65 && tuneBudget > 0) {
-          ai.tuneAcc -= 0.65;
+        const tuneEvery = atWar ? 0.65 : 0.92;
+        if (ai.tuneAcc >= tuneEvery && tuneBudget > 0) {
+          ai.tuneAcc -= tuneEvery;
           this._aiTuneStance(id);
           tuneBudget--;
         }
@@ -2720,8 +2777,10 @@ export function installAI(World) {
           }
         }
 
-        if (ai.strategyAcc >= ai.strategyEvery && strategyBudget > 0) {
-          ai.strategyAcc -= ai.strategyEvery;
+        const strategyEveryBase = Math.max(0.35, Number(ai.strategyEvery) || 1.20);
+        const strategyEvery = atWar ? (strategyEveryBase * 0.86) : (strategyEveryBase * 1.18);
+        if (ai.strategyAcc >= strategyEvery && strategyBudget > 0) {
+          ai.strategyAcc -= strategyEvery;
           this._aiStrategize(id);
           strategyBudget--;
         }

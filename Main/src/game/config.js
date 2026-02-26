@@ -31,6 +31,17 @@ export const BUILD_COST = Object.freeze({
   airbase: 1500000
 });
 
+export const STRUCT_BUILD_TIME_S = Object.freeze({
+  city: 7,
+  factory: 9,
+  barracks: 8,
+  port: 10,
+  defence_post: 5,
+  missile_silo: 14,
+  abm_launcher: 12,
+  airbase: 16
+});
+
 export const STRUCT_COST_MAX = 5000000;
 export const STRUCT_COST_GROWTH = Object.freeze({
   // Legacy exponential growth values (kept for compatibility with older saves/tools).

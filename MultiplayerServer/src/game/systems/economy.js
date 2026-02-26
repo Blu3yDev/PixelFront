@@ -64,12 +64,17 @@ export function installEconomy(World) {
         const st = structures[i];
         if (!st) continue;
         if ((st.owner | 0) !== id) continue;
-        const count = Math.max(1, (st.count | 0) || 1);
+        const count = Math.max(
+          0,
+          (typeof this._structureOperationalCount === "function")
+            ? (this._structureOperationalCount(st) | 0)
+            : Math.max(1, (st.count | 0) || 1)
+        );
         const type = String(st.type || "");
         if (type === "city") cities += count;
         else if (type === "factory") fac += count;
         else if (type === "barracks") barr += count;
-        else if (type === "port") {
+        else if (type === "port" && count > 0) {
           ports += count;
           ownedPorts.push(st);
         } else if (type === "capital") {
@@ -161,15 +166,20 @@ export function installEconomy(World) {
         if (!st) continue;
         const ownerId = st.owner | 0;
         if (!this.nation[ownerId]?.alive) continue;
-        const count = (st.count | 0) || 1;
+        const count = Math.max(
+          0,
+          (typeof this._structureOperationalCount === "function")
+            ? (this._structureOperationalCount(st) | 0)
+            : ((st.count | 0) || 1)
+        );
         const type = String(st.type || "");
         if (type === "city") this._cityCount[ownerId] += count;
         else if (type === "factory") this._factoryCount[ownerId] += count;
         else if (type === "barracks") this._barracksCount[ownerId] += count;
-        else if (type === "port") {
+        else if (type === "port" && count > 0) {
           this._portCount[ownerId] += count;
           this._portsByOwner[ownerId].push(st);
-        } else if (type === "defence_post" && this._defencePostsByOwner && this._defencePostsByOwner[ownerId]) {
+        } else if (type === "defence_post" && count > 0 && this._defencePostsByOwner && this._defencePostsByOwner[ownerId]) {
           this._defencePostsByOwner[ownerId].push(st);
         }
       }

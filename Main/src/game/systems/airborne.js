@@ -62,6 +62,9 @@ export function installAirborne(World) {
 
     const oid = ownerId | 0;
     if ((st.owner | 0) !== oid) return { ok: false, reason: "You do not control this Airbase." };
+    if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(st)) {
+      return { ok: false, reason: "Airbase is still under construction." };
+    }
 
     const nat = this.nation[oid];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
@@ -117,6 +120,9 @@ export function installAirborne(World) {
     const st = this._getAirbaseById(structId | 0);
     if (!st) return { ok: false, reason: "Airbase not found." };
     if ((st.owner | 0) !== oid) return { ok: false, reason: "You do not control this Airbase." };
+    if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(st)) {
+      return { ok: false, reason: "Airbase is still under construction." };
+    }
 
     const nat = this.nation[oid];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
@@ -145,6 +151,9 @@ export function installAirborne(World) {
     const st = this._getAirbaseById(structId | 0);
     if (!st) return { ok: false, reason: "Airbase not found." };
     if ((st.owner | 0) !== oid) return { ok: false, reason: "You do not control this Airbase." };
+    if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(st)) {
+      return { ok: false, reason: "Airbase is still under construction." };
+    }
 
     const nat = this.nation[oid];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
@@ -610,4 +619,3 @@ export function installAirborne(World) {
     }
   };
 }
-

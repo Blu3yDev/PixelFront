@@ -187,8 +187,11 @@ export function installWar(World) {
     }
 
     const over = clamp01(Number(overrun) || 0);
-    const minAtk4 = over >= 0.86 ? 1 : 2;
+    const support = this._attackSupportScore(A, D, idx);
+    const minAtk4 = over >= 0.80 ? 2 : 3;
     if (atk4 < minAtk4) return false;
+    const minSupport = over >= 0.90 ? 0.58 : 0.66;
+    if (support < minSupport) return false;
 
     const minAtkLocalStatic = Math.max(4, Math.ceil(9 - over * 4));
     if (atkLocal < minAtkLocalStatic) return false;
@@ -875,13 +878,16 @@ export function installWar(World) {
             const idx = this._pickOpFrontierTile(op, A);
             if (idx < 0) break;
             const weakness = this._enemyTileWeakness(A, D, idx);
-            const effectiveWeakness = clamp01(Math.max(weakness, overrun * 0.80));
+            const support = this._attackSupportScore(A, D, idx);
+            const baseWeakness = Math.max(weakness, overrun * 0.80);
+            const effectiveWeakness = clamp01(baseWeakness * (0.18 + 0.82 * support));
             const effort = this._captureEffortForWeakness(effectiveWeakness) * Math.max(0.40, 1 - 0.30 * overrun);
             const spend = WAR_OCCUPY_TROOPS_PER_TILE * effort;
             if (poolNow + 1e-6 < spend) break;
             const defInf = Math.max(0, Number(this.nation[D]?.infantry) || 0);
             const collapseBypass = (overrun >= 0.90) && (defInf <= WAR_MIN_INF_TO_ADVANCE * 0.28);
-            if (!collapseBypass && this._defenceBlocksCapture(D, idx, (0.30 * effectiveWeakness) + (0.42 * overrun))) continue;
+            const defenceWeakBonus = ((0.30 * effectiveWeakness) + (0.42 * overrun)) * (0.30 + 0.70 * support);
+            if (!collapseBypass && this._defenceBlocksCapture(D, idx, defenceWeakBonus)) continue;
 
             this._spendAttackPool(op, spend);
             this._setOwner(idx, A);
@@ -1364,12 +1370,41 @@ export function installWar(World) {
     const borderSet = this._borderSet[defender];
     const out = Array.isArray(outArr) ? outArr : [];
     out.length = 0;
-    if (!borderSet || borderSet.size === 0) return out;
+    const borderList = this._borderTilesByOwner?.[defender] || null;
+    const size = borderList ? (borderList.length | 0) : (borderSet ? (borderSet.size | 0) : 0);
+    if (size <= 0) return out;
 
     const want = Math.max(1, maxTake | 0);
-    const size = borderSet.size | 0;
     const cap = Math.min(size, Math.max(want, maxScan | 0));
     if (cap <= 0) return out;
+
+    if (borderList && borderList.length > 0) {
+      let scanned = 0;
+      let cursor = (this._rng() * Math.max(1, borderList.length)) | 0;
+      while (scanned < cap && out.length < want) {
+        const len = borderList.length | 0;
+        if (len <= 0) break;
+        if (cursor >= len) cursor = 0;
+
+        const idx = borderList[cursor] | 0;
+        cursor = (cursor + 1) | 0;
+        scanned++;
+
+        if (!this.land[idx]) {
+          if (borderSet) borderSet.delete(idx);
+          continue;
+        }
+        if ((this.owner[idx] | 0) !== defender) {
+          if (borderSet) borderSet.delete(idx);
+          continue;
+        }
+        if (!this._touchesOwner4(idx, attacker)) continue;
+        out.push(idx);
+      }
+      return out;
+    }
+
+    if (!borderSet || borderSet.size === 0) return out;
     let it = borderSet.values();
     const skip = (this._rng() * size) | 0;
     for (let s = 0; s < skip; s++) {
@@ -1404,6 +1439,81 @@ export function installWar(World) {
     }
 
     return out;
+  };
+
+  // Attack support score (0..1): high when attacker has a broad local base.
+  // Thin salients/snakes deep in enemy territory should score very low.
+  World.prototype._attackSupportScore = function(attacker, defender, idx) {
+    const A = attacker | 0;
+    const D = defender | 0;
+    const i = idx | 0;
+    if (!this.land[i]) return 0;
+
+    const w = this.w | 0;
+    const h = this.h | 0;
+    const x = i % w;
+    const y = (i / w) | 0;
+
+    let atk4 = 0;
+    let def4 = 0;
+    let atk8 = 0;
+    let def8 = 0;
+    let neutral8 = 0;
+    let other8 = 0;
+    let land8 = 0;
+    let atkL = 0;
+    let atkR = 0;
+    let atkU = 0;
+    let atkD = 0;
+
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const xx = x + dx;
+        const yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        const ni = yy * w + xx;
+        if (!this.land[ni]) continue;
+        land8++;
+
+        const o = this.owner[ni] | 0;
+        if (o === A) {
+          atk8++;
+          if (dx === 0 || dy === 0) {
+            atk4++;
+            if (dx < 0) atkL = 1;
+            else if (dx > 0) atkR = 1;
+            else if (dy < 0) atkU = 1;
+            else if (dy > 0) atkD = 1;
+          }
+        } else if (o === D) {
+          def8++;
+          if (dx === 0 || dy === 0) def4++;
+        } else if (o === OWNER.NONE) {
+          neutral8++;
+        } else {
+          other8++;
+        }
+      }
+    }
+
+    let score = 0;
+    if (atk4 >= 2) score += 0.46 + Math.max(0, atk4 - 2) * 0.14;
+    else if (atk4 === 1) score += 0.20;
+    score += Math.min(0.30, atk8 * 0.05);
+    score += Math.max(0, 3 - def4) * 0.04;
+    score -= Math.min(0.26, def8 * 0.03);
+    score -= Math.min(0.12, (neutral8 + other8) * 0.03);
+
+    if (atk4 <= 1 && atk8 <= 2) score *= 0.40;
+    else if (atk4 <= 1) score *= 0.58;
+    if (def4 >= 3 && atk4 <= 1) score *= 0.82;
+    if (land8 >= 6 && def8 >= 6 && atk8 <= 2) score *= 0.72;
+    const corridor = ((atkL && atkR) || (atkU && atkD)) && atk4 === 2;
+    if (corridor && def4 >= 2) score *= 0.38;
+    else if (corridor) score *= 0.52;
+
+    return clamp01(score);
   };
 
   // Encirclement score (0..1): higher when attacker controls most adjacent ground
@@ -1482,14 +1592,14 @@ export function installWar(World) {
     }
 
     let score = 0;
-// Buffed: reward true surround + deny "thin corridor" breakthroughs.
-if (atk4 >= 2) score += (atk4 - 1) * 0.24; // 2->0.24, 3->0.48, 4->0.72
-if (atk4 === 4) score += 0.08;
-if (def4 <= 1) score += 0.22;
-if (open4 === 0) score += 0.18;
-if (open4 <= 1 && atk4 >= 3) score += 0.06;
-if (other4 === 0 && open4 === 0 && atk4 >= 3) score += 0.12;
-score -= def4 * 0.06;
+    // Buffed: reward true surround + deny "thin corridor" breakthroughs.
+    if (atk4 >= 2) score += (atk4 - 1) * 0.24; // 2->0.24, 3->0.48, 4->0.72
+    if (atk4 === 4) score += 0.08;
+    if (def4 <= 1) score += 0.22;
+    if (open4 === 0) score += 0.18;
+    if (open4 <= 1 && atk4 >= 3) score += 0.06;
+    if (other4 === 0 && open4 === 0 && atk4 >= 3) score += 0.12;
+    score -= def4 * 0.06;
 
     return clamp01(score);
   };
@@ -1546,7 +1656,11 @@ score -= def4 * 0.06;
       else if (def4 <= 1 && def8 <= 3 && atk8 >= 3 && neutral8 <= 2 && other8 <= 1) pocket = 0.35;
     }
 
-    return clamp01(Math.max(pocket, encScore * 0.95));
+    const baseWeakness = clamp01(Math.max(pocket, encScore * 0.95));
+    const support = this._attackSupportScore(A, D, i);
+    // Thin/deep salients are easier to repel even with large attack stacks.
+    const thinPenalty = clamp01((0.62 - support) / 0.45);
+    return clamp01(baseWeakness * (1 - 0.80 * thinPenalty));
   };
 
   World.prototype._captureEffortForWeakness = function(weakness) {
@@ -1554,7 +1668,7 @@ score -= def4 * 0.06;
     return 1 - 0.68 * w;
   };
 
-// Capital siege gate:
+  // Capital siege gate:
 
   World.prototype._captureFrontlineTiles = function(attacker, defender, want, options = null) {
     const opts = (options && typeof options === "object") ? options : null;
@@ -1611,10 +1725,13 @@ score -= def4 * 0.06;
 
         let weakness = bestWeakness;
         if (!(weakness >= 0)) weakness = this._enemyTileWeakness(attacker, defender, idx);
-        const effectiveWeakness = clamp01(Math.max(weakness, overrun * (annexMode ? 0.84 : 0.76)));
+        const support = this._attackSupportScore(attacker, defender, idx);
+        const baseWeakness = Math.max(weakness, overrun * (annexMode ? 0.84 : 0.76));
+        const effectiveWeakness = clamp01(baseWeakness * (0.18 + 0.82 * support));
         const defInf = Math.max(0, Number(this.nation?.[defender]?.infantry) || 0);
         const collapseBypass = (overrun >= 0.90) && (defInf <= WAR_MIN_INF_TO_ADVANCE * 0.28);
-        const defenceWeakBonus = (0.30 * effectiveWeakness) + ((annexMode ? 0.50 : 0.40) * overrun);
+        const defenceWeakBonus =
+          ((0.30 * effectiveWeakness) + ((annexMode ? 0.50 : 0.40) * overrun)) * (0.30 + 0.70 * support);
         if (!collapseBypass && this._defenceBlocksCapture(defender, idx, defenceWeakBonus)) continue;
 
         if (typeof this._markTilePressureAround === "function") {
@@ -1876,7 +1993,10 @@ score -= def4 * 0.06;
       const dx = (st.x | 0) - x;
       const dy = (st.y | 0) - y;
       if ((dx * dx + dy * dy) <= r2) {
-        stacks += (st.count | 0) || 1;
+        const qty = (typeof this._structureOperationalCount === "function")
+          ? (this._structureOperationalCount(st) | 0)
+          : ((st.count | 0) || 1);
+        stacks += Math.max(0, qty);
       }
     }
 

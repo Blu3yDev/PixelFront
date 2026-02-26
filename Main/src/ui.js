@@ -10,6 +10,7 @@ export function createHUD() {
   // Top HUD
   const gameTimer = must("gameTimer");
   const btnPause = must("btnPause");
+  const btnLeaveGame = must("btnLeaveGame");
   const btnSettings = must("btnSettings");
   const settingsModal = must("settingsModal");
   const settingsBackdrop = must("settingsBackdrop");
@@ -24,6 +25,7 @@ export function createHUD() {
   const setPoliticalMapMode = must("setPoliticalMapMode");
   const setDisableAtmosphere = must("setDisableAtmosphere");
   const setReduceMotion = must("setReduceMotion");
+  const setFullscreen = must("setFullscreen");
   const setMenuMusicVolume = must("setMenuMusicVolume");
   const setWarMusicVolume = must("setWarMusicVolume");
   const setMenuMusicVolumeValue = must("setMenuMusicVolumeValue");
@@ -34,6 +36,80 @@ export function createHUD() {
   const syncLagProgressWrap = maybe("syncLagProgressWrap");
   const syncLagProgressFill = maybe("syncLagProgressFill");
   const syncLagProgressText = maybe("syncLagProgressText");
+  const hudRangeInputs = Array.from(hud.querySelectorAll('input[type="range"]'));
+  const hudControlIcons = Array.from(document.querySelectorAll(".hudControlIcon"));
+  const setPauseButtonA11y = (isPaused) => {
+    const label = isPaused ? "Resume game" : "Pause game";
+    btnPause.setAttribute("aria-label", label);
+    btnPause.title = label;
+  };
+  const trimHudIconWhitespace = (img) => {
+    if (!(img instanceof HTMLImageElement)) return;
+    if (img.dataset.trimmed === "1") return;
+
+    const process = () => {
+      if (img.dataset.trimmed === "1") return;
+      const w = img.naturalWidth | 0;
+      const h = img.naturalHeight | 0;
+      if (w <= 0 || h <= 0) return;
+
+      try {
+        const srcCanvas = document.createElement("canvas");
+        srcCanvas.width = w;
+        srcCanvas.height = h;
+        const srcCtx = srcCanvas.getContext("2d", { willReadFrequently: true });
+        if (!srcCtx) return;
+        srcCtx.drawImage(img, 0, 0, w, h);
+
+        const pixels = srcCtx.getImageData(0, 0, w, h).data;
+        let minX = w;
+        let minY = h;
+        let maxX = -1;
+        let maxY = -1;
+
+        for (let y = 0; y < h; y++) {
+          const rowOffset = y * w * 4;
+          for (let x = 0; x < w; x++) {
+            const alpha = pixels[rowOffset + (x * 4) + 3];
+            if (alpha <= 8) continue;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+
+        if (maxX < minX || maxY < minY) {
+          img.dataset.trimmed = "1";
+          return;
+        }
+
+        const cropW = (maxX - minX + 1) | 0;
+        const cropH = (maxY - minY + 1) | 0;
+        if (cropW <= 0 || cropH <= 0 || (cropW === w && cropH === h)) {
+          img.dataset.trimmed = "1";
+          return;
+        }
+
+        const outCanvas = document.createElement("canvas");
+        outCanvas.width = cropW;
+        outCanvas.height = cropH;
+        const outCtx = outCanvas.getContext("2d");
+        if (!outCtx) return;
+        outCtx.drawImage(srcCanvas, minX, minY, cropW, cropH, 0, 0, cropW, cropH);
+
+        img.dataset.trimmed = "1";
+        img.src = outCanvas.toDataURL("image/png");
+      } catch {
+        img.dataset.trimmed = "1";
+      }
+    };
+
+    if (img.complete && img.naturalWidth > 0) process();
+    else img.addEventListener("load", process, { once: true });
+  };
+  setPauseButtonA11y(false);
+  for (const img of hudControlIcons) trimHudIconWhitespace(img);
 
   // Dock
   const dock = must("events");
@@ -194,6 +270,7 @@ export function createHUD() {
   let cbRegenerate = null;
   let cbBurstExpand = null;
   let cbPauseToggle = null;
+  let cbLeaveGame = null;
   let cbSettingsChange = null;
   let cbSelectedAction = null;
   const SLIDER_SYNC_RELEASE_GRACE_MS = 220;
@@ -236,6 +313,7 @@ export function createHUD() {
     politicalMapMode: false,
     disableAtmosphere: false,
     reduceMotion: false,
+    fullscreen: false,
     menuMusicVolume: 12,
     warMusicVolume: 9
   };
@@ -352,6 +430,9 @@ export function createHUD() {
       reduceMotion: Object.prototype.hasOwnProperty.call(src, "reduceMotion")
         ? Boolean(src.reduceMotion)
         : defaultSettings.reduceMotion,
+      fullscreen: Object.prototype.hasOwnProperty.call(src, "fullscreen")
+        ? Boolean(src.fullscreen)
+        : defaultSettings.fullscreen,
       menuMusicVolume: Object.prototype.hasOwnProperty.call(src, "menuMusicVolume")
         ? clampInt(src.menuMusicVolume, 0, 100)
         : defaultSettings.menuMusicVolume,
@@ -373,6 +454,7 @@ export function createHUD() {
     setPoliticalMapMode.checked = settingsState.politicalMapMode;
     setDisableAtmosphere.checked = settingsState.disableAtmosphere;
     setReduceMotion.checked = settingsState.reduceMotion;
+    setFullscreen.checked = settingsState.fullscreen;
     setMenuMusicVolume.value = String(settingsState.menuMusicVolume);
     setWarMusicVolume.value = String(settingsState.warMusicVolume);
     setMenuMusicVolumeValue.textContent = `${settingsState.menuMusicVolume}%`;
@@ -395,6 +477,7 @@ export function createHUD() {
       politicalMapMode: setPoliticalMapMode.checked,
       disableAtmosphere: setDisableAtmosphere.checked,
       reduceMotion: setReduceMotion.checked,
+      fullscreen: setFullscreen.checked,
       menuMusicVolume: Number(setMenuMusicVolume.value),
       warMusicVolume: Number(setWarMusicVolume.value)
     });
@@ -470,11 +553,25 @@ export function createHUD() {
   bindSliderInteraction(opRatio);
   bindSliderInteraction(opMob);
 
+  const updateSliderVisual = (slider) => {
+    if (!slider || typeof slider.style?.setProperty !== "function") return;
+    const min = Number(slider.min);
+    const max = Number(slider.max);
+    const val = Number(slider.value);
+    const lo = Number.isFinite(min) ? min : 0;
+    const hi = Number.isFinite(max) ? max : 100;
+    const cur = Number.isFinite(val) ? val : lo;
+    const span = Math.max(1, hi - lo);
+    const pct = ((cur - lo) / span) * 100;
+    slider.style.setProperty("--slider-pct", `${Math.max(0, Math.min(100, pct)).toFixed(2)}%`);
+  };
+
   opRatio.addEventListener("input", () => {
     setSliderInteraction(opRatio, true);
     const pct = clampInt(opRatio.value, 1, 100);
     opRatio.value = String(pct);
     opRatioVal.textContent = String(pct);
+    updateSliderVisual(opRatio);
     if (cbAttackRatio) cbAttackRatio(pct / 100);
   });
 
@@ -483,6 +580,7 @@ export function createHUD() {
     const pct = clampInt(opMob.value, 10, 100);
     opMob.value = String(pct);
     opMobVal.textContent = String(pct);
+    updateSliderVisual(opMob);
     cbMobilization && cbMobilization(pct / 100);
   });
 
@@ -495,6 +593,8 @@ export function createHUD() {
     const t = Math.max(0, Math.floor(Number(donTroops.value) || 0));
     donGold.value = String(g);
     donTroops.value = String(t);
+    updateSliderVisual(donGold);
+    updateSliderVisual(donTroops);
     donGoldVal.textContent = String(g);
     donTroopsVal.textContent = String(t);
     donateBtn.disabled = !donateEnabled || (g <= 0 && t <= 0);
@@ -502,6 +602,12 @@ export function createHUD() {
 
   donGold.addEventListener("input", updateDonateVals);
   donTroops.addEventListener("input", updateDonateVals);
+  for (const slider of hudRangeInputs) {
+    if (!slider.classList.contains("slider")) slider.classList.add("slider");
+    slider.addEventListener("input", () => updateSliderVisual(slider));
+    slider.addEventListener("change", () => updateSliderVisual(slider));
+    updateSliderVisual(slider);
+  }
 
   donateBtn.addEventListener("click", () => {
     const g = Math.max(0, Math.floor(Number(donGold.value) || 0));
@@ -585,6 +691,9 @@ export function createHUD() {
     if (!pauseEnabled) return;
     if (cbPauseToggle) cbPauseToggle();
   });
+  btnLeaveGame.addEventListener("click", () => {
+    if (cbLeaveGame) cbLeaveGame();
+  });
   btnSettings.addEventListener("click", () => setSettingsOpen(settingsModal.hidden));
   settingsClose.addEventListener("click", () => setSettingsOpen(false));
   settingsBackdrop.addEventListener("click", () => setSettingsOpen(false));
@@ -599,7 +708,8 @@ export function createHUD() {
     setNukeDestinationOverlay,
     setPoliticalMapMode,
     setDisableAtmosphere,
-    setReduceMotion
+    setReduceMotion,
+    setFullscreen
   ];
   const settingsRangeInputs = [
     setMenuMusicVolume,
@@ -1392,6 +1502,7 @@ export function createHUD() {
       if (!isSliderSyncHeld(opRatio)) {
         if (opRatio.value !== String(pct)) opRatio.value = String(pct);
         opRatioVal.textContent = String(pct);
+        updateSliderVisual(opRatio);
       } else {
         opRatioVal.textContent = String(clampInt(opRatio.value, 1, 100));
       }
@@ -1404,6 +1515,7 @@ export function createHUD() {
       if (!isSliderSyncHeld(opMob)) {
         if (opMob.value !== String(pct)) opMob.value = String(pct);
         opMobVal.textContent = String(pct);
+        updateSliderVisual(opMob);
       } else {
         opMobVal.textContent = String(clampInt(opMob.value, 10, 100));
       }
@@ -1687,19 +1799,20 @@ export function createHUD() {
     onDonate: (cb) => (cbDonate = cb),
 
     onPauseToggle: (cb) => (cbPauseToggle = cb),
+    onLeaveGame: (cb) => (cbLeaveGame = cb),
     setPauseEnabled: (v) => {
       pauseEnabled = Boolean(v);
       btnPause.hidden = !pauseEnabled;
       btnPause.disabled = !pauseEnabled;
       if (!pauseEnabled) {
         paused = false;
-        btnPause.textContent = "Pause";
+        setPauseButtonA11y(false);
         btnPause.classList.remove("isPaused");
       }
     },
     setPaused: (v) => {
       paused = Boolean(v);
-      btnPause.textContent = paused ? "Resume" : "Pause";
+      setPauseButtonA11y(paused);
       btnPause.classList.toggle("isPaused", paused);
     },
     onSettingsChange: (cb) => (cbSettingsChange = cb),

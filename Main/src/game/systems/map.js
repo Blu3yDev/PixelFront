@@ -282,6 +282,36 @@ const earthHeightFromKoppen = (code, latAbs, sea) => {
   return sea + rel;
 };
 
+const earthHeightFromBiomeId = (biomeIdRaw, sea, latAbs) => {
+  const biomeId = clampInt(Number(biomeIdRaw) || 0, 0, 255);
+  switch (biomeId) {
+    case BIOME.BEACH: return sea + 3;
+    case BIOME.GRASS: return sea + 16;
+    case BIOME.FOREST: return sea + 21;
+    case BIOME.JUNGLE: return sea + 18;
+    case BIOME.SAVANNA: return sea + 15;
+    case BIOME.DESERT: return sea + 13;
+    case BIOME.HIGHLAND: return sea + 28;
+    case BIOME.MOUNTAIN: return sea + 44;
+    case BIOME.SNOW: return sea + 23;
+    case BIOME.TAIGA: return sea + 24;
+    case BIOME.TUNDRA: return sea + 19;
+    case BIOME.WETLAND: return sea + 9;
+    case BIOME.STEPPE: return sea + 14;
+    case BIOME.TEMPERATE_RAINFOREST: return sea + 22;
+    case BIOME.MEDITERRANEAN: return sea + 17;
+    case BIOME.ALPINE: return sea + 38;
+    case BIOME.ICE_SHEET: return sea + (latAbs > 0.7 ? 25 : 21);
+    case BIOME.MANGROVE: return sea + 8;
+    case BIOME.BADLANDS: return sea + 18;
+    case BIOME.CORAL_REEF: return sea - 2;
+    case BIOME.OCEAN_DEEP: return sea - 16;
+    case BIOME.OCEAN_SHALLOW:
+    default:
+      return sea - 6;
+  }
+};
+
 export function installMap(World) {
     // ===== worldgen =====
 
@@ -828,6 +858,9 @@ export function installMap(World) {
       const landGrid = earth.landGrid;
       const classIdGrid = earth.classIdGrid;
       const classCodes = Array.isArray(earth.classCodes) ? earth.classCodes : [""];
+      const biomeIdGrid = earth.biomeIdGrid;
+      const hasExplicitBiome = !!(biomeIdGrid && biomeIdGrid.length >= (gw * gh));
+      const isCustomMap = !!earth.isCustomMap;
 
       if (!landGrid || !classIdGrid || (landGrid.length < (gw * gh)) || (classIdGrid.length < (gw * gh))) {
         return;
@@ -880,29 +913,58 @@ export function installMap(World) {
 
           land[idx] = isLand ? 1 : 0;
           if (!isLand) {
-            height[idx] = sea - 2;
-            biome[idx] = BIOME.OCEAN_SHALLOW;
+            if (hasExplicitBiome) {
+              let sampledBiome = BIOME.OCEAN_SHALLOW;
+              let bestSW = -1;
+              if (w00 > bestSW) { bestSW = w00; sampledBiome = biomeIdGrid[i00] | 0; }
+              if (w10 > bestSW) { bestSW = w10; sampledBiome = biomeIdGrid[i10] | 0; }
+              if (w01 > bestSW) { bestSW = w01; sampledBiome = biomeIdGrid[i01] | 0; }
+              if (w11 > bestSW) { bestSW = w11; sampledBiome = biomeIdGrid[i11] | 0; }
+              const normalized = clampInt(sampledBiome, 0, 255);
+              if (normalized === BIOME.OCEAN_DEEP || normalized === BIOME.CORAL_REEF) {
+                biome[idx] = normalized;
+              } else {
+                biome[idx] = BIOME.OCEAN_SHALLOW;
+              }
+              height[idx] = clampInt(earthHeightFromBiomeId(biome[idx], sea, latAbs), 0, sea - 1);
+            } else {
+              height[idx] = sea - 2;
+              biome[idx] = BIOME.OCEAN_SHALLOW;
+            }
             shade[idx] = 148;
             continue;
           }
 
           this.totalLand++;
 
-          let classId = 0;
-          let bestW = -1;
-          if (l00 && w00 > bestW) { bestW = w00; classId = classIdGrid[i00] | 0; }
-          if (l10 && w10 > bestW) { bestW = w10; classId = classIdGrid[i10] | 0; }
-          if (l01 && w01 > bestW) { bestW = w01; classId = classIdGrid[i01] | 0; }
-          if (l11 && w11 > bestW) { bestW = w11; classId = classIdGrid[i11] | 0; }
-          if (bestW < 0) classId = classIdGrid[i00] | 0;
-          const code = classCodes[classId] || "";
-
-          biome[idx] = earthBiomeFromKoppen(code, latAbs);
+          let code = "";
+          if (hasExplicitBiome) {
+            let sampledBiome = BIOME.GRASS;
+            let bestBW = -1;
+            if (l00 && w00 > bestBW) { bestBW = w00; sampledBiome = biomeIdGrid[i00] | 0; }
+            if (l10 && w10 > bestBW) { bestBW = w10; sampledBiome = biomeIdGrid[i10] | 0; }
+            if (l01 && w01 > bestBW) { bestBW = w01; sampledBiome = biomeIdGrid[i01] | 0; }
+            if (l11 && w11 > bestBW) { bestBW = w11; sampledBiome = biomeIdGrid[i11] | 0; }
+            if (bestBW < 0) sampledBiome = biomeIdGrid[i00] | 0;
+            biome[idx] = clampInt(sampledBiome, 0, 255);
+          } else {
+            let classId = 0;
+            let bestW = -1;
+            if (l00 && w00 > bestW) { bestW = w00; classId = classIdGrid[i00] | 0; }
+            if (l10 && w10 > bestW) { bestW = w10; classId = classIdGrid[i10] | 0; }
+            if (l01 && w01 > bestW) { bestW = w01; classId = classIdGrid[i01] | 0; }
+            if (l11 && w11 > bestW) { bestW = w11; classId = classIdGrid[i11] | 0; }
+            if (bestW < 0) classId = classIdGrid[i00] | 0;
+            code = classCodes[classId] || "";
+            biome[idx] = earthBiomeFromKoppen(code, latAbs);
+          }
 
           const u = x / Math.max(1, (w - 1));
           const terrainN = (fbm01WrapX(0xE17A1465, u * 2.1, v * 2.1, 3) - 0.5) * 10;
           const ridgeN = (ridgeFbm01WrapX(0x6D2B79F1, u * 1.25, v * 1.25, 3) - 0.5) * 8;
-          const baseHeight = earthHeightFromKoppen(code, latAbs, sea);
+          const baseHeight = hasExplicitBiome
+            ? earthHeightFromBiomeId(biome[idx], sea, latAbs)
+            : earthHeightFromKoppen(code, latAbs, sea);
           const hCell = clampInt(baseHeight + terrainN + ridgeN, sea + 1, 255);
 
           height[idx] = hCell;
@@ -919,7 +981,7 @@ export function installMap(World) {
         220,
         18000
       );
-      if (earthMinIsland > 1) this._cullTinyIslands(sea, earthMinIsland);
+      if (!isCustomMap && earthMinIsland > 1) this._cullTinyIslands(sea, earthMinIsland);
 
       // Recount land after topology cleanup.
       this.totalLand = 0;
@@ -940,13 +1002,18 @@ export function installMap(World) {
 
           if (!land[idx]) {
             const depth = clamp01((sea - hb) / 120);
-            biome[idx] = depth > 0.34 ? BIOME.OCEAN_DEEP : BIOME.OCEAN_SHALLOW;
+            const prevBiome = biome[idx] | 0;
+            const keepCustomOcean = (
+              hasExplicitBiome &&
+              (prevBiome === BIOME.OCEAN_DEEP || prevBiome === BIOME.OCEAN_SHALLOW || prevBiome === BIOME.CORAL_REEF)
+            );
+            if (!keepCustomOcean) biome[idx] = depth > 0.34 ? BIOME.OCEAN_DEEP : BIOME.OCEAN_SHALLOW;
             const sh = 150 - depth * 40 + (latAbs > 0.82 && depth < 0.25 ? 8 : 0);
             shade[idx] = clampInt(sh, 88, 170);
             continue;
           }
 
-          if (hb <= sea + 4 && biome[idx] !== BIOME.ICE_SHEET && this._touchesWater4(idx)) {
+          if (!isCustomMap && hb <= sea + 4 && biome[idx] !== BIOME.ICE_SHEET && this._touchesWater4(idx)) {
             biome[idx] = BIOME.BEACH;
           }
         }
@@ -3202,6 +3269,8 @@ World.prototype._initNations = function() {
         const expandEvery = expandEveryBase * (0.90 + this._rng() * 0.20);
         const buildEvery = 1.10 + this._rng() * 0.85;
         const strategyEvery = 1.10 + this._rng() * 0.90;
+        const highTechEveryWar = 2.0 + this._rng() * 1.6;
+        const highTechEveryPeace = 4.6 + this._rng() * 3.0;
         const baseWarCooldownUntil = this.time + 8.0 + this._rng() * 10.0;
         const graceWarCooldownUntil = this.time + aiWarGraceS + 10.0 + this._rng() * 12.0;
 
@@ -3212,12 +3281,15 @@ World.prototype._initNations = function() {
           buildAcc: this._rng() * buildEvery,
           strategyAcc: this._rng() * strategyEvery,
           tuneAcc: this._rng() * 0.65,
+          highTechAcc: this._rng() * highTechEveryPeace,
           donateAcc: this._rng() * 2.4,
           neutralCarry: 0,
           expandEveryBase,
           expandEvery,
           buildEvery,
           strategyEvery,
+          highTechEveryWar,
+          highTechEveryPeace,
           warCooldownUntil: Math.max(baseWarCooldownUntil, graceWarCooldownUntil),
           allianceCooldownUntil: this.time + 22.0 + this._rng() * 30.0,
           focusCooldownUntil: this.time + 18.0 + this._rng() * 18.0,

@@ -2593,43 +2593,32 @@ function getPlayer() {
 
 function sanitizeClientSettings(next) {
   const src = (next && typeof next === "object") ? next : {};
+  const readBool = (key, fallback) => {
+    if (!Object.prototype.hasOwnProperty.call(src, key)) return fallback;
+    const raw = src[key];
+    if (typeof raw === "boolean") return raw;
+    if (typeof raw === "number") return raw !== 0;
+    if (typeof raw === "string") {
+      const v = raw.trim().toLowerCase();
+      if (!v) return false;
+      if (v === "true" || v === "1" || v === "yes" || v === "on") return true;
+      if (v === "false" || v === "0" || v === "no" || v === "off") return false;
+    }
+    return Boolean(raw);
+  };
   return {
-    showAIStructures: Object.prototype.hasOwnProperty.call(src, "showAIStructures")
-      ? Boolean(src.showAIStructures)
-      : DEFAULT_CLIENT_SETTINGS.showAIStructures,
-    showAIFlags: Object.prototype.hasOwnProperty.call(src, "showAIFlags")
-      ? Boolean(src.showAIFlags)
-      : DEFAULT_CLIENT_SETTINGS.showAIFlags,
-    showNationLabels: Object.prototype.hasOwnProperty.call(src, "showNationLabels")
-      ? Boolean(src.showNationLabels)
-      : DEFAULT_CLIENT_SETTINGS.showNationLabels,
-    showShips: Object.prototype.hasOwnProperty.call(src, "showShips")
-      ? Boolean(src.showShips)
-      : DEFAULT_CLIENT_SETTINGS.showShips,
-    highlightNation: Object.prototype.hasOwnProperty.call(src, "highlightNation")
-      ? Boolean(src.highlightNation)
-      : DEFAULT_CLIENT_SETTINGS.highlightNation,
-    showHatchOverlay: Object.prototype.hasOwnProperty.call(src, "showHatchOverlay")
-      ? Boolean(src.showHatchOverlay)
-      : DEFAULT_CLIENT_SETTINGS.showHatchOverlay,
-    showHeatmap: Object.prototype.hasOwnProperty.call(src, "showHeatmap")
-      ? Boolean(src.showHeatmap)
-      : DEFAULT_CLIENT_SETTINGS.showHeatmap,
-    nukeDestinationOverlay: Object.prototype.hasOwnProperty.call(src, "nukeDestinationOverlay")
-      ? Boolean(src.nukeDestinationOverlay)
-      : DEFAULT_CLIENT_SETTINGS.nukeDestinationOverlay,
-    politicalMapMode: Object.prototype.hasOwnProperty.call(src, "politicalMapMode")
-      ? Boolean(src.politicalMapMode)
-      : DEFAULT_CLIENT_SETTINGS.politicalMapMode,
-    disableAtmosphere: Object.prototype.hasOwnProperty.call(src, "disableAtmosphere")
-      ? Boolean(src.disableAtmosphere)
-      : DEFAULT_CLIENT_SETTINGS.disableAtmosphere,
-    reduceMotion: Object.prototype.hasOwnProperty.call(src, "reduceMotion")
-      ? Boolean(src.reduceMotion)
-      : DEFAULT_CLIENT_SETTINGS.reduceMotion,
-    fullscreen: Object.prototype.hasOwnProperty.call(src, "fullscreen")
-      ? Boolean(src.fullscreen)
-      : DEFAULT_CLIENT_SETTINGS.fullscreen,
+    showAIStructures: readBool("showAIStructures", DEFAULT_CLIENT_SETTINGS.showAIStructures),
+    showAIFlags: readBool("showAIFlags", DEFAULT_CLIENT_SETTINGS.showAIFlags),
+    showNationLabels: readBool("showNationLabels", DEFAULT_CLIENT_SETTINGS.showNationLabels),
+    showShips: readBool("showShips", DEFAULT_CLIENT_SETTINGS.showShips),
+    highlightNation: readBool("highlightNation", DEFAULT_CLIENT_SETTINGS.highlightNation),
+    showHatchOverlay: readBool("showHatchOverlay", DEFAULT_CLIENT_SETTINGS.showHatchOverlay),
+    showHeatmap: readBool("showHeatmap", DEFAULT_CLIENT_SETTINGS.showHeatmap),
+    nukeDestinationOverlay: readBool("nukeDestinationOverlay", DEFAULT_CLIENT_SETTINGS.nukeDestinationOverlay),
+    politicalMapMode: readBool("politicalMapMode", DEFAULT_CLIENT_SETTINGS.politicalMapMode),
+    disableAtmosphere: readBool("disableAtmosphere", DEFAULT_CLIENT_SETTINGS.disableAtmosphere),
+    reduceMotion: readBool("reduceMotion", DEFAULT_CLIENT_SETTINGS.reduceMotion),
+    fullscreen: readBool("fullscreen", DEFAULT_CLIENT_SETTINGS.fullscreen),
     menuMusicVolume: Object.prototype.hasOwnProperty.call(src, "menuMusicVolume")
       ? clampPct(src.menuMusicVolume, DEFAULT_CLIENT_SETTINGS.menuMusicVolume)
       : DEFAULT_CLIENT_SETTINGS.menuMusicVolume,

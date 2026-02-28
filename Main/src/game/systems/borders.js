@@ -845,10 +845,11 @@ export function installBorders(World) {
     }
 
   World.prototype._isRenderBorderCell = function(idx) {
-      // Visual-only border pixels. We render a border when:
-      //  - owned land touches water / map edge
-      //  - owned land touches neutral land
-      //  - owned land touches another owner, but only one side draws the border to avoid "double-thick clumps"
+      // Visual-only border pixels.
+      // Draw a border when a tile has:
+      // 1) external contact (water/map edge/neutral/selected foreign owner), and
+      // 2) at least one friendly neighbor.
+      // This suppresses noisy "all-border" rendering on isolated single-tile claims.
       if (!this.land[idx]) return false;
 
       const o = this.owner[idx] | 0;
@@ -860,36 +861,66 @@ export function installBorders(World) {
       const y = (idx / w) | 0;
       let ni = 0;
       let no = 0;
+      let hasFriendly = false;
+      let hasExternal = false;
 
-      if (x <= 0) return true;
-      ni = idx - 1;
-      if (!this.land[ni]) return true;
-      no = this.owner[ni] | 0;
-      if (no === OWNER.NONE) return true;
-      if (no > 0 && no !== o && o < no) return true;
+      if (x <= 0) {
+        hasExternal = true;
+      } else {
+        ni = idx - 1;
+        if (!this.land[ni]) {
+          hasExternal = true;
+        } else {
+          no = this.owner[ni] | 0;
+          if (no === o) hasFriendly = true;
+          else if (no === OWNER.NONE) hasExternal = true;
+          else if (no > 0 && no !== o && o < no) hasExternal = true;
+        }
+      }
 
-      if (x + 1 >= w) return true;
-      ni = idx + 1;
-      if (!this.land[ni]) return true;
-      no = this.owner[ni] | 0;
-      if (no === OWNER.NONE) return true;
-      if (no > 0 && no !== o && o < no) return true;
+      if (x + 1 >= w) {
+        hasExternal = true;
+      } else {
+        ni = idx + 1;
+        if (!this.land[ni]) {
+          hasExternal = true;
+        } else {
+          no = this.owner[ni] | 0;
+          if (no === o) hasFriendly = true;
+          else if (no === OWNER.NONE) hasExternal = true;
+          else if (no > 0 && no !== o && o < no) hasExternal = true;
+        }
+      }
 
-      if (y <= 0) return true;
-      ni = idx - w;
-      if (!this.land[ni]) return true;
-      no = this.owner[ni] | 0;
-      if (no === OWNER.NONE) return true;
-      if (no > 0 && no !== o && o < no) return true;
+      if (y <= 0) {
+        hasExternal = true;
+      } else {
+        ni = idx - w;
+        if (!this.land[ni]) {
+          hasExternal = true;
+        } else {
+          no = this.owner[ni] | 0;
+          if (no === o) hasFriendly = true;
+          else if (no === OWNER.NONE) hasExternal = true;
+          else if (no > 0 && no !== o && o < no) hasExternal = true;
+        }
+      }
 
-      if (y + 1 >= h) return true;
-      ni = idx + w;
-      if (!this.land[ni]) return true;
-      no = this.owner[ni] | 0;
-      if (no === OWNER.NONE) return true;
-      if (no > 0 && no !== o && o < no) return true;
+      if (y + 1 >= h) {
+        hasExternal = true;
+      } else {
+        ni = idx + w;
+        if (!this.land[ni]) {
+          hasExternal = true;
+        } else {
+          no = this.owner[ni] | 0;
+          if (no === o) hasFriendly = true;
+          else if (no === OWNER.NONE) hasExternal = true;
+          else if (no > 0 && no !== o && o < no) hasExternal = true;
+        }
+      }
 
-      return false;
+      return hasFriendly && hasExternal;
     }
 
 

@@ -1,4 +1,4 @@
-﻿// src/main.js
+// src/main.js
 import { createHUD } from "./ui.js";
 import { World, OWNER } from "./game/core/world.js";
 import { AIRBASE_LAUNCH_RADIUS_TILES, AIRBASE_TRANSPORT_BUILD_GOLD_COST, AIRBASE_TRANSPORT_BUILD_TIME_S, BIOME, BIOME_COLORS, DEBUG_ABM_TEST, DEBUG_MATCH_OUTCOME_TEST, MAP_MODE, MAX_ALLIES, SIM_DT_S, WORLD_SETUP, WORLD_SIZE_PRESET, WORLD_SIZE_PRESETS, WORLDGEN, attackCommitFromRatio } from "./game/config.js";
@@ -30,7 +30,7 @@ const canvas = document.getElementById("game");
 if (!canvas) throw new Error("[Boot] Missing canvas #game");
 
 // Hard-fix: ensure canvas has real, non-zero layout size immediately.
-// This prevents the 1Ã—1 backing-store bug that makes the world look â€œblackâ€.
+// This prevents the 1x1 backing-store bug that makes the world look "black".
 canvas.style.position = "fixed";
 canvas.style.inset = "0";
 canvas.style.width = "100vw";
@@ -4006,7 +4006,7 @@ function getMultiplayerSyncLagStatusNow() {
       return { active: false, progress01, label: "" };
     }
     const pct = clampInt(Math.round(progress01 * 100), 0, 100);
-    const label = `Syncing ${pct}% • ${gapTicks} ticks behind`;
+    const label = `Syncing ${pct}% - ${gapTicks} ticks behind`;
     return { active: true, progress01, label };
   }
 
@@ -5247,6 +5247,16 @@ function createMainMenuController(options = null) {
   const flagSelectedLayerLabel = document.getElementById("mmFlagSelectedLayerLabel");
   const defaultStartLabel = startBtn?.textContent?.trim() || "Start";
 
+  // Normalize legacy HTML states where multiplayer shipped as disabled.
+  if (multiplayerBtn) {
+    multiplayerBtn.disabled = false;
+    multiplayerBtn.removeAttribute("disabled");
+    multiplayerBtn.classList.remove("isDisabled");
+    const currentLabel = String(multiplayerBtn.textContent || "").trim().toLowerCase();
+    if (!currentLabel || currentLabel === "disabled") multiplayerBtn.textContent = "Multiplayer";
+    multiplayerBtn.setAttribute("aria-disabled", "false");
+  }
+
   const settingsInputs = {
     showAIStructures: document.getElementById("mmSetShowAIStructures"),
     showAIFlags: document.getElementById("mmSetShowAIFlags"),
@@ -6049,7 +6059,7 @@ function createMainMenuController(options = null) {
         const starBtn = document.createElement("button");
         starBtn.type = "button";
         starBtn.className = "mainMenuMapLibraryStarBtn";
-        starBtn.textContent = (s <= starFill) ? "★" : "☆";
+        starBtn.textContent = (s <= starFill) ? "\u2605" : "\u2606";
         starBtn.title = `Rate ${s} star${s === 1 ? "" : "s"}`;
         starBtn.setAttribute("aria-label", `Rate ${row.name} ${s} star${s === 1 ? "" : "s"}`);
         if (s <= starFill) starBtn.classList.add("isFilled");
@@ -7049,7 +7059,7 @@ function createMainMenuController(options = null) {
       const s = shapes[i] || {};
       const enabled = !!s.enabled && String(s.type || "none") !== "none";
       const meta = enabled
-        ? `${formatFlagLabel(String(s.type || "shape"))} • ${Math.round(clamp01(s.opacity ?? 1) * 100)}%`
+        ? `${formatFlagLabel(String(s.type || "shape"))} - ${Math.round(clamp01(s.opacity ?? 1) * 100)}%`
         : "Disabled";
       frag.appendChild(makeItem(i, `Emblem ${i + 1}`, meta, String(i + 1), !enabled));
     }
@@ -8005,6 +8015,7 @@ function createMainMenuController(options = null) {
     refreshMapSourceUi();
     if (multiplayerBtn) {
       multiplayerBtn.disabled = false;
+      multiplayerBtn.removeAttribute("disabled");
       multiplayerBtn.classList.remove("isDisabled");
       multiplayerBtn.textContent = "Multiplayer";
       multiplayerBtn.setAttribute("aria-disabled", "false");
@@ -8051,7 +8062,7 @@ function createMainMenuController(options = null) {
       setView("play");
     });
   }
-  if (multiplayerBtn && !multiplayerBtn.disabled) {
+  if (multiplayerBtn) {
     multiplayerBtn.addEventListener("click", async () => {
       setView("multiplayer");
       const ready = await ensureMultiplayerReady();
@@ -10552,7 +10563,7 @@ function buildMatchSummaryPayload(result, opts = {}) {
       if (type === "airbase") airbaseCount += ((st.count | 0) || 1);
     }
   }
-  const structuresText = `City ${cityCount} • Factory ${factoryCount} • Barracks ${barracksCount} • Defence ${defenceCount} • Port ${portCount} • Silos ${missileSiloCount} • ABM ${abmCount} • Airbase ${airbaseCount}`;
+  const structuresText = `City ${cityCount} | Factory ${factoryCount} | Barracks ${barracksCount} | Defence ${defenceCount} | Port ${portCount} | Silos ${missileSiloCount} | ABM ${abmCount} | Airbase ${airbaseCount}`;
 
   const titleText = outcome === "win"
     ? (isTest ? "Victory Test" : "Victory")
@@ -11380,7 +11391,7 @@ function bindInput() {
     clearSelection();
     selection = { neutral: [], warOwner: 0, war: [] };
     renderer.clearSelection();
-    hud.setOpMessage("Paintingâ€¦ (neutral expand or enemy focus attack). Release to finalize.");
+    hud.setOpMessage("Painting... (neutral expand or enemy focus attack). Release to finalize.");
   });
 
   input.onPaintAdd((cell, idx) => {
@@ -11491,11 +11502,11 @@ function refreshDiplomacyUI() {
 
   if (hoveredOwnerId > 0 && hoveredOwnerId !== OWNER.PLAYER) {
     const rel = world.getRelation(OWNER.PLAYER, hoveredOwnerId);
-    if (rel.pending) line += ` â€¢ Alliance pending (${rel.pendingDir})`;
-    else if (rel.allied) line += ` â€¢ Allied (${fmtSec(rel.allyRemaining)} left)`;
-    else if (rel.ceasefire) line += ` â€¢ Ceasefire (${fmtSec(rel.ceasefireRemaining)} left)`;
-    else if (rel.atWar) line += " â€¢ At war (auto-front active)";
-    else line += " â€¢ Neutral";
+    if (rel.pending) line += ` | Alliance pending (${rel.pendingDir})`;
+    else if (rel.allied) line += ` | Allied (${fmtSec(rel.allyRemaining)} left)`;
+    else if (rel.ceasefire) line += ` | Ceasefire (${fmtSec(rel.ceasefireRemaining)} left)`;
+    else if (rel.atWar) line += " | At war (auto-front active)";
+    else line += " | Neutral";
   }
 
   // Allies list + quick relation summary (wars and pending requests).
@@ -11540,9 +11551,9 @@ function refreshDiplomacyUI() {
   if (ceasefires.length) line += `\nCeasefire: ${ceasefires.join(", ")}`;
   if (pendingOut.length || pendingIn.length) {
     const parts = [];
-    if (pendingOut.length) parts.push(`outgoing â†’ ${pendingOut.join(", ")}`);
-    if (pendingIn.length) parts.push(`incoming â† ${pendingIn.join(", ")}`);
-    line += `\nAlliance requests: ${parts.join(" â€¢ ")}`;
+    if (pendingOut.length) parts.push(`outgoing -> ${pendingOut.join(", ")}`);
+    if (pendingIn.length) parts.push(`incoming <- ${pendingIn.join(", ")}`);
+    line += `\nAlliance requests: ${parts.join(" | ")}`;
   }
 
   if (allies.length) {
@@ -11851,7 +11862,7 @@ function finalizeSelection() {
     if (!rel.atWar) {
       hud.setOpStartEnabled(false);
       hud.setOpStartLabel("Attack");
-      hud.setOpMessage("To execute an attack selection, you must declare war first (RMB enemy â†’ Declare War).");
+      hud.setOpMessage("To execute an attack selection, you must declare war first (RMB enemy -> Declare War).");
       return null;
     }
     if (rel.ceasefire) {
@@ -12600,7 +12611,7 @@ function refreshOpUI(quick = false) {
       const dir = expansionDirectionLabel(op);
       const attacking = Math.max(0, Math.floor(Number(op.attackPool) || 0));
       title = `Expansion on ${dir}`;
-      subtitle = `${Math.round(pct * 100)}% • Attacking ${fmtCompactLocal(attacking)}`;
+      subtitle = `${Math.round(pct * 100)}% - Attacking ${fmtCompactLocal(attacking)}`;
       dockOps.push({
         id: op.id,
         title: `Expansion on ${dir}`,
@@ -12614,7 +12625,7 @@ function refreshOpUI(quick = false) {
     } else if (op.kind === "war") {
       title = "Focus Attack";
       const defName = world.nation[op.defender]?.name || `AI ${op.defender - 1}`;
-      subtitle = `${Math.round(pct * 100)}% • vs ${defName}`;
+      subtitle = `${Math.round(pct * 100)}% - vs ${defName}`;
       dockOps.push({
         id: op.id,
         title: `War of ${defName}`,

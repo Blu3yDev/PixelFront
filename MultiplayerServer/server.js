@@ -210,13 +210,77 @@ function nowMs() {
   return Date.now();
 }
 
+function cloneWireValue(value, seen, depth) {
+  if (value == null) return value;
+  const t = typeof value;
+  if (t === "bigint") return Number(value);
+  if (t === "undefined" || t === "function" || t === "symbol") return null;
+  if (t !== "object") return value;
+  if (depth > 80) return null;
+
+  if (seen.has(value)) return seen.get(value);
+
+  if (Array.isArray(value)) {
+    const out = new Array(value.length);
+    seen.set(value, out);
+    for (let i = 0; i < value.length; i++) {
+      out[i] = cloneWireValue(value[i], seen, depth + 1);
+    }
+    return out;
+  }
+
+  if (value instanceof Set) {
+    const out = [];
+    seen.set(value, out);
+    for (const v of value.values()) {
+      out.push(cloneWireValue(v, seen, depth + 1));
+    }
+    return out;
+  }
+
+  if (value instanceof Map) {
+    const out = [];
+    seen.set(value, out);
+    for (const [k, v] of value.entries()) {
+      out.push([
+        cloneWireValue(k, seen, depth + 1),
+        cloneWireValue(v, seen, depth + 1)
+      ]);
+    }
+    return out;
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    let arr = null;
+    if (typeof value.length === "number") {
+      arr = Array.from(value);
+    } else if (value instanceof DataView) {
+      arr = new Array(value.byteLength);
+      for (let i = 0; i < value.byteLength; i++) arr[i] = value.getUint8(i);
+    } else {
+      arr = [];
+    }
+    seen.set(value, arr);
+    return arr;
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  const out = {};
+  seen.set(value, out);
+  const keys = Object.keys(value);
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    out[k] = cloneWireValue(value[k], seen, depth + 1);
+  }
+  return out;
+}
+
 function cloneWire(value) {
   try {
-    return JSON.parse(JSON.stringify(value, (_k, v) => {
-      if (v instanceof Set) return Array.from(v.values());
-      if (v instanceof Map) return Array.from(v.entries());
-      return v;
-    }));
+    return cloneWireValue(value, new WeakMap(), 0);
   } catch {
     return null;
   }
@@ -1904,6 +1968,26 @@ function deriveSessionMatchOutcome(packet) {
   return null;
 }
 
+const REMAP_ID_KEYS = new Set([
+  "owner",
+  "attacker",
+  "defender",
+  "from",
+  "to",
+  "targetOwner",
+  "nationId",
+  "winner",
+  "winnerId",
+  "loser",
+  "loserId",
+  "missionDefender",
+  "launchTargetOwner"
+]);
+const REMAP_OWNER_ONLY_KEYS = new Set(["owner"]);
+const REMAP_SHIP_KEYS = new Set(["owner", "missionDefender"]);
+const REMAP_NUKE_KEYS = new Set(["owner", "launchTargetOwner"]);
+const REMAP_OP_KEYS = new Set(["attacker", "defender"]);
+
 function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
   const assigned = Number(assignedNationIdRaw) | 0;
   if (assigned <= 1) {
@@ -1930,19 +2014,17 @@ function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
       : remapOwnerPackedBase64(packet.ownerPacked, assigned);
   }
 
-  const idKeys = new Set(["owner", "attacker", "defender", "from", "to", "targetOwner", "nationId", "winner", "winnerId", "loser", "loserId", "missionDefender", "launchTargetOwner"]);
-
-  const mapRows = (rows, keys = idKeys) => {
+  const mapRows = (rows, keys = REMAP_ID_KEYS) => {
     if (!Array.isArray(rows)) return;
     for (let i = 0; i < rows.length; i++) remapDeepNationKeys(rows[i], assigned, keys);
   };
 
   if (packet.changedEntities && typeof packet.changedEntities === "object") {
-    mapRows(packet.changedEntities.structures, new Set(["owner"]));
-    mapRows(packet.changedEntities.ships, new Set(["owner", "missionDefender"]));
-    mapRows(packet.changedEntities.nukeFlights, new Set(["owner", "launchTargetOwner"]));
-    mapRows(packet.changedEntities.airborneMissions, new Set(["owner"]));
-    mapRows(packet.changedEntities.operations, new Set(["attacker", "defender"]));
+    mapRows(packet.changedEntities.structures, REMAP_OWNER_ONLY_KEYS);
+    mapRows(packet.changedEntities.ships, REMAP_SHIP_KEYS);
+    mapRows(packet.changedEntities.nukeFlights, REMAP_NUKE_KEYS);
+    mapRows(packet.changedEntities.airborneMissions, REMAP_OWNER_ONLY_KEYS);
+    mapRows(packet.changedEntities.operations, REMAP_OP_KEYS);
   }
 
   if (Array.isArray(packet.nationStats)) {
@@ -1950,7 +2032,7 @@ function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
       const row = packet.nationStats[i];
       if (!row || typeof row !== "object") continue;
       row.id = mapCanonicalToLocalNationId(Number(row.id) | 0, assigned);
-      remapDeepNationKeys(row, assigned, idKeys);
+      remapDeepNationKeys(row, assigned, REMAP_ID_KEYS);
     }
     packet.nationStats.sort((a, b) => (Number(a?.id) | 0) - (Number(b?.id) | 0));
   }
@@ -1960,7 +2042,7 @@ function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
       const row = packet.leaderboard[i];
       if (!row || typeof row !== "object") continue;
       row.id = mapCanonicalToLocalNationId(Number(row.id) | 0, assigned);
-      remapDeepNationKeys(row, assigned, idKeys);
+      remapDeepNationKeys(row, assigned, REMAP_ID_KEYS);
     }
     packet.leaderboard.sort((a, b) => (Number(a?.rank) || 0) - (Number(b?.rank) || 0));
   }
@@ -1983,10 +2065,10 @@ function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
     }
   }
 
-  if (Array.isArray(packet.events)) mapRows(packet.events, idKeys);
+  if (Array.isArray(packet.events)) mapRows(packet.events, REMAP_ID_KEYS);
   if (packet.worldMeta && typeof packet.worldMeta === "object") {
-    remapDeepNationKeys(packet.worldMeta.gameOver, assigned, idKeys);
-    remapDeepNationKeys(packet.worldMeta.matchOutcome, assigned, idKeys);
+    remapDeepNationKeys(packet.worldMeta.gameOver, assigned, REMAP_ID_KEYS);
+    remapDeepNationKeys(packet.worldMeta.matchOutcome, assigned, REMAP_ID_KEYS);
     const spawnPhase = packet.worldMeta.spawnPhase;
     if (spawnPhase && typeof spawnPhase === "object") {
       if (Array.isArray(spawnPhase.pickedIds)) {
@@ -2129,6 +2211,13 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
   const world = runtime.world;
   const now = nowMs();
   const spawnActive = !!(world?._spawnPhase && world._spawnPhase.active);
+  const simBacklogMs = Math.max(0, Number(runtime?.simAccMs) || 0);
+  const stepMs = simDtMs();
+  const loadShedding = (
+    (Number(runtime?.backpressuredSockets) | 0) > 0 ||
+    (Number(runtime?.mediumBackpressuredSockets) | 0) > 0 ||
+    simBacklogMs > (stepMs * 1.25)
+  );
   const loadScale = Math.max(1, Number(runtime?.snapshotLoadScale) || 1);
   const playerLoadScale = Math.max(1, Number(runtime?.playerLoadScale) || 1);
   const metaScale = loadScale > 1 ? Math.min(2.35, 1 + ((loadScale - 1) * 0.70)) : 1;
@@ -2137,9 +2226,18 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
   const statsIntervalMs = Math.max(220, Math.round(MATCH_SNAPSHOT_STATS_INTERVAL_MS * metaScale * pressureScale * lobbyScale));
   const relationsIntervalMs = Math.max(360, Math.round(MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS * Math.min(3.4, metaScale * 1.38) * pressureScale * lobbyScale));
   const eventsIntervalMs = Math.max(520, Math.round(MATCH_SNAPSHOT_EVENTS_INTERVAL_MS * Math.min(3.0, metaScale * 1.24) * pressureScale * lobbyScale));
-  const includeStats = fullSync || ((now - (Number(runtime.lastStatsSnapshotAtMs) || 0)) >= statsIntervalMs);
-  const includeRelations = fullSync || (!spawnActive && ((now - (Number(runtime.lastRelationsSnapshotAtMs) || 0)) >= relationsIntervalMs));
-  const includeEvents = fullSync || (!spawnActive && ((now - (Number(runtime.lastEventsSnapshotAtMs) || 0)) >= eventsIntervalMs));
+  const statsDueMs = now - (Number(runtime.lastStatsSnapshotAtMs) || 0);
+  const relationsDueMs = now - (Number(runtime.lastRelationsSnapshotAtMs) || 0);
+  const eventsDueMs = now - (Number(runtime.lastEventsSnapshotAtMs) || 0);
+  const includeStats = fullSync || (
+    statsDueMs >= (loadShedding ? Math.round(statsIntervalMs * 1.9) : statsIntervalMs)
+  );
+  const includeRelations = fullSync || (!spawnActive && (
+    relationsDueMs >= (loadShedding ? Math.round(relationsIntervalMs * 2.1) : relationsIntervalMs)
+  ));
+  const includeEvents = fullSync || (!spawnActive && (
+    eventsDueMs >= (loadShedding ? Math.round(eventsIntervalMs * 2.1) : eventsIntervalMs)
+  ));
   const packet = {
     type: fullSync ? "full_sync" : "snapshot_delta",
     serverTime: now,

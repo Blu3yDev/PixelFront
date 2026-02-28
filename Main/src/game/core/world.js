@@ -426,6 +426,13 @@ export class World {
     this._pixelWriteStamp = new Uint32Array(n);
     this._pixelWriteEpoch = 1;
     this._pixelWriteList = [];
+    // Sparse pixel dirty stream for renderer-side bin uploads.
+    this._pixelDirtyTileStamp = new Uint32Array(n);
+    this._pixelDirtyTileEpoch = 1;
+    this._pixelDirtyTiles = [];
+    this._pixelDirtyTilesBack = [];
+    this._pixelDirtyTilesOverflow = false;
+    this._pixelDirtyTileOverflowLimit = Math.max(24000, Math.min(260000, ((n * 0.06) | 0)));
     this._pixelDeferredStamp = new Uint32Array(n);
     this._pixelDeferredEpoch = 1;
     this._pixelDeferredList = [];
@@ -710,6 +717,7 @@ export class World {
     if (!this._visitStamp || this._visitStamp.length !== n) this._visitStamp = new Uint32Array(n);
     if (!this._ownerTilePos || this._ownerTilePos.length !== n) this._ownerTilePos = new Int32Array(n);
     if (!this._pixelWriteStamp || this._pixelWriteStamp.length !== n) this._pixelWriteStamp = new Uint32Array(n);
+    if (!this._pixelDirtyTileStamp || this._pixelDirtyTileStamp.length !== n) this._pixelDirtyTileStamp = new Uint32Array(n);
     if (!this._pixelDeferredStamp || this._pixelDeferredStamp.length !== n) this._pixelDeferredStamp = new Uint32Array(n);
 
     this.time = 0;
@@ -724,6 +732,12 @@ export class World {
     this._pixelWriteEpoch = 1;
     this._pixelWriteStamp.fill(0);
     if (this._pixelWriteList) this._pixelWriteList.length = 0;
+    this._pixelDirtyTileEpoch = 1;
+    if (this._pixelDirtyTileStamp) this._pixelDirtyTileStamp.fill(0);
+    if (this._pixelDirtyTiles) this._pixelDirtyTiles.length = 0;
+    if (this._pixelDirtyTilesBack) this._pixelDirtyTilesBack.length = 0;
+    this._pixelDirtyTilesOverflow = false;
+    this._pixelDirtyTileOverflowLimit = Math.max(24000, Math.min(260000, ((n * 0.06) | 0)));
     this._pixelDeferredEpoch = 1;
     if (this._pixelDeferredStamp) this._pixelDeferredStamp.fill(0);
     if (this._pixelDeferredList) this._pixelDeferredList.length = 0;
@@ -774,6 +788,7 @@ export class World {
     this._ownerTilePos.fill(-1);
     for (let i = 0; i <= this._nationCount; i++) this._ownerTiles[i].length = 0;
     if (typeof this._resetPixelDirtyBounds === "function") this._resetPixelDirtyBounds();
+    if (typeof this._resetPixelDirtyTiles === "function") this._resetPixelDirtyTiles();
 
     this.ownerVersion++;
     this.landOwnedCount.fill(0);

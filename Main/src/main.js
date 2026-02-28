@@ -834,13 +834,13 @@ const MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS = 16;
 const MULTIPLAYER_CATCHUP_HARD_GAP_TICKS = 34;
 const MULTIPLAYER_CATCHUP_STICKY_MS = 240;
 const MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS = 160;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 2.4;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 3.6;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 5.2;
-const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 6;
-const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 12;
-const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 20;
-const MULTIPLAYER_DRAIN_MIN_INTERVAL_MS = 8;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 3.2;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 5.0;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 8.0;
+const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 8;
+const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 16;
+const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 30;
+const MULTIPLAYER_DRAIN_MIN_INTERVAL_MS = 6;
 const MULTIPLAYER_DEFERRED_UI_SYNC_INTERVAL_MS = 90;
 const MULTIPLAYER_HASH_VERIFY_MIN_INTERVAL_MS = 900;
 const MULTIPLAYER_HASH_VERIFY_MAX_WORLD_TILES = 1_800_000;
@@ -1811,23 +1811,23 @@ function flushMultiplayerPixelWrites(worldRef, ownerAppliedHint = 0) {
   const ownerApplied = Math.max(0, Number(ownerAppliedHint) | 0);
   const rawGap = Math.max(0, (multiplayerLatestServerTick | 0) - (multiplayerLastAppliedTick | 0));
   const gapTicks = Math.max(0, rawGap - MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS);
-  let maxPasses = 3;
-  let frameBudgetMs = 2.2;
+  let maxPasses = 4;
+  let frameBudgetMs = 2.8;
   if (pendingWrites >= 24000 || gapTicks >= MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS) {
-    maxPasses = 6;
-    frameBudgetMs = 4.2;
+    maxPasses = 7;
+    frameBudgetMs = 5.0;
   }
   if (pendingWrites >= 90000 || gapTicks >= MULTIPLAYER_CATCHUP_HARD_GAP_TICKS) {
-    maxPasses = 9;
-    frameBudgetMs = 6.4;
+    maxPasses = 10;
+    frameBudgetMs = 7.6;
   }
   if (ownerApplied >= 18000) {
-    maxPasses = Math.max(maxPasses, 11);
-    frameBudgetMs = Math.max(frameBudgetMs, 8.4);
+    maxPasses = Math.max(maxPasses, 14);
+    frameBudgetMs = Math.max(frameBudgetMs, 10.5);
   }
   if (ownerApplied >= 50000) {
-    maxPasses = Math.max(maxPasses, 14);
-    frameBudgetMs = Math.max(frameBudgetMs, 11.8);
+    maxPasses = Math.max(maxPasses, 18);
+    frameBudgetMs = Math.max(frameBudgetMs, 14.0);
   }
   const hasPerfNow = (typeof performance !== "undefined" && performance && typeof performance.now === "function");
   const startMs = hasPerfNow ? performance.now() : 0;
@@ -8004,10 +8004,10 @@ function createMainMenuController(options = null) {
     if (flagBtn) flagBtn.disabled = false;
     refreshMapSourceUi();
     if (multiplayerBtn) {
-      multiplayerBtn.disabled = true;
-      multiplayerBtn.classList.add("isDisabled");
-      multiplayerBtn.textContent = "Disabled";
-      multiplayerBtn.setAttribute("aria-disabled", "true");
+      multiplayerBtn.disabled = false;
+      multiplayerBtn.classList.remove("isDisabled");
+      multiplayerBtn.textContent = "Multiplayer";
+      multiplayerBtn.setAttribute("aria-disabled", "false");
     }
     refreshMultiplayerUI();
   };
@@ -8037,7 +8037,7 @@ function createMainMenuController(options = null) {
   };
 
   setHint(playBtn, "Open match configuration.");
-  setHint(multiplayerBtn, "Multiplayer is currently disabled.");
+  setHint(multiplayerBtn, "Create or join a private lobby.");
   setHint(settingsBtn, "Open client settings.");
   setHint(mapEditorBtn, "Open advanced map editor.");
   setHint(libraryBtn, "Browse and publish community maps.");

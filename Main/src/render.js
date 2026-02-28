@@ -1909,8 +1909,9 @@ export class Renderer {
     if (!hasClaimFx && !hasNeutralFx) return;
 
     const lowPower = !!this._clientSettings?.lowPowerOverlays;
-    const claimLifeS = lowPower ? 0.16 : 0.24;
-    const claimMaxScan = lowPower ? 1400 : 4200;
+    // Let ownership transitions linger a bit longer so paced tile commits still feel intentional.
+    const claimLifeS = lowPower ? 0.24 : 0.42;
+    const claimMaxScan = lowPower ? 1100 : 3200;
     const neutralLifeS = lowPower ? 0.85 : 1.65;
     const neutralMaxScan = lowPower ? 900 : 2600;
     const now = Number(world.time) || 0;
@@ -2929,6 +2930,33 @@ export class Renderer {
     }
   }
 
+  _copyPixelsByIndexBins(src, dst, worldW, worldH, indices, binShift = 6) {
+    const BIN_SHIFT = Math.max(2, binShift | 0);
+    const BIN_SIZE = 1 << BIN_SHIFT;
+    const binsW = Math.ceil(worldW / BIN_SIZE);
+    const dirtyBins = new Set();
+    const tileCount = (worldW * worldH) | 0;
+
+    for (let i = 0; i < indices.length; i++) {
+      const idx = indices[i] | 0;
+      if (idx < 0 || idx >= tileCount) continue;
+
+      const p = idx << 2;
+      dst[p + 0] = src[p + 0];
+      dst[p + 1] = src[p + 1];
+      dst[p + 2] = src[p + 2];
+      dst[p + 3] = src[p + 3];
+
+      const x = idx % worldW;
+      const y = (idx / worldW) | 0;
+      const bx = x >> BIN_SHIFT;
+      const by = y >> BIN_SHIFT;
+      dirtyBins.add((by * binsW + bx) | 0);
+    }
+
+    return { dirtyBins, binsW, binSize: BIN_SIZE };
+  }
+
   _gradeOwnedPixelsRect(data, rect) {
     const world = this.world;
     const landArr = world.land || world.landMask || null;
@@ -2993,31 +3021,87 @@ export class Renderer {
     // Fast path: if the World maintains a ready-to-render RGBA buffer, just blit it.
     const vp = this.world.viewPixels;
     if (vp && vp.length === data.length) {
+      const dirtyTiles = (typeof this.world._consumePixelDirtyTiles === "function")
+        ? this.world._consumePixelDirtyTiles()
+        : null;
       const dirtyRect = (typeof this.world._consumePixelDirtyRect === "function")
         ? this.world._consumePixelDirtyRect()
         : null;
+      const tileFull = !!dirtyTiles?.full;
+      const tileItems = (dirtyTiles && Array.isArray(dirtyTiles.items)) ? dirtyTiles.items : null;
+      const tileItemsLen = tileItems ? (tileItems.length | 0) : 0;
+      const hasTiles = tileItemsLen > 0;
 
-      if (!dirtyRect && !force && !this.worldDirty && !worldFlagDirty) return;
+      if (!tileFull && !dirtyRect && !hasTiles && !force && !this.worldDirty && !worldFlagDirty) return;
 
-      if (dirtyRect) {
-        if (!this._worldImageUsesViewPixels) {
-          if (dirtyRect.full) data.set(vp);
-          else this._copyPixelsRect(vp, data, w, dirtyRect);
-        }
+      const rectFull = !!(dirtyRect && dirtyRect.full);
+      const fullUpload = tileFull || rectFull;
+      if (fullUpload) {
+        if (!this._worldImageUsesViewPixels) data.set(vp);
+        this.worldCtx.putImageData(this.worldImage, 0, 0);
+      } else if (hasTiles) {
+        // Prefer sparse bin uploads for scattered captures; fall back to rect/full for very large batches.
+        const sparseLimit = Math.max(12000, Math.floor((w * h) * 0.06));
+        const useSparse = tileItemsLen <= sparseLimit;
 
-        if (dirtyRect.full) {
-          this.worldCtx.putImageData(this.worldImage, 0, 0);
+        if (useSparse) {
+          let sparseMeta = null;
+          if (!this._worldImageUsesViewPixels) {
+            sparseMeta = this._copyPixelsByIndexBins(vp, data, w, h, tileItems, 6);
+          } else {
+            const BIN_SHIFT = 6;
+            const BIN_SIZE = 1 << BIN_SHIFT;
+            const binsW = Math.ceil(w / BIN_SIZE);
+            const dirtyBins = new Set();
+            for (let i = 0; i < tileItemsLen; i++) {
+              const idx = tileItems[i] | 0;
+              if (idx < 0 || idx >= (w * h)) continue;
+              const x = idx % w;
+              const y = (idx / w) | 0;
+              dirtyBins.add((((y >> BIN_SHIFT) * binsW) + (x >> BIN_SHIFT)) | 0);
+            }
+            sparseMeta = { dirtyBins, binsW, binSize: BIN_SIZE };
+          }
+
+          if (sparseMeta && sparseMeta.dirtyBins.size > 0) {
+            for (const bid0 of sparseMeta.dirtyBins) {
+              const bid = bid0 | 0;
+              const bx = (bid % sparseMeta.binsW) * sparseMeta.binSize;
+              const by = ((bid / sparseMeta.binsW) | 0) * sparseMeta.binSize;
+              const bw = Math.min(sparseMeta.binSize, w - bx);
+              const bh = Math.min(sparseMeta.binSize, h - by);
+              if (bw <= 0 || bh <= 0) continue;
+              this.worldCtx.putImageData(this.worldImage, 0, 0, bx, by, bw, bh);
+            }
+          }
         } else {
-          this.worldCtx.putImageData(
-            this.worldImage,
-            0,
-            0,
-            dirtyRect.x | 0,
-            dirtyRect.y | 0,
-            dirtyRect.w | 0,
-            dirtyRect.h | 0
-          );
+          if (dirtyRect) {
+            if (!this._worldImageUsesViewPixels) this._copyPixelsRect(vp, data, w, dirtyRect);
+            this.worldCtx.putImageData(
+              this.worldImage,
+              0,
+              0,
+              dirtyRect.x | 0,
+              dirtyRect.y | 0,
+              dirtyRect.w | 0,
+              dirtyRect.h | 0
+            );
+          } else {
+            if (!this._worldImageUsesViewPixels) data.set(vp);
+            this.worldCtx.putImageData(this.worldImage, 0, 0);
+          }
         }
+      } else if (dirtyRect) {
+        if (!this._worldImageUsesViewPixels) this._copyPixelsRect(vp, data, w, dirtyRect);
+        this.worldCtx.putImageData(
+          this.worldImage,
+          0,
+          0,
+          dirtyRect.x | 0,
+          dirtyRect.y | 0,
+          dirtyRect.w | 0,
+          dirtyRect.h | 0
+        );
       } else {
         // No new world pixels; still allow a forced refresh of the offscreen texture.
         if (force) this.worldCtx.putImageData(this.worldImage, 0, 0);

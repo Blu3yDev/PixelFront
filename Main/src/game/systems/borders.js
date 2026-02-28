@@ -240,6 +240,17 @@ export function installBorders(World) {
       this._pixelDirtyMaxY = -1;
     }
 
+  World.prototype._resetPixelDirtyTiles = function() {
+      if (Array.isArray(this._pixelDirtyTiles)) this._pixelDirtyTiles.length = 0;
+      if (Array.isArray(this._pixelDirtyTilesBack)) this._pixelDirtyTilesBack.length = 0;
+      this._pixelDirtyTilesOverflow = false;
+      this._pixelDirtyTileEpoch = ((this._pixelDirtyTileEpoch >>> 0) + 1) >>> 0;
+      if ((this._pixelDirtyTileEpoch >>> 0) === 0) {
+        this._pixelDirtyTileEpoch = 1;
+        if (this._pixelDirtyTileStamp) this._pixelDirtyTileStamp.fill(0);
+      }
+    }
+
   World.prototype._markAllPixelsDirty = function() {
       this._pixelDirtyPending = true;
       this._pixelDirtyFull = true;
@@ -247,6 +258,9 @@ export function installBorders(World) {
       this._pixelDirtyMinY = 0;
       this._pixelDirtyMaxX = this.w - 1;
       this._pixelDirtyMaxY = this.h - 1;
+      this._pixelDirtyTilesOverflow = true;
+      if (Array.isArray(this._pixelDirtyTiles)) this._pixelDirtyTiles.length = 0;
+      if (Array.isArray(this._pixelDirtyTilesBack)) this._pixelDirtyTilesBack.length = 0;
     }
 
   World.prototype._markPixelDirty = function(idx) {
@@ -273,6 +287,30 @@ export function installBorders(World) {
       if (x > this._pixelDirtyMaxX) this._pixelDirtyMaxX = x;
       if (y < this._pixelDirtyMinY) this._pixelDirtyMinY = y;
       if (y > this._pixelDirtyMaxY) this._pixelDirtyMaxY = y;
+
+      if (this._pixelDirtyTilesOverflow) return;
+      const stamp = this._pixelDirtyTileStamp;
+      const list = this._pixelDirtyTiles;
+      const ownerLen = this.owner ? (this.owner.length | 0) : 0;
+      if (!stamp || !Array.isArray(list) || stamp.length !== ownerLen) return;
+
+      let epoch = this._pixelDirtyTileEpoch >>> 0;
+      if (epoch === 0) {
+        epoch = 1;
+        this._pixelDirtyTileEpoch = 1;
+        stamp.fill(0);
+      }
+
+      if ((stamp[idx] >>> 0) === epoch) return;
+      stamp[idx] = epoch;
+
+      const limit = Math.max(10000, Number(this._pixelDirtyTileOverflowLimit) | 0);
+      if (list.length >= limit) {
+        this._pixelDirtyTilesOverflow = true;
+        list.length = 0;
+        return;
+      }
+      list.push(idx | 0);
     }
 
   World.prototype._consumePixelDirtyRect = function() {
@@ -301,6 +339,31 @@ export function installBorders(World) {
       return rect;
     }
 
+  World.prototype._consumePixelDirtyTiles = function() {
+      if (this._pixelDirtyFull || this._pixelDirtyTilesOverflow) {
+        this._resetPixelDirtyTiles();
+        return { full: true, items: null };
+      }
+
+      const items = Array.isArray(this._pixelDirtyTiles) ? this._pixelDirtyTiles : null;
+      if (!items || items.length === 0) {
+        return { full: false, items: [] };
+      }
+
+      const back = Array.isArray(this._pixelDirtyTilesBack) ? this._pixelDirtyTilesBack : [];
+      back.length = 0;
+      this._pixelDirtyTiles = back;
+      this._pixelDirtyTilesBack = items;
+
+      this._pixelDirtyTileEpoch = ((this._pixelDirtyTileEpoch >>> 0) + 1) >>> 0;
+      if ((this._pixelDirtyTileEpoch >>> 0) === 0) {
+        this._pixelDirtyTileEpoch = 1;
+        if (this._pixelDirtyTileStamp) this._pixelDirtyTileStamp.fill(0);
+      }
+
+      return { full: false, items };
+    }
+
   World.prototype._queuePixelWrite = function(idx) {
       if (idx < 0 || idx >= (this.owner?.length || 0)) return;
 
@@ -324,7 +387,7 @@ export function installBorders(World) {
 
       if (!this._renderInterestEnabled) {
         this._renderInterestRect = { x0: 0, y0: 0, x1: w - 1, y1: h - 1 };
-        this._flushDeferredPixelWrites(32000);
+        this._flushDeferredPixelWrites(26000);
         return;
       }
 
@@ -343,7 +406,8 @@ export function installBorders(World) {
       const visibleArea = Math.max(1, (x1 - x0 + 1) * (y1 - y0 + 1));
       const totalArea = Math.max(1, w * h);
       const frac = visibleArea / totalArea;
-      const budget = frac <= 0.12 ? 28000 : (frac <= 0.25 ? 16000 : 7000);
+      // Keep deferred catch-up strong enough that visible frontlines do not look holey.
+      const budget = frac <= 0.12 ? 22000 : (frac <= 0.25 ? 14000 : 8000);
       this._flushDeferredPixelWrites(budget);
     }
 
@@ -583,7 +647,7 @@ export function installBorders(World) {
   World.prototype._flushQueuedPixelWrites = function() {
       const list = this._pixelWriteList;
       if (!list || list.length === 0) {
-        this._flushDeferredPixelWrites(6000);
+        this._flushDeferredPixelWrites(5000);
         return;
       }
 
@@ -615,12 +679,15 @@ export function installBorders(World) {
         return;
       }
 
-      const tiles = Math.max(1, (this.w | 0) * (this.h | 0));
-      let budget = tiles >= 2_000_000 ? 7000 : (tiles >= 1_200_000 ? 10000 : 18000);
       const listLen = list.length | 0;
-      if (listLen >= 250000) budget = Math.min(budget, 4500);
-      else if (listLen >= 120000) budget = Math.min(budget, 6500);
-      else if (listLen >= 60000) budget = Math.min(budget, 8000);
+      const hasPlayerOps = (typeof this._hasPlayerVisualOperation === "function") && this._hasPlayerVisualOperation();
+      const tiles = Math.max(1, (this.w | 0) * (this.h | 0));
+      let budget = tiles >= 2_000_000 ? 4500 : (tiles >= 1_200_000 ? 7000 : 11000);
+      if (listLen >= 250000) budget = Math.min(budget, 3200);
+      else if (listLen >= 120000) budget = Math.min(budget, 4500);
+      else if (listLen >= 60000) budget = Math.min(budget, 6000);
+      else if (listLen >= 25000) budget = Math.min(budget, 8200);
+      if (hasPlayerOps) budget = Math.max(2400, Math.floor(budget * 0.95));
 
       const pending = Array.isArray(this._ownerDirtyPending) ? this._ownerDirtyPending : null;
       const limit = Math.max(10000, Number(this._ownerDirtyOverflowLimit) | 0);

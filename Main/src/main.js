@@ -1350,6 +1350,7 @@ const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   setMobilization: Object.freeze({ cmd: "set_mobilization" }),
   startNeutral: Object.freeze({ cmd: "start_neutral" }),
   startWarFocus: Object.freeze({ cmd: "start_war_focus" }),
+  regenerate: Object.freeze({ cmd: "regenerate_match", serializeArgs: serializeMultiplayerRegenerateArgs }),
   cancelAllOperations: Object.freeze({ cmd: "cancel_all_operations" }),
   cancelOperation: Object.freeze({ cmd: "cancel_operation" }),
   createTradeDeal: Object.freeze({ cmd: "request_trade_deal" }),
@@ -1761,7 +1762,8 @@ function installMultiplayerWorldSync(worldRef) {
         return multiplayerQueuedReturnForMethod(methodName, args);
       }
 
-      const sent = sendMultiplayerMatchInput(rule.cmd, args);
+      const payloadArgs = (typeof rule.serializeArgs === "function") ? rule.serializeArgs(args) : args;
+      const sent = sendMultiplayerMatchInput(rule.cmd, payloadArgs);
       if (!sent.ok) {
         if (methodName === "pickSpawn") {
           try {
@@ -2573,6 +2575,8 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
   const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : null;
   const deferVisualSync = !!options?.deferVisualSync;
   const hadAuthoritativeSync = multiplayerHasAuthoritativeSync;
+  const fullSyncReason = String(packet?.reason || "").trim().toLowerCase();
+  const isRegenerateSync = !!(isFullSync && fullSyncReason === "regenerate_match");
   let ownerApplied = 0;
 
   if (isFullSync) {
@@ -2654,6 +2658,10 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
   }
 
   maybeHandleMultiplayerStateHashMismatch(packet);
+  if (isRegenerateSync) {
+    resetClientStateAfterRegenerate();
+    return true;
+  }
   if (!deferVisualSync) refreshAllUI();
   return true;
 }
@@ -4969,6 +4977,81 @@ function actionResultMessage(res, successText, queuedText = "Action queued...") 
   if (isQueuedActionResult(res)) return queuedText;
   if (res && typeof res === "object" && res.ok) return String(successText || "Done.");
   return String(res?.reason || "Action failed.");
+}
+
+function regeneratePromptText() {
+  return isSpawnPhaseActiveNow()
+    ? (isCountrySpawnPhaseNow() ? "Map regenerated. Pick your country." : "Map regenerated. Pick your spawn location.")
+    : "Map regenerated.";
+}
+
+function resetClientStateAfterRegenerate(message = "") {
+  resetPlayerAlertState();
+  resetDebugAbmSpawner();
+  resetMatchSessionTracking();
+  liveModifierAccS = 0;
+
+  selectedStructureId = null;
+  selectedShipId = null;
+  clearNukeLaunchMode();
+  clearAirborneLaunchMode();
+  clearNavalTransportLaunchMode();
+  if (isMultiplayerMatchEnabled()) {
+    multiplayerPendingSpawnPick = null;
+    clearPendingSpawnRetry();
+  }
+  setTradeOpen(false);
+  clearSelection();
+  input.clear();
+  hud.hideContextMenu();
+
+  hud.setOpMessage(String(message || regeneratePromptText()));
+  syncSpawnProgressUI();
+  refreshAllUI();
+}
+
+function serializeMultiplayerRegenerateArgs(argsRaw) {
+  const args = Array.isArray(argsRaw) ? argsRaw : [];
+  const seedValue = ((Number(args[0]) >>> 0) || 1);
+  const opts = (args[1] && typeof args[1] === "object") ? args[1] : null;
+  const mapModeRaw = String(opts?.mapMode || activeMapMode || MAP_MODE.GENERATOR).trim().toLowerCase();
+  const mapMode = (
+    mapModeRaw === MAP_MODE.WORLD_MAP ||
+    mapModeRaw === "world_map" ||
+    mapModeRaw === "world-map"
+  ) ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
+  const countryClaimEnabled = opts
+    ? opts.countryClaimEnabled !== false
+    : (String(activeMatchConfig?.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase() === MAP_SOURCE.POLITICAL_EARTH);
+  return [seedValue, { mapMode, countryClaimEnabled }];
+}
+
+function triggerActiveMatchRegenerate() {
+  const nextSeed = (seed + 1337) >>> 0;
+  const politicalEarthMode = String(activeMatchConfig?.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase() === MAP_SOURCE.POLITICAL_EARTH;
+  const regenOpts = { mapMode: activeMapMode, countryClaimEnabled: politicalEarthMode };
+
+  if (isMultiplayerMatchEnabled()) {
+    if (!activeMultiplayerSession?.isHost) {
+      hud.setOpMessage("Only the host can regenerate the multiplayer match.");
+      return;
+    }
+    const res = (typeof world?.regenerate === "function")
+      ? world.regenerate(nextSeed, regenOpts)
+      : { ok: false, reason: "Regeneration is unavailable." };
+    if (!res?.ok) {
+      hud.setOpMessage(String(res?.reason || "Regeneration failed."));
+      return;
+    }
+    seed = nextSeed;
+    resetClientStateAfterRegenerate(isQueuedActionResult(res) ? "Map regeneration queued..." : "");
+    return;
+  }
+
+  world.regenerate(nextSeed, { ...regenOpts, earthData });
+  seed = nextSeed;
+  applyMatchStartModifiers(world, activeMatchConfig, loadMainMenuPlayerName());
+  resetClientStateAfterRegenerate();
 }
 
 function warheadLabel(type) {
@@ -12139,29 +12222,7 @@ function boot() {
   });
 
   hud.onRegenerate(() => {
-    seed = (seed + 1337) >>> 0;
-    const politicalEarthMode = String(activeMatchConfig?.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase() === MAP_SOURCE.POLITICAL_EARTH;
-    world.regenerate(seed, { mapMode: activeMapMode, earthData, countryClaimEnabled: politicalEarthMode });
-    applyMatchStartModifiers(world, activeMatchConfig, loadMainMenuPlayerName());
-    resetPlayerAlertState();
-    resetDebugAbmSpawner();
-    resetMatchSessionTracking();
-    liveModifierAccS = 0;
-
-    selectedStructureId = null;
-    selectedShipId = null;
-    clearNukeLaunchMode();
-    clearAirborneLaunchMode();
-    setTradeOpen(false);
-    clearSelection();
-    input.clear();
-    hud.hideContextMenu();
-
-    hud.setOpMessage(isSpawnPhaseActiveNow()
-      ? (isCountrySpawnPhaseNow() ? "Map regenerated. Pick your country." : "Map regenerated. Pick your spawn location.")
-      : "Map regenerated.");
-    syncSpawnProgressUI();
-    refreshAllUI();
+    triggerActiveMatchRegenerate();
   });
 
   hud.onPauseToggle(() => {
@@ -12275,34 +12336,7 @@ function boot() {
     }
 
     if (e.key === "r" || e.key === "R") {
-      if (isMultiplayerMatchEnabled()) {
-        hud.setOpMessage("Regeneration is disabled in multiplayer.");
-        return;
-      }
-      seed = (seed + 1337) >>> 0;
-      const politicalEarthMode = String(activeMatchConfig?.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase() === MAP_SOURCE.POLITICAL_EARTH;
-      world.regenerate(seed, { mapMode: activeMapMode, earthData, countryClaimEnabled: politicalEarthMode });
-      applyMatchStartModifiers(world, activeMatchConfig, loadMainMenuPlayerName());
-      resetPlayerAlertState();
-      resetDebugAbmSpawner();
-      resetMatchSessionTracking();
-      liveModifierAccS = 0;
-
-      selectedStructureId = null;
-      selectedShipId = null;
-      clearNukeLaunchMode();
-      clearAirborneLaunchMode();
-      clearNavalTransportLaunchMode();
-      setTradeOpen(false);
-      clearSelection();
-      input.clear();
-      hud.hideContextMenu();
-
-      hud.setOpMessage(isSpawnPhaseActiveNow()
-        ? (isCountrySpawnPhaseNow() ? "Map regenerated. Pick your country." : "Map regenerated. Pick your spawn location.")
-        : "Map regenerated.");
-      syncSpawnProgressUI();
-      refreshAllUI();
+      triggerActiveMatchRegenerate();
     }
   });
 

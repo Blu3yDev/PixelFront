@@ -121,6 +121,84 @@ const SERVER_WORLD_SIZE_PRESETS = Object.freeze({
   "Super Large": Object.freeze({ width: 3200, height: 1600, aiCount: 240 }),
   "Extremely Large": Object.freeze({ width: 4200, height: 2100, aiCount: 320 })
 });
+const MATCH_DIFFICULTY_PROFILES = Object.freeze({
+  easy: Object.freeze({
+    playerStart: 1.9,
+    aiStart: 0.52,
+    playerIncomeOpen: 1.68,
+    playerIncomeLate: 1.42,
+    aiIncomeOpen: 0.5,
+    aiIncomeLate: 0.7,
+    aiAttackMul: 0.62,
+    aiMobShift: -0.18,
+    economyRampS: 340,
+    aiWarGraceS: 132
+  }),
+  normal: Object.freeze({
+    playerStart: 1.28,
+    aiStart: 0.80,
+    playerIncomeOpen: 1.28,
+    playerIncomeLate: 1.08,
+    aiIncomeOpen: 0.74,
+    aiIncomeLate: 0.94,
+    aiAttackMul: 0.84,
+    aiMobShift: -0.07,
+    economyRampS: 420,
+    aiWarGraceS: 96
+  }),
+  hard: Object.freeze({
+    playerStart: 0.94,
+    aiStart: 1.1,
+    playerIncomeOpen: 1.0,
+    playerIncomeLate: 0.86,
+    aiIncomeOpen: 0.98,
+    aiIncomeLate: 1.24,
+    aiAttackMul: 1.12,
+    aiMobShift: 0.08,
+    economyRampS: 450,
+    aiWarGraceS: 48
+  }),
+  brutal: Object.freeze({
+    playerStart: 0.8,
+    aiStart: 1.24,
+    playerIncomeOpen: 0.9,
+    playerIncomeLate: 0.72,
+    aiIncomeOpen: 1.08,
+    aiIncomeLate: 1.46,
+    aiAttackMul: 1.28,
+    aiMobShift: 0.14,
+    economyRampS: 520,
+    aiWarGraceS: 24
+  })
+});
+const MATCH_DIFFICULTY_DEFAULTS = Object.freeze({
+  playerStart: 1.00,
+  aiStart: 1.00,
+  playerIncomeOpen: 1.00,
+  playerIncomeLate: 1.00,
+  aiIncomeOpen: 1.00,
+  aiIncomeLate: 1.00,
+  aiAttackMul: 1.00,
+  aiMobShift: 0,
+  economyRampS: 420,
+  aiWarGraceS: 0
+});
+const MATCH_PLAYER_BOOSTS = Object.freeze([1, 2, 5, 10]);
+const DEFAULT_MATCH_CONFIG = Object.freeze({
+  sizePreset: "Large",
+  aiCount: null,
+  difficulty: "normal",
+  mapMode: MAP_MODE_WORLD,
+  mapSource: "political_earth",
+  customMapId: "",
+  infiniteGold: false,
+  infiniteTroops: false,
+  disableMissileSilo: false,
+  disableAbmLauncher: false,
+  disableDefencePost: false,
+  playerGoldBoost: 1,
+  playerTroopsBoost: 1
+});
 
 let activeSimDtS = DEFAULT_SIM_DT_S;
 let runtimeModulesPromise = null;
@@ -154,6 +232,7 @@ const COMMAND_METHOD = Object.freeze({
   start_burst_expand: "startBurstExpand",
   start_burst_attack: "startBurstAttack",
   pick_spawn: "pickSpawn",
+  regenerate_match: "regenerate",
   launch_missile_warhead: "launchMissileWarhead",
   launch_airbase_transport: "launchAirbaseTransport",
   place_structure: "placeStructure"
@@ -183,6 +262,7 @@ const COMMAND_NATION_ARGS = Object.freeze({
   start_burst_expand: [0],
   start_burst_attack: [0, 1],
   pick_spawn: [0],
+  regenerate_match: [],
   launch_missile_warhead: [1],
   launch_airbase_transport: [1],
   place_structure: [1]
@@ -524,28 +604,236 @@ function sanitizePlayerFlag(raw) {
 }
 
 function sanitizeMatchConfig(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const src = cloneWire(raw) || {};
-  const presetRaw = String(src.sizePreset || "Large");
+  const src = (raw && typeof raw === "object") ? (cloneWire(raw) || {}) : {};
+  const presetRaw = String(src.sizePreset || DEFAULT_MATCH_CONFIG.sizePreset);
   const sizePreset = Object.prototype.hasOwnProperty.call(SERVER_WORLD_SIZE_PRESETS, presetRaw)
     ? presetRaw
-    : "Large";
+    : DEFAULT_MATCH_CONFIG.sizePreset;
   const aiRaw = Number(src.aiCount);
   const aiCount = Number.isFinite(aiRaw) && aiRaw > 0
     ? Math.max(1, Math.min(MATCH_MAX_AI_COUNT, Math.floor(aiRaw)))
     : null;
-  const mapModeRaw = String(src.mapMode || "").trim().toLowerCase();
+  const difficultyRaw = String(src.difficulty || DEFAULT_MATCH_CONFIG.difficulty).trim().toLowerCase();
+  const difficulty = Object.prototype.hasOwnProperty.call(MATCH_DIFFICULTY_PROFILES, difficultyRaw)
+    ? difficultyRaw
+    : DEFAULT_MATCH_CONFIG.difficulty;
+  const mapSourceRaw = String(src.mapSource ?? src.mapMode ?? DEFAULT_MATCH_CONFIG.mapSource).trim().toLowerCase();
+  const mapModeRaw = String(src.mapMode || mapSourceRaw || DEFAULT_MATCH_CONFIG.mapMode).trim().toLowerCase();
   const mapMode = (
     mapModeRaw === MAP_MODE_WORLD ||
     mapModeRaw === "world_map" ||
-    mapModeRaw === "world-map"
+    mapModeRaw === "world-map" ||
+    mapSourceRaw === "political_earth" ||
+    mapSourceRaw === "earth"
   ) ? MAP_MODE_WORLD : MAP_MODE_GENERATOR;
+  const parseBoost = (value, fallback) => {
+    const n = Number(value);
+    if (MATCH_PLAYER_BOOSTS.includes(n)) return n;
+    return fallback;
+  };
   return {
-    ...src,
     sizePreset,
     aiCount,
-    mapMode
+    difficulty,
+    mapMode,
+    mapSource: String(mapSourceRaw || DEFAULT_MATCH_CONFIG.mapSource),
+    customMapId: String(src.customMapId || "").trim(),
+    infiniteGold: !!src.infiniteGold,
+    infiniteTroops: !!src.infiniteTroops,
+    disableMissileSilo: !!src.disableMissileSilo,
+    disableAbmLauncher: !!src.disableAbmLauncher,
+    disableDefencePost: !!src.disableDefencePost,
+    playerGoldBoost: parseBoost(src.playerGoldBoost, DEFAULT_MATCH_CONFIG.playerGoldBoost),
+    playerTroopsBoost: parseBoost(src.playerTroopsBoost, DEFAULT_MATCH_CONFIG.playerTroopsBoost),
+    worldWidth: toPositiveIntOrNull(src.worldWidth ?? src.width),
+    worldHeight: toPositiveIntOrNull(src.worldHeight ?? src.height),
+    worldAiCount: toPositiveIntOrNull(src.worldAiCount ?? src.aiCount)
   };
+}
+
+function getDifficultyProfile(key) {
+  const k = String(key || "").toLowerCase();
+  const raw = MATCH_DIFFICULTY_PROFILES[k] || MATCH_DIFFICULTY_PROFILES.normal || MATCH_DIFFICULTY_DEFAULTS;
+  const merged = {
+    ...MATCH_DIFFICULTY_DEFAULTS,
+    ...(raw || {})
+  };
+  if (!Number.isFinite(Number(merged.playerIncomeOpen))) merged.playerIncomeOpen = Number(merged.playerIncome);
+  if (!Number.isFinite(Number(merged.playerIncomeLate))) merged.playerIncomeLate = Number(merged.playerIncome);
+  if (!Number.isFinite(Number(merged.aiIncomeOpen))) merged.aiIncomeOpen = Number(merged.aiIncome);
+  if (!Number.isFinite(Number(merged.aiIncomeLate))) merged.aiIncomeLate = Number(merged.aiIncome);
+  if (!Number.isFinite(Number(merged.playerIncomeOpen))) merged.playerIncomeOpen = 1;
+  if (!Number.isFinite(Number(merged.playerIncomeLate))) merged.playerIncomeLate = 1;
+  if (!Number.isFinite(Number(merged.aiIncomeOpen))) merged.aiIncomeOpen = 1;
+  if (!Number.isFinite(Number(merged.aiIncomeLate))) merged.aiIncomeLate = 1;
+  if (!Number.isFinite(Number(merged.economyRampS))) merged.economyRampS = MATCH_DIFFICULTY_DEFAULTS.economyRampS;
+  if (!Number.isFinite(Number(merged.aiWarGraceS))) merged.aiWarGraceS = 0;
+  return merged;
+}
+
+function getDisabledStructureTypes(matchConfigRaw) {
+  const cfg = sanitizeMatchConfig(matchConfigRaw);
+  const set = new Set();
+  if (cfg.disableMissileSilo) set.add("missile_silo");
+  if (cfg.disableAbmLauncher) set.add("abm_launcher");
+  if (cfg.disableDefencePost) set.add("defence_post");
+  return set;
+}
+
+function structureTypeLabel(type) {
+  const t = String(type || "").toLowerCase();
+  if (t === "missile_silo") return "Missile Silo";
+  if (t === "abm_launcher") return "ABM Launcher";
+  if (t === "defence_post") return "Defence Post";
+  if (t === "airbase") return "Airbase";
+  return "Structure";
+}
+
+function scaleNationResources(nation, goldMul, troopMul) {
+  if (!nation || typeof nation !== "object") return;
+  const gMul = Math.max(0, Number(goldMul) || 1);
+  const tMul = Math.max(0, Number(troopMul) || 1);
+  nation.gold = Math.max(0, Math.floor((Number(nation.gold) || 0) * gMul));
+  nation.infantry = Math.max(0, Math.floor((Number(nation.infantry) || 0) * tMul));
+  nation.population = Math.max(0, Math.floor((Number(nation.population) || 0) * tMul));
+  nation.popCap = Math.max(Number(nation.popCap) || 0, Number(nation.population) || 0);
+  const troopsCap = Math.max(0, Number(nation.troopsCap) || 0);
+  if ((Number(nation.infantry) || 0) > troopsCap) nation.troopsCap = Number(nation.infantry) || troopsCap;
+}
+
+function applyDifficultyToNationCombat(nation, attackMul = 1, mobShift = 0) {
+  if (!nation || typeof nation !== "object") return;
+  const currentAttack = Math.max(0, Math.min(1, Number(nation.attackRatio) || 0.2));
+  const nextAttack = Math.max(0.02, Math.min(1, currentAttack * (Number(attackMul) || 1)));
+  const currentMob = Math.max(0, Math.min(1, Number(nation.mobilization) || 0.30));
+  const nextMob = Math.max(0.10, Math.min(1, currentMob + (Number(mobShift) || 0)));
+  nation.attackRatio = nextAttack;
+  nation.aggression = nextAttack;
+  nation.attackCommit = nextAttack;
+  nation.mobilization = nextMob;
+}
+
+function applyRuntimeMatchStartModifiers(worldRef, matchConfigRaw) {
+  if (!worldRef || !Array.isArray(worldRef.nation)) return;
+  const cfg = sanitizeMatchConfig(matchConfigRaw);
+  const profile = getDifficultyProfile(cfg.difficulty);
+  const playerGoldMul = profile.playerStart * Math.max(1, Number(cfg.playerGoldBoost) || 1);
+  const playerTroopMul = profile.playerStart * Math.max(1, Number(cfg.playerTroopsBoost) || 1);
+  worldRef._aiWarGraceS = Math.max(0, Number(profile.aiWarGraceS) || 0);
+
+  const player = worldRef.nation[OWNER_PLAYER];
+  if (player) {
+    scaleNationResources(player, playerGoldMul, playerTroopMul);
+    applyDifficultyToNationCombat(player, 1, 0);
+  }
+
+  for (let id = 2; id < worldRef.nation.length; id++) {
+    const nation = worldRef.nation[id];
+    if (!nation) continue;
+    scaleNationResources(nation, profile.aiStart, profile.aiStart);
+    applyDifficultyToNationCombat(nation, profile.aiAttackMul, profile.aiMobShift);
+  }
+}
+
+function applyRuntimeMatchWorldRestrictions(worldRef, matchConfigRaw) {
+  if (!worldRef || typeof worldRef !== "object") return;
+  const disabledTypes = getDisabledStructureTypes(matchConfigRaw);
+  const base = typeof worldRef.__matchRuleBasePlaceStructure === "function"
+    ? worldRef.__matchRuleBasePlaceStructure
+    : (typeof worldRef.placeStructure === "function" ? worldRef.placeStructure.bind(worldRef) : null);
+  if (!base) return;
+  if (typeof worldRef.__matchRuleBasePlaceStructure !== "function") {
+    Object.defineProperty(worldRef, "__matchRuleBasePlaceStructure", {
+      value: base,
+      configurable: true,
+      enumerable: false,
+      writable: true
+    });
+  }
+  worldRef.placeStructure = (type, ownerId, x, y, ...rest) => {
+    const normalized = String(type || "").toLowerCase();
+    if (disabledTypes.has(normalized)) {
+      return { ok: false, reason: `${structureTypeLabel(normalized)} is disabled for this match.` };
+    }
+    return base(normalized, ownerId, x, y, ...rest);
+  };
+}
+
+function easeInOut01(value) {
+  const x = Math.max(0, Math.min(1, Number(value) || 0));
+  return x * x * (3 - 2 * x);
+}
+
+function rampDifficultyValue(startValue, endValue, elapsedS, durationS) {
+  const start = Number.isFinite(Number(startValue)) ? Number(startValue) : 1;
+  const end = Number.isFinite(Number(endValue)) ? Number(endValue) : start;
+  const t = Math.max(0, Number(elapsedS) || 0);
+  const dur = Math.max(1, Number(durationS) || 1);
+  return start + (end - start) * easeInOut01(t / dur);
+}
+
+function applyRuntimeLiveMatchModifiers(lobby, runtime, frameDtS) {
+  const worldRef = runtime?.world;
+  if (!worldRef || !Array.isArray(worldRef.nation)) return;
+  if (worldRef._spawnPhase && worldRef._spawnPhase.active) {
+    runtime.liveModifierAccS = 0;
+    return;
+  }
+
+  const cfg = sanitizeMatchConfig(lobby?.matchConfig);
+  const profile = getDifficultyProfile(cfg.difficulty);
+  const worldTimeS = Math.max(0, Number(worldRef.time) || 0);
+  const playerIncomeMul = rampDifficultyValue(
+    profile.playerIncomeOpen,
+    profile.playerIncomeLate,
+    worldTimeS,
+    profile.economyRampS
+  );
+  const aiIncomeMul = rampDifficultyValue(
+    profile.aiIncomeOpen,
+    profile.aiIncomeLate,
+    worldTimeS,
+    profile.economyRampS
+  );
+  const applyInfiniteResources = (nation) => {
+    if (!nation || !nation.alive) return;
+    if (cfg.infiniteGold) nation.gold = Math.max(Number(nation.gold) || 0, 1_000_000_000);
+    if (cfg.infiniteTroops) {
+      nation.troopsCap = Math.max(Number(nation.troopsCap) || 0, 1_000_000_000);
+      nation.infantry = Math.max(Number(nation.infantry) || 0, 1_000_000_000);
+    }
+  };
+  for (let id = 1; id < worldRef.nation.length; id++) applyInfiniteResources(worldRef.nation[id]);
+
+  runtime.liveModifierAccS = Math.max(0, Number(runtime.liveModifierAccS) || 0) + Math.max(0, Number(frameDtS) || 0);
+  if (runtime.liveModifierAccS < 1) return;
+  const ticks = Math.floor(runtime.liveModifierAccS);
+  runtime.liveModifierAccS -= ticks;
+
+  const humanNationIds = (worldRef._humanNationIds instanceof Set) ? worldRef._humanNationIds : null;
+  const applyIncomePulse = (nation, mul) => {
+    if (!nation || !nation.alive) return;
+    const m = Number(mul);
+    if (!Number.isFinite(m) || Math.abs(m - 1) < 0.001) return;
+    const gainGold = Math.max(0, Number(nation.goldPS) || 0);
+    const gainTroops = Math.max(0, Number(nation.infantryPS) || 0);
+    if (m > 1) {
+      nation.gold = Math.max(0, (Number(nation.gold) || 0) + (gainGold * (m - 1)));
+      nation.infantry = Math.max(0, (Number(nation.infantry) || 0) + (gainTroops * (m - 1)));
+    } else {
+      nation.gold = Math.max(0, (Number(nation.gold) || 0) - (gainGold * (1 - m)));
+      nation.infantry = Math.max(0, (Number(nation.infantry) || 0) - (gainTroops * (1 - m)));
+    }
+  };
+
+  for (let tick = 0; tick < ticks; tick++) {
+    for (let id = 1; id < worldRef.nation.length; id++) {
+      const nation = worldRef.nation[id];
+      if (!nation || (cfg.infiniteGold || cfg.infiniteTroops)) continue;
+      const isHuman = humanNationIds ? humanNationIds.has(id) : id === OWNER_PLAYER;
+      applyIncomePulse(nation, isHuman ? playerIncomeMul : aiIncomeMul);
+    }
+  }
 }
 
 function buildWorldSpecFromMatchConfig(matchConfigRaw) {
@@ -1343,9 +1631,57 @@ function enforceHumanNationRuntimeState(runtime) {
   }
 }
 
+function applyRuntimeAssignmentsToWorld(lobby, runtime, { emitJoinEvents = false, log = false } = {}) {
+  if (!runtime?.world || !runtime.assignmentsBySession) return;
+  const playerBaseline = (runtime.world.nation && runtime.world.nation[OWNER_PLAYER] && typeof runtime.world.nation[OWNER_PLAYER] === "object")
+    ? cloneWire(runtime.world.nation[OWNER_PLAYER])
+    : null;
+  const humanNationIds = new Set();
+  const assignmentLog = [];
+  for (const a of runtime.assignmentsBySession.values()) {
+    humanNationIds.add(a.nationId | 0);
+    const nid = a.nationId | 0;
+    const player = Array.isArray(lobby.players)
+      ? (lobby.players.find((p) => String(p?.sessionId || "") === String(a.sessionId || "")) || null)
+      : null;
+    const nation = runtime.world.nation?.[nid];
+    if (nation && typeof nation === "object") {
+      if (nid !== OWNER_PLAYER && playerBaseline && typeof playerBaseline === "object") {
+        // Keep all human players on the same baseline as the solo player ruleset.
+        nation.gold = Number(playerBaseline.gold) || nation.gold || 0;
+        nation.population = Number(playerBaseline.population) || nation.population || 0;
+        nation.infantry = Number(playerBaseline.infantry) || nation.infantry || 0;
+        nation.attackRatio = Number(playerBaseline.attackRatio) || nation.attackRatio || 0.2;
+        nation.aggression = Number(playerBaseline.aggression) || Number(playerBaseline.attackCommit) || nation.aggression || 0;
+        nation.attackCommit = Number(playerBaseline.attackCommit) || Number(playerBaseline.aggression) || nation.attackCommit || 0;
+        nation.mobilization = Number(playerBaseline.mobilization) || nation.mobilization || 0.35;
+      }
+      nation.name = sanitizeName(player?.name || nation.name || `Player ${nid}`);
+      if (player?.flag && typeof player.flag === "object") {
+        nation.flag = cloneWire(player.flag) || nation.flag || null;
+      }
+      nation.isHuman = true;
+      nation.isAiControlled = false;
+    }
+    if (nid >= 2 && Array.isArray(runtime.world._ai) && nid < runtime.world._ai.length) {
+      runtime.world._ai[nid] = null;
+    }
+    assignmentLog.push(`${String(a.playerId || a.sessionId || "")}:${nid}`);
+  }
+  runtime.world._humanNationIds = humanNationIds;
+  enforceHumanNationRuntimeState(runtime);
+  if (emitJoinEvents) pushInitialPlayerJoinEvents(lobby, runtime);
+  if (log) {
+    console.log(`[runtime-assign] lobby=${String(lobby?.code || "")} players=${assignmentLog.join(",")}`);
+  }
+}
+
 function ensureRuntimeAssignments(lobby, runtime) {
   if (!runtime || !runtime.world) return;
-  if (runtime.assignmentsBySession && runtime.assignmentsBySession.size > 0) return;
+  if (runtime.assignmentsBySession && runtime.assignmentsBySession.size > 0) {
+    applyRuntimeAssignmentsToWorld(lobby, runtime);
+    return;
+  }
 
   runtime.assignmentsBySession = new Map();
   runtime.nationToSession = new Map();
@@ -1395,46 +1731,7 @@ function ensureRuntimeAssignments(lobby, runtime) {
       throw new Error(`Runtime nation->session mismatch for nation ${nationId}.`);
     }
   }
-
-  const playerBaseline = (runtime.world.nation && runtime.world.nation[OWNER_PLAYER] && typeof runtime.world.nation[OWNER_PLAYER] === "object")
-    ? cloneWire(runtime.world.nation[OWNER_PLAYER])
-    : null;
-  const humanNationIds = new Set();
-  const assignmentLog = [];
-  for (const a of runtime.assignmentsBySession.values()) {
-    humanNationIds.add(a.nationId | 0);
-    const nid = a.nationId | 0;
-    const player = Array.isArray(lobby.players)
-      ? (lobby.players.find((p) => String(p?.sessionId || "") === String(a.sessionId || "")) || null)
-      : null;
-    const nation = runtime.world.nation?.[nid];
-    if (nation && typeof nation === "object") {
-      if (nid !== OWNER_PLAYER && playerBaseline && typeof playerBaseline === "object") {
-        // Keep all human players on parity with host/player baseline, not AI-skewed starts.
-        nation.gold = Number(playerBaseline.gold) || nation.gold || 0;
-        nation.population = Number(playerBaseline.population) || nation.population || 0;
-        nation.infantry = Number(playerBaseline.infantry) || nation.infantry || 0;
-        nation.attackRatio = Number(playerBaseline.attackRatio) || nation.attackRatio || 0.2;
-        nation.aggression = Number(playerBaseline.aggression) || Number(playerBaseline.attackCommit) || nation.aggression || 0;
-        nation.attackCommit = Number(playerBaseline.attackCommit) || Number(playerBaseline.aggression) || nation.attackCommit || 0;
-        nation.mobilization = Number(playerBaseline.mobilization) || nation.mobilization || 0.35;
-      }
-      nation.name = sanitizeName(player?.name || nation.name || `Player ${nid}`);
-      if (player?.flag && typeof player.flag === "object") {
-        nation.flag = cloneWire(player.flag) || nation.flag || null;
-      }
-      nation.isHuman = true;
-      nation.isAiControlled = false;
-    }
-    if (nid >= 2 && Array.isArray(runtime.world._ai) && nid < runtime.world._ai.length) {
-      runtime.world._ai[nid] = null;
-    }
-    assignmentLog.push(`${String(a.playerId || a.sessionId || "")}:${nid}`);
-  }
-  runtime.world._humanNationIds = humanNationIds;
-  enforceHumanNationRuntimeState(runtime);
-  pushInitialPlayerJoinEvents(lobby, runtime);
-  console.log(`[runtime-assign] lobby=${String(lobby?.code || "")} players=${assignmentLog.join(",")}`);
+  applyRuntimeAssignmentsToWorld(lobby, runtime, { emitJoinEvents: true, log: true });
 }
 
 async function ensureLobbyRuntime(lobby) {
@@ -1481,6 +1778,7 @@ async function ensureLobbyRuntime(lobby) {
       world,
       simTick: 0,
       simAccMs: 0,
+      liveModifierAccS: 0,
       lastPumpAtMs: nowMs(),
       lastSocketSeenAtMs: nowMs(),
       pausedNoSockets: false,
@@ -1515,6 +1813,8 @@ async function ensureLobbyRuntime(lobby) {
       nationToSession: new Map()
     };
     lobby.runtime = runtime;
+    applyRuntimeMatchStartModifiers(world, lobby.matchConfig);
+    applyRuntimeMatchWorldRestrictions(world, lobby.matchConfig);
     ensureRuntimeAssignments(lobby, runtime);
     return runtime;
   })();
@@ -2661,6 +2961,7 @@ function flushRuntimeTick(lobby, runtime, now) {
   let steps = 0;
   while (runtime.simAccMs >= stepMs && steps < MATCH_MAX_STEPS_PER_PUMP) {
     runtime.world.tick();
+    applyRuntimeLiveMatchModifiers(lobby, runtime, Number(activeSimDtS) || DEFAULT_SIM_DT_S);
     runtime.simTick = (runtime.simTick | 0) + 1;
     runtime.simAccMs -= stepMs;
     steps++;
@@ -2875,6 +3176,11 @@ function validateActorNation(cmdRaw, argsRaw, assignedNationIdRaw) {
   return { ok: true, reason: "" };
 }
 
+function isHostOnlyMatchCommand(cmdRaw) {
+  const cmd = String(cmdRaw || "").trim().toLowerCase();
+  return cmd === "regenerate_match";
+}
+
 function applyAuthoritativeCommand(world, cmdRaw, argsRaw) {
   if (!world) return { ok: false, reason: "World unavailable." };
   const cmd = String(cmdRaw || "").trim();
@@ -2948,6 +3254,49 @@ function applySpawnPickFallback(world, assignedNationIdRaw, argsRaw) {
   return { ok: false, reason: "Spawn fallback failed." };
 }
 
+function applyPostRegenerateRuntimeState(lobby, runtime, argsRaw) {
+  if (!lobby || !runtime?.world) return;
+  const args = Array.isArray(argsRaw) ? argsRaw : [];
+  const nextSeed = toSeed(args[0]);
+  const opts = (args[1] && typeof args[1] === "object") ? args[1] : null;
+  const requestedMapMode = resolveMatchMapMode(opts, lobby.matchConfig);
+  const currentEarthData = runtime.world._earthData || null;
+  const effectiveMapMode = (requestedMapMode === MAP_MODE_WORLD && currentEarthData) ? MAP_MODE_WORLD : MAP_MODE_GENERATOR;
+  if (lobby.matchWorldSpec && typeof lobby.matchWorldSpec === "object") {
+    lobby.matchWorldSpec = sanitizeWorldSpec({
+      width: lobby.matchWorldSpec.width,
+      height: lobby.matchWorldSpec.height,
+      aiCount: lobby.matchWorldSpec.aiCount,
+      mapMode: effectiveMapMode
+    }) || lobby.matchWorldSpec;
+  }
+  lobby.matchSeed = nextSeed;
+  lobby.startedAt = nowMs();
+  runtime.liveModifierAccS = 0;
+  runtime.lastStatsSnapshotAtMs = 0;
+  runtime.lastRelationsSnapshotAtMs = 0;
+  runtime.lastEventsSnapshotAtMs = 0;
+  runtime.lastEntitySnapshotAtMs = 0;
+  runtime.lastStructuresSnapshotAtMs = 0;
+  runtime.lastOperationsSnapshotAtMs = 0;
+  runtime.lastMobileSnapshotAtMs = 0;
+  runtime.lastSnapshotAtMs = 0;
+  if (runtime.tileDeltaBacklog && typeof runtime.tileDeltaBacklog.clear === "function") {
+    runtime.tileDeltaBacklog.clear();
+  }
+  runtime.ownerSweepCursor = 0;
+  runtime.ownerSweepActive = false;
+  applyRuntimeMatchStartModifiers(runtime.world, lobby.matchConfig);
+  applyRuntimeMatchWorldRestrictions(runtime.world, lobby.matchConfig);
+  applyRuntimeAssignmentsToWorld(lobby, runtime);
+  activateOwnerSweep(runtime, "regenerate_match");
+  touchLobby(lobby);
+  broadcastLobby(lobby, "lobby_update");
+  markLobbySocketsPendingInitialSync(lobby);
+  broadcastFullSync(lobby, runtime, "regenerate_match");
+  runtime.lastSnapshotAtMs = nowMs();
+}
+
 async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
   if (!lobby.started) {
     wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: 0, serverTickProcessed: 0, reason: "Match has not started." });
@@ -2976,6 +3325,10 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
   const input = sanitizeMatchInput(msg);
   if (!input) {
     wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: 0, serverTickProcessed: runtime.simTick | 0, reason: "Invalid input payload." });
+    return;
+  }
+  if (isHostOnlyMatchCommand(input.cmd) && String(sessionId || "") !== String(lobby.hostSessionId || "")) {
+    wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: input.seq | 0, serverTickProcessed: runtime.simTick | 0, reason: "Only the host can regenerate the multiplayer match." });
     return;
   }
 
@@ -3037,6 +3390,10 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
   // Push an authoritative delta immediately after accepted input to reduce visible input latency.
   try {
     const cmd = String(input.cmd || "").trim().toLowerCase();
+    if (cmd === "regenerate_match") {
+      applyPostRegenerateRuntimeState(lobby, runtime, args);
+      return;
+    }
     if (cmd === "pick_spawn") {
       runtime.lastSnapshotAtMs = nowMs();
       broadcastSnapshotDelta(lobby, runtime);

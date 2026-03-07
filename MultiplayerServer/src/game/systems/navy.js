@@ -176,6 +176,8 @@ export function installNavy(World) {
       combatShips.length = 0;
       const shipsByComp = this._navyTickShipsByComp || (this._navyTickShipsByComp = new Map());
       shipsByComp.clear();
+      const rigsByComp = this._navyTickRigsByComp || (this._navyTickRigsByComp = new Map());
+      rigsByComp.clear();
       const now = Number(this.time) || 0;
 
       const cacheLen = (this._nationCount | 0) + 1;
@@ -215,6 +217,27 @@ export function installNavy(World) {
           }
           arr.push(s);
         }
+      }
+
+      const structures = this.structures || [];
+      for (let i = 0; i < structures.length; i++) {
+        const st = structures[i];
+        if (!st) continue;
+        if (String(st.type || "") !== "coastal_rig") continue;
+        if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(st)) continue;
+        const owner = st.owner | 0;
+        if (owner <= 0 || !this.nation[owner]?.alive) continue;
+        const sx = st.x | 0;
+        const sy = st.y | 0;
+        if (!this._navyIsWater(sx, sy)) continue;
+        const compId = this._navyWaterCompAt(sx, sy) | 0;
+        if (!compId) continue;
+        let arr = rigsByComp.get(compId);
+        if (!arr) {
+          arr = [];
+          rigsByComp.set(compId, arr);
+        }
+        arr.push(st);
       }
 
       for (let i = 0; i < ships.length; i++) {
@@ -301,7 +324,60 @@ export function installNavy(World) {
           }
         }
 
-        if (!tgt) continue;
+        if (!tgt) {
+          const rigPool = wComp ? (rigsByComp.get(wComp) || []) : [];
+          let bestRig = null;
+          let bestRigDist = 1e9;
+          for (let j = 0; j < rigPool.length; j++) {
+            const rig = rigPool[j];
+            if (!rig) continue;
+            const o = rig.owner | 0;
+            if (o <= 0 || o === A) continue;
+
+            let hostile = false;
+            if ((relStamp[o] >>> 0) === relGen && (relOwner[o] | 0) === A) {
+              hostile = (relOk[o] | 0) === 1;
+            } else {
+              const pAO = this._pair(A, o);
+              const alliedAO = (this._alliedUntil[pAO] || 0) > now;
+              const ceasefireAO = (this._ceasefireUntil[pAO] || 0) > now;
+              hostile = !alliedAO && (this._atWar[pAO] === 1) && !ceasefireAO;
+              relStamp[o] = relGen;
+              relOwner[o] = A;
+              relOk[o] = hostile ? 1 : 0;
+            }
+            if (!hostile) continue;
+
+            const d = Math.abs((rig.x | 0) - wx) + Math.abs((rig.y | 0) - wy);
+            if (d > (WARSHIP_CHASE_TILES + 2)) continue;
+            if (d < bestRigDist) {
+              bestRigDist = d;
+              bestRig = rig;
+            }
+          }
+
+          if (!bestRig) continue;
+          if (bestRigDist <= WARSHIP_RANGE_TILES) {
+            const sid = bestRig.id | 0;
+            const aliveRig = this._structureById && typeof this._structureById.get === "function"
+              ? this._structureById.get(sid)
+              : null;
+            if (aliveRig && String(aliveRig.type || "") === "coastal_rig") {
+              this._removeStructureById(sid);
+              const victimOwner = bestRig.owner | 0;
+              const playerInvolved = (A === OWNER.PLAYER) || (victimOwner === OWNER.PLAYER);
+              if (playerInvolved && this.time >= this._warEventCooldownUntil[OWNER.PLAYER]) {
+                this._warEventCooldownUntil[OWNER.PLAYER] = this.time + WAR_EVENT_COOLDOWN_S;
+                if (victimOwner === OWNER.PLAYER) this._pushEvent("Your Coastal Rig was destroyed by a warship.");
+                else this._pushEvent("Enemy Coastal Rig destroyed.");
+              }
+            }
+          } else {
+            w.tx = bestRig.x | 0;
+            w.ty = bestRig.y | 0;
+          }
+          continue;
+        }
 
         const tx = (tgt.cx | 0), ty = (tgt.cy | 0);
         const dMan = Math.abs(tx - wx) + Math.abs(ty - wy);
@@ -601,7 +677,17 @@ export function installNavy(World) {
       if ((nat.gold || 0) < launchCost) {
         return { ok: false, reason: `Not enough gold to launch warship (need ${Math.floor(launchCost)}).` };
       }
+      const oilNeed = (typeof this.getOilCostForAction === "function")
+        ? Math.max(0, Number(this.getOilCostForAction("warship")) || 0)
+        : 0;
+      if (oilNeed > 0 && typeof this.canAffordResourceBundle === "function") {
+        const oilRes = this.canAffordResourceBundle(A, { oil: oilNeed }, "Warship launch");
+        if (!oilRes.ok) return oilRes;
+      }
       nat.gold = Math.max(0, (nat.gold || 0) - launchCost);
+      if (oilNeed > 0 && typeof this.spendResourceBundle === "function") {
+        this.spendResourceBundle(A, { oil: oilNeed });
+      }
 
       const ship = {
         id: (this._nextShipId++ | 0),

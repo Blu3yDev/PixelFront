@@ -7,7 +7,12 @@ import {
   CEASEFIRE_DURATION_S,
   MAX_ALLIES,
   OWNER,
+  RESOURCE_STOCK_CAP,
   STRUCT_STACK_MAX,
+  TRADE_DEAL_MAX_DURATION_MIN,
+  TRADE_DEAL_MAX_RATE_PER_MIN,
+  TRADE_DEAL_MIN_DURATION_MIN,
+  TRADE_DEAL_MIN_RATE_PER_MIN,
   WAR_MIN_INF_TO_ADVANCE,
   attackCommitFromRatio
 } from "../config.js";
@@ -16,6 +21,33 @@ import { clamp01, clamp8, clampInt, fbm01, hash01, lerp, mulberry32, noise2, rid
 function isHighValueNukeStructureType(typeRaw) {
   const t = String(typeRaw || "");
   return t === "missile_silo" || t === "abm_launcher" || t === "factory" || t === "capital";
+}
+
+const AI_TRADE_RESOURCES = Object.freeze(["food", "steel", "oil"]);
+
+function aiTradeGreed(personaRaw) {
+  const persona = (personaRaw && typeof personaRaw === "object") ? personaRaw : null;
+  const econ = clamp01(Number(persona?.econ ?? 0.5));
+  const diplomacy = clamp01(Number(persona?.diplomacy ?? 0.5));
+  const aggression = clamp01(Number(persona?.aggression ?? 0.25));
+  return clamp01(0.18 + (econ * 0.34) + (aggression * 0.18) - (diplomacy * 0.12));
+}
+
+function aiTradePickiness(personaRaw) {
+  const persona = (personaRaw && typeof personaRaw === "object") ? personaRaw : null;
+  const econ = clamp01(Number(persona?.econ ?? 0.5));
+  const diplomacy = clamp01(Number(persona?.diplomacy ?? 0.5));
+  const aggression = clamp01(Number(persona?.aggression ?? 0.25));
+  return clamp01(0.20 + ((1 - diplomacy) * 0.40) + (econ * 0.14) + (aggression * 0.08));
+}
+
+function aiTradeNeediness(metricsRaw, warBias = 0) {
+  const metrics = (metricsRaw && typeof metricsRaw === "object") ? metricsRaw : null;
+  const needRate = Math.max(0, Number(metrics?.needRate) || 0);
+  const stock = Math.max(0, Number(metrics?.stock) || 0);
+  const cap = Math.max(1, Number(metrics?.cap) || 1);
+  const shortageShare = 1 - Math.min(1, stock / cap);
+  return clamp01(0.10 + (needRate / Math.max(180, needRate + 180)) + (shortageShare * 0.22) + Math.max(0, warBias));
 }
 
 export function installAI(World) {
@@ -40,7 +72,9 @@ export function installAI(World) {
       }
 
       // Process a moving window of pair rows each pass to avoid large frame spikes.
-      const rowsBudget = clampInt(Math.ceil(this._nationCount * 0.08), 6, 24);
+      const profile = (typeof this.getPerformanceProfile === "function") ? this.getPerformanceProfile() : null;
+      const simCadenceMul = Math.max(1, Math.min(3, Number(profile?.simCadenceMul) || 1));
+      const rowsBudget = clampInt(Math.ceil((this._nationCount * 0.08) / simCadenceMul), 4, 24);
       let rowsDone = 0;
       while (rowsDone < rowsBudget) {
         const A = this._diplomacyScanA | 0;
@@ -62,6 +96,7 @@ export function installAI(World) {
 
               if (toIsHuman) {
                 this._clearPending(from, to);
+                this._markNationPairActivity(from, to, 8);
                 this._pushEvent(`${this._nameOf(from)}'s alliance request expired.`);
               } else {
                 // Acceptance is driven by doctrine, power balance, and threat environment.
@@ -100,11 +135,13 @@ export function installAI(World) {
             (this._countAllies(to) < MAX_ALLIES);
 
           this._clearPending(from, to);
+          this._markNationPairActivity(from, to, 8);
           const playerInvolved = (from === OWNER.PLAYER || to === OWNER.PLAYER);
 
           if (accept) {
             const allyUntil = this.time + ALLIANCE_DURATION_S;
             this._setAlliance(from, to, allyUntil);
+            this._markNationPairActivity(from, to, 16);
             if (playerInvolved) {
               this._pushEvent(`${this._nameOf(from)} and ${this._nameOf(to)} formed an alliance.`, {
                 kind: "alliance_formed",
@@ -131,12 +168,14 @@ export function installAI(World) {
 
               if (toIsHuman) {
                 this._clearCeasefirePending(from, to);
+                this._markNationPairActivity(from, to, 8);
                 this._pushEvent(`${this._nameOf(from)}'s ceasefire request expired.`);
               } else {
                 const alliedNow = (this._alliedUntil[pAB] || 0) > this.time;
                 const atWarNow = (this._atWar[pAB] === 1) && !alliedNow;
                 if (!atWarNow) {
                   this._clearCeasefirePending(from, to);
+                  this._markNationPairActivity(from, to, 8);
                 } else {
                   const toPersona = this._ai[to]?.persona;
                   const seekPeaceAt = toPersona ? clamp01(toPersona.seekPeaceAt ?? 0.7) : 0.7;
@@ -159,10 +198,12 @@ export function installAI(World) {
                   const accept = this._rng() < clamp01(acceptP);
 
                   this._clearCeasefirePending(from, to);
+                  this._markNationPairActivity(from, to, 8);
 
                   if (accept) {
                     const untilCease = this.time + CEASEFIRE_DURATION_S;
                     this._setCeasefire(from, to, untilCease);
+                    this._markNationPairActivity(from, to, 14);
                     this._pushEvent(`${this._nameOf(from)} and ${this._nameOf(to)} agreed to a ceasefire (${Math.round(CEASEFIRE_DURATION_S)}s).`, {
                       kind: "ceasefire_agreed",
                       from,
@@ -1420,6 +1461,123 @@ export function installAI(World) {
       return null;
     }
 
+  World.prototype._aiFindCoastalRigSite = function(ownerId, cx, cy, radius = 18) {
+      const A = ownerId | 0;
+      const n = this.nation[A];
+      if (!n || !n.alive || n.collapsed) return null;
+
+      const w = this.w | 0;
+      const h = this.h | 0;
+      const r = Math.max(8, radius | 0);
+      const twoPi = Math.PI * 2;
+
+      if (!this._waterComp || this._waterComp.length !== (w * h) || !((this._waterCompCount | 0) > 0)) {
+        this._recomputeWaterComponents();
+      }
+
+      const acceptAt = (x, y) => {
+        if (x < 1 || y < 1 || x >= w - 1 || y >= h - 1) return null;
+        const idx = (y * w + x) | 0;
+        if (this.land[idx]) return null;
+        if (!this._canPlaceCoastalRigFootprint(A, x, y)) return null;
+        return { x: x | 0, y: y | 0 };
+      };
+
+      const tryAroundSeed = (sx, sy) => {
+        const direct = acceptAt(sx | 0, sy | 0);
+        if (direct) return direct;
+
+        const seedIdx = ((sy | 0) * w + (sx | 0)) | 0;
+        const wantComp = (!this.land[seedIdx] && this._waterComp) ? (this._waterComp[seedIdx] | 0) : 0;
+        const jitterR = Math.max(4, Math.min(14, (r * 0.45) | 0));
+        for (let t = 0; t < 22; t++) {
+          const ang = this._rng() * twoPi;
+          const rr = 2 + Math.sqrt(this._rng()) * jitterR;
+          const x = clampInt((sx + Math.cos(ang) * rr) | 0, 1, w - 2);
+          const y = clampInt((sy + Math.sin(ang) * rr) | 0, 1, h - 2);
+          const idx = (y * w + x) | 0;
+          if (this.land[idx]) continue;
+          if (wantComp && this._waterComp && ((this._waterComp[idx] | 0) !== wantComp)) continue;
+          const hit = acceptAt(x, y);
+          if (hit) return hit;
+        }
+        return null;
+      };
+
+      const tryAdjacentWater = (x, y) => {
+        const dirs = [
+          [x - 1, y],
+          [x + 1, y],
+          [x, y - 1],
+          [x, y + 1]
+        ];
+        for (let i = 0; i < dirs.length; i++) {
+          const nx = dirs[i][0] | 0;
+          const ny = dirs[i][1] | 0;
+          if (nx < 1 || ny < 1 || nx >= w - 1 || ny >= h - 1) continue;
+          const idx = (ny * w + nx) | 0;
+          if (this.land[idx]) continue;
+          const hit = tryAroundSeed(nx, ny);
+          if (hit) return hit;
+        }
+        return null;
+      };
+
+      const ports = this._portsByOwner?.[A] || [];
+      for (let i = 0; i < ports.length; i++) {
+        const st = ports[i];
+        if (!st) continue;
+        const hit = tryAdjacentWater(st.x | 0, st.y | 0);
+        if (hit) return hit;
+      }
+
+      const ownerTiles = (typeof this._getOwnerTiles === "function") ? this._getOwnerTiles(A) : null;
+      if (ownerTiles && ownerTiles.length > 0) {
+        const len = ownerTiles.length | 0;
+        const sampleCount = clampInt(Math.round(26 + Math.sqrt(len) * 2.2), 26, 180);
+        const stride = Math.max(1, (len / sampleCount) | 0);
+        let pos = (this._rng() * len) | 0;
+        for (let i = 0; i < sampleCount; i++) {
+          const idx = ownerTiles[pos] | 0;
+          pos += stride;
+          if (pos >= len) pos -= len;
+          if (idx < 0 || idx >= (w * h)) continue;
+          if (!this.land[idx]) continue;
+          if (!this._touchesWater4(idx)) continue;
+          const x = idx % w;
+          const y = (idx / w) | 0;
+          const hit = tryAdjacentWater(x, y);
+          if (hit) return hit;
+        }
+      }
+
+      for (let t = 0; t < 240; t++) {
+        const ang = this._rng() * twoPi;
+        const rr = Math.sqrt(this._rng()) * Math.max(r, Math.min(w, h) * 0.42);
+        const x = clampInt((cx + Math.cos(ang) * rr) | 0, 1, w - 2);
+        const y = clampInt((cy + Math.sin(ang) * rr) | 0, 1, h - 2);
+        const hit = acceptAt(x, y);
+        if (hit) return hit;
+      }
+
+      const waterSamples = this._waterCompSampleIdx;
+      const compCount = Math.max(0, this._waterCompCount | 0);
+      if (waterSamples && compCount > 0) {
+        const samplePasses = clampInt(compCount, 8, 64);
+        for (let i = 0; i < samplePasses; i++) {
+          const compId = 1 + ((i + ((this._rng() * compCount) | 0)) % compCount);
+          const idx = waterSamples[compId] | 0;
+          if (idx <= 0 || idx >= (w * h)) continue;
+          const x = idx % w;
+          const y = (idx / w) | 0;
+          const hit = tryAroundSeed(x, y);
+          if (hit) return hit;
+        }
+      }
+
+      return null;
+    }
+
   World.prototype._aiTryBuildStructure = function(id, type, pref) {
       const A = id | 0;
       const n = this.nation[A];
@@ -1446,6 +1604,13 @@ export function installAI(World) {
 
       const land = Math.max(0, this.landOwnedCount[A] | 0);
       const radius = clampInt(Math.round(10 + Math.sqrt(land) * 0.70), 10, 96);
+
+      if (String(type || "") === "coastal_rig") {
+        const site = this._aiFindCoastalRigSite(A, cx, cy, radius);
+        if (!site) return false;
+        const res = this.placeStructure("coastal_rig", A, site.x | 0, site.y | 0);
+        return !!res.ok;
+      }
 
       let pos = this._aiFindOwnedEmptyWithPref(A, cx, cy, radius, pref);
       if (!pos && pref !== "coast") pos = this._aiFindOwnedEmptyWithPref(A, cx, cy, radius, "any");
@@ -1519,6 +1684,316 @@ export function installAI(World) {
         const res = this.placeStructure(type, A, x, y);
         if (res.ok) return true;
       }
+      return false;
+    }
+
+  World.prototype._aiTradeDealCount = function(ownerId) {
+      const A = ownerId | 0;
+      if (A <= 0) return 0;
+      let count = 0;
+      if (Array.isArray(this.tradeDeals)) {
+        for (let i = 0; i < this.tradeDeals.length; i++) {
+          const deal = this.tradeDeals[i];
+          if (!deal) continue;
+          if ((deal.from | 0) === A || (deal.to | 0) === A) count++;
+        }
+      }
+      if (Array.isArray(this.tradeRequests)) {
+        for (let i = 0; i < this.tradeRequests.length; i++) {
+          const request = this.tradeRequests[i];
+          if (!request) continue;
+          if ((request.from | 0) === A || (request.to | 0) === A) count++;
+        }
+      }
+      return count;
+    }
+
+  World.prototype._aiHasTradeDealForResource = function(ownerId, resourceRaw) {
+      const A = ownerId | 0;
+      const resource = String(resourceRaw || "").toLowerCase();
+      if (A <= 0 || !resource) return false;
+      const matchesResource = (item) => {
+        const offer = String(item?.offerResource || "").toLowerCase();
+        const request = String(item?.requestResource || "").toLowerCase();
+        return offer === resource || request === resource;
+      };
+      if (Array.isArray(this.tradeDeals)) {
+        for (let i = 0; i < this.tradeDeals.length; i++) {
+          const deal = this.tradeDeals[i];
+          if (!deal || !matchesResource(deal)) continue;
+          if ((deal.from | 0) === A || (deal.to | 0) === A) return true;
+        }
+      }
+      if (Array.isArray(this.tradeRequests)) {
+        for (let i = 0; i < this.tradeRequests.length; i++) {
+          const request = this.tradeRequests[i];
+          if (!request || !matchesResource(request)) continue;
+          if ((request.from | 0) === A || (request.to | 0) === A) return true;
+        }
+      }
+      return false;
+    }
+
+  World.prototype._aiHasTradeDealBetween = function(aRaw, bRaw, offerResourceRaw = "", requestResourceRaw = "") {
+      const a = aRaw | 0;
+      const b = bRaw | 0;
+      const offerResource = String(offerResourceRaw || "").toLowerCase();
+      const requestResource = String(requestResourceRaw || "").toLowerCase();
+      if (a <= 0 || b <= 0 || a === b) return false;
+      const matchesPair = (item) => {
+        const from = item?.from | 0;
+        const to = item?.to | 0;
+        return (from === a && to === b) || (from === b && to === a);
+      };
+      const matchesResources = (item) => {
+        if (!offerResource || !requestResource) return true;
+        const lhsOffer = String(item?.offerResource || "").toLowerCase();
+        const lhsRequest = String(item?.requestResource || "").toLowerCase();
+        return (
+          (lhsOffer === offerResource && lhsRequest === requestResource) ||
+          (lhsOffer === requestResource && lhsRequest === offerResource)
+        );
+      };
+      if (Array.isArray(this.tradeDeals)) {
+        for (let i = 0; i < this.tradeDeals.length; i++) {
+          const deal = this.tradeDeals[i];
+          if (!deal || !matchesPair(deal) || !matchesResources(deal)) continue;
+          return true;
+        }
+      }
+      if (Array.isArray(this.tradeRequests)) {
+        for (let i = 0; i < this.tradeRequests.length; i++) {
+          const request = this.tradeRequests[i];
+          if (!request || !matchesPair(request) || !matchesResources(request)) continue;
+          return true;
+        }
+      }
+      return false;
+    }
+
+  World.prototype._aiTradeMaxDeals = function(ownerId, persona = null) {
+      const A = ownerId | 0;
+      const p = persona || this._ai[A]?.persona || AI_PERSONAS[0];
+      const n = this._ensureNationResourceState ? this._ensureNationResourceState(A) : this.nation?.[A];
+      const ports = Math.max(0, this._portCount?.[A] | 0);
+      const factories = Math.max(0, Number(n?.resourceFactoryCount) | 0);
+      const rigs = Math.max(0, Number(n?.resourceCoastalRigCount) | 0);
+      let cap = 1;
+      if (ports > 0) cap += 1;
+      if (factories + rigs >= 3) cap += 1;
+      if (Number(p?.econ ?? 0.5) >= 0.6) cap += 1;
+      return clampInt(cap, 1, 4);
+    }
+
+  World.prototype._aiTradeMetrics = function(ownerId, resourceRaw) {
+      const A = ownerId | 0;
+      const resource = String(resourceRaw || "").toLowerCase();
+      const n = this._ensureNationResourceState ? this._ensureNationResourceState(A) : this.nation?.[A];
+      if (!n || !AI_TRADE_RESOURCES.includes(resource)) {
+        return { needRate: 0, offerRate: 0, stock: 0, cap: 1 };
+      }
+
+      const stock = Math.max(0, Number(n[resource]) || 0);
+      const cap = Math.max(1, Number(RESOURCE_STOCK_CAP?.[resource]) || 1);
+      const ports = Math.max(0, this._portCount?.[A] | 0);
+      const airbases = Math.max(0, this._aiCountOwnedStructuresByType?.(A, "airbase") || 0);
+      const atWar = !!this._anyWar(A);
+
+      let needRate = 0;
+      let offerRate = 0;
+
+      if (resource === "food") {
+        const ps = Math.max(0, Number(n.foodPS) || 0);
+        const demand = Math.max(0, Number(n.foodDemandPS) || 0);
+        const reserveStock = Math.max(5500, demand * (atWar ? 360 : 300));
+        const comfortStock = Math.max(9500, demand * (atWar ? 600 : 480));
+        const shortageStock = Math.max(0, reserveStock - stock);
+        const netPS = ps - demand;
+        needRate = shortageStock * 0.055 + Math.max(0, -netPS) * 72;
+        const extraStock = Math.max(0, stock - comfortStock);
+        offerRate = extraStock * 0.032 + Math.max(0, netPS) * 52;
+      } else if (resource === "steel") {
+        const ps = Math.max(0, Number(n.steelPS) || 0);
+        const reserveStock = Math.max(1600, 600 + (Math.max(0, Number(n.resourceFactoryCount) || 0) * 220));
+        const comfortStock = Math.max(4200, reserveStock * 2.0);
+        const shortageStock = Math.max(0, reserveStock - stock);
+        needRate = shortageStock * 0.070 + Math.max(0, 1.0 - ps) * 90;
+        const extraStock = Math.max(0, stock - comfortStock);
+        offerRate = extraStock * 0.040 + Math.max(0, ps - 1.2) * 64;
+      } else if (resource === "oil") {
+        const ps = Math.max(0, Number(n.oilPS) || 0);
+        const operationalFloor = 1200 + (ports * 420) + (airbases * 540) + (atWar ? 1100 : 0);
+        const reserveStock = Math.max(1800, operationalFloor);
+        const comfortStock = Math.max(3400, reserveStock * 1.7);
+        const targetPs = Math.max(1.2, (ports * 0.55) + (airbases * 0.7) + (atWar ? 1.2 : 0.25));
+        const shortageStock = Math.max(0, reserveStock - stock);
+        needRate = shortageStock * 0.060 + Math.max(0, targetPs - ps) * 88;
+        const extraStock = Math.max(0, stock - comfortStock);
+        offerRate = extraStock * 0.036 + Math.max(0, ps - targetPs) * 72;
+      }
+
+      return {
+        stock,
+        cap,
+        needRate: Math.max(0, needRate),
+        offerRate: Math.max(0, offerRate)
+      };
+    }
+
+  World.prototype._aiTryCreateTradeDeal = function(ownerId) {
+      const A = ownerId | 0;
+      const ai = this._ai[A];
+      const n = this.nation[A];
+      if (!ai || !n || !n.alive || n.collapsed) return false;
+      if (typeof this.requestTradeDeal !== "function") return false;
+      const persona = ai.persona || AI_PERSONAS[0];
+      const greed = aiTradeGreed(persona);
+      const pickiness = aiTradePickiness(persona);
+
+      const now = Math.max(0, Number(this.time) || 0);
+      const cooldownUntil = Math.max(0, Number(ai.tradeCooldownUntil) || 0);
+      if (cooldownUntil > now) return false;
+
+      const myDealCap = this._aiTradeMaxDeals(A, ai.persona);
+      if (this._aiTradeDealCount(A) >= myDealCap) {
+        ai.tradeCooldownUntil = now + 12 + this._rng() * 10;
+        return false;
+      }
+
+      const myMetrics = Object.create(null);
+      for (let i = 0; i < AI_TRADE_RESOURCES.length; i++) {
+        const resource = AI_TRADE_RESOURCES[i];
+        myMetrics[resource] = this._aiTradeMetrics(A, resource);
+      }
+
+      let best = null;
+      for (let B = OWNER.PLAYER; B <= this._nationCount; B++) {
+        if (B === A) continue;
+        const other = this.nation[B];
+        if (!other || !other.alive || other.collapsed) continue;
+
+        const rel = (typeof this.getRelation === "function") ? this.getRelation(A, B) : null;
+        if (rel?.atWar || rel?.warActive || !rel?.allied) continue;
+
+        if (B !== OWNER.PLAYER) {
+          const otherDealCap = this._aiTradeMaxDeals(B, this._ai[B]?.persona || null);
+          if (this._aiTradeDealCount(B) >= otherDealCap) continue;
+        }
+
+        const relationMul = 1.35;
+        const otherMetrics = Object.create(null);
+        for (let i = 0; i < AI_TRADE_RESOURCES.length; i++) {
+          const resource = AI_TRADE_RESOURCES[i];
+          otherMetrics[resource] = this._aiTradeMetrics(B, resource);
+        }
+
+        for (let i = 0; i < AI_TRADE_RESOURCES.length; i++) {
+          const offerResource = AI_TRADE_RESOURCES[i];
+          const myOffer = Math.max(0, Number(myMetrics[offerResource]?.offerRate) || 0);
+          const theirNeedForOffer = Math.max(0, Number(otherMetrics[offerResource]?.needRate) || 0);
+          if (myOffer < TRADE_DEAL_MIN_RATE_PER_MIN || theirNeedForOffer < TRADE_DEAL_MIN_RATE_PER_MIN * 0.6) continue;
+          if (this._aiHasTradeDealForResource(A, offerResource)) continue;
+          if (B !== OWNER.PLAYER && this._aiHasTradeDealForResource(B, offerResource)) continue;
+
+          for (let j = 0; j < AI_TRADE_RESOURCES.length; j++) {
+            const requestResource = AI_TRADE_RESOURCES[j];
+            if (requestResource === offerResource) continue;
+            if (this._aiHasTradeDealBetween(A, B, offerResource, requestResource)) continue;
+            if (this._aiHasTradeDealForResource(A, requestResource)) continue;
+            if (B !== OWNER.PLAYER && this._aiHasTradeDealForResource(B, requestResource)) continue;
+
+            const myNeed = Math.max(0, Number(myMetrics[requestResource]?.needRate) || 0);
+            const theirOffer = Math.max(0, Number(otherMetrics[requestResource]?.offerRate) || 0);
+            if (myNeed < TRADE_DEAL_MIN_RATE_PER_MIN || theirOffer < TRADE_DEAL_MIN_RATE_PER_MIN) continue;
+
+            const neediness = aiTradeNeediness(myMetrics[requestResource], this._anyWar(A) ? 0.08 : 0);
+            const fairOfferRate = clampInt(
+              Math.round(Math.min(myOffer, Math.max(TRADE_DEAL_MIN_RATE_PER_MIN, theirNeedForOffer))),
+              TRADE_DEAL_MIN_RATE_PER_MIN,
+              TRADE_DEAL_MAX_RATE_PER_MIN
+            );
+            const fairRequestRate = clampInt(
+              Math.round(Math.min(theirOffer, Math.max(TRADE_DEAL_MIN_RATE_PER_MIN, myNeed))),
+              TRADE_DEAL_MIN_RATE_PER_MIN,
+              TRADE_DEAL_MAX_RATE_PER_MIN
+            );
+            const offerRate = clampInt(
+              Math.round(fairOfferRate * (1 + (neediness * 0.14) - (greed * 0.10))),
+              TRADE_DEAL_MIN_RATE_PER_MIN,
+              Math.min(TRADE_DEAL_MAX_RATE_PER_MIN, Math.max(fairOfferRate, Math.round(myOffer)))
+            );
+            const desiredValueRatio = Math.max(
+              0.74,
+              Math.min(1.45, 0.92 + (greed * 0.20) + (pickiness * 0.16) - (neediness * 0.24))
+            );
+            const requestRate = clampInt(
+              Math.round(fairRequestRate * desiredValueRatio),
+              TRADE_DEAL_MIN_RATE_PER_MIN,
+              Math.min(TRADE_DEAL_MAX_RATE_PER_MIN, Math.max(fairRequestRate, Math.round(theirOffer)))
+            );
+            if (offerRate < TRADE_DEAL_MIN_RATE_PER_MIN || requestRate < TRADE_DEAL_MIN_RATE_PER_MIN) continue;
+            const valueRatio = requestRate / Math.max(1, offerRate);
+            const requiredRatio = Math.max(0.70, 0.86 + (greed * 0.14) + (pickiness * 0.12) - (neediness * 0.18));
+            if (valueRatio + 0.00001 < requiredRatio) continue;
+
+            const score = relationMul * (
+              (Math.min(myNeed, requestRate) * (0.95 + (neediness * 0.40))) +
+              (Math.min(theirNeedForOffer, offerRate) * (0.76 + ((1 - greed) * 0.18))) +
+              (valueRatio * 18)
+            );
+            if (!best || score > best.score) {
+              best = {
+                from: A,
+                to: B,
+                offerResource,
+                offerRate,
+                requestResource,
+                requestRate,
+                score
+              };
+            }
+          }
+        }
+      }
+
+      if (!best) {
+        ai.tradeCooldownUntil = now + 10 + this._rng() * 10;
+        return false;
+      }
+
+      const durationBias = Math.min(6, Math.max(best.offerRate, best.requestRate) / 800);
+      const tunedDuration = clampInt(
+        Math.round(6 + this._rng() * 10 + durationBias),
+        TRADE_DEAL_MIN_DURATION_MIN,
+        TRADE_DEAL_MAX_DURATION_MIN
+      );
+      const res = this.requestTradeDeal(
+        best.from,
+        best.to,
+        best.offerResource,
+        best.offerRate,
+        best.requestResource,
+        best.requestRate,
+        tunedDuration
+      );
+      if (res?.ok) {
+        ai.tradeCooldownUntil = now + 24 + this._rng() * 18;
+        if (best.from !== A && this._ai[best.from]) {
+          this._ai[best.from].tradeCooldownUntil = Math.max(
+            Number(this._ai[best.from].tradeCooldownUntil) || 0,
+            now + 16 + this._rng() * 12
+          );
+        }
+        if (best.to !== A && this._ai[best.to]) {
+          this._ai[best.to].tradeCooldownUntil = Math.max(
+            Number(this._ai[best.to].tradeCooldownUntil) || 0,
+            now + 16 + this._rng() * 12
+          );
+        }
+        return true;
+      }
+
+      ai.tradeCooldownUntil = now + 8 + this._rng() * 8;
       return false;
     }
 
@@ -2149,10 +2624,13 @@ export function installAI(World) {
       const fac = this._factoryCount[A] | 0;
       const barr = this._barracksCount[A] | 0;
       const ports = this._portCount[A] | 0;
+      const oil = Math.max(0, Number(n.oil) || 0);
+      const oilPS = Math.max(0, Number(n.oilPS) || 0);
       let defencePosts = 0;
       let missileSilos = 0;
       let abmLaunchers = 0;
       let airbases = 0;
+      let coastalRigs = 0;
       {
         for (let i = 0; i < this.structures.length; i++) {
           const st = this.structures[i];
@@ -2164,6 +2642,7 @@ export function installAI(World) {
           else if (t === "missile_silo") missileSilos += qty;
           else if (t === "abm_launcher") abmLaunchers += qty;
           else if (t === "airbase") airbases += qty;
+          else if (t === "coastal_rig") coastalRigs += qty;
         }
       }
       const myStr = this._aiStrength(A);
@@ -2186,6 +2665,27 @@ export function installAI(World) {
         if (pc > 0 && n.gold >= pc) {
           const okP = this._aiTryBuildStructure(A, "port", "coast");
           if (okP) return;
+        }
+      }
+
+      // Oil economy: once an AI has maritime or air logistics, it should sustain them.
+      {
+        let desiredRigs = 0;
+        if (ports > 0 || airbases > 0 || atWar) desiredRigs = 1;
+        if (ports >= 2 || airbases > 0) desiredRigs += 1;
+        if (land >= 7000) desiredRigs += 1;
+        if (atWar && (ports > 0 || airbases > 0)) desiredRigs += 1;
+        if (oil < 2200 || oilPS < 1.2) desiredRigs += 1;
+        desiredRigs = clampInt(desiredRigs, 0, 4);
+
+        if (coastalRigs < desiredRigs) {
+          const rc = this.getBuildCost("coastal_rig", A) | 0;
+          const reserve = Math.round(rc * (atWar ? 0.20 : 0.38));
+          const buildP = oil < 1800 ? 1.0 : atWar ? 0.72 : 0.48;
+          if (rc > 0 && n.gold >= (rc + reserve) && this._rng() < buildP) {
+            const okRig = this._aiTryBuildStructure(A, "coastal_rig", "any");
+            if (okRig) return;
+          }
         }
       }
 
@@ -2397,9 +2897,9 @@ export function installAI(World) {
       // Active war doctrine: pressure with operations, seek allies, and cut losses when needed.
       if (wars > 0) {
         const now = Number(this.time) || 0;
-        if (this._aiTryRunHighTechDoctrine(A, p)) return;
         const warOffenseDelayUntil = Number(ai.warOffenseDelayUntil) || 0;
         const warOffenseDelayed = warOffenseDelayUntil > this.time;
+        if (!warOffenseDelayed && this._aiTryRunHighTechDoctrine(A, p)) return;
 
         let bestWarEnemy = 0;
         let bestWarRatio = 0;
@@ -2709,6 +3209,102 @@ export function installAI(World) {
       }
     }
 
+  World.prototype._processAiNationStep = function(id, dt, now, budgets, maxElapsed) {
+      const ai = this._ai[id];
+      const n = this.nation[id];
+      if (!ai || !n || !n.alive || n.collapsed) return false;
+
+      const prevStepAt = Number(ai._lastAiStepAt);
+      let elapsed = Number(dt) || 0;
+      if (Number.isFinite(prevStepAt) && now > prevStepAt) {
+        elapsed = Math.max(elapsed, now - prevStepAt);
+      }
+      elapsed = Math.max(0, Math.min(maxElapsed, elapsed));
+      ai._lastAiStepAt = now;
+
+      ai.expandAcc += elapsed;
+      ai.buildAcc += elapsed;
+      ai.strategyAcc += elapsed;
+      ai.tuneAcc += elapsed;
+      ai.highTechAcc += elapsed;
+      ai.donateAcc += elapsed;
+      ai.tradeAcc = Math.max(0, Number(ai.tradeAcc) || 0) + elapsed;
+
+      const atWar = this._anyWar(id);
+
+      const tuneEvery = atWar ? 0.65 : 0.92;
+      if (ai.tuneAcc >= tuneEvery && budgets.tune > 0) {
+        ai.tuneAcc -= tuneEvery;
+        this._aiTuneStance(id);
+        budgets.tune--;
+      }
+
+      if (ai.buildAcc >= ai.buildEvery && budgets.build > 0) {
+        ai.buildAcc -= ai.buildEvery;
+        this._aiBuildStep(id);
+        budgets.build--;
+        this._markNationActivity(id, 8);
+      }
+
+      if (ai.expandAcc >= ai.expandEvery) {
+        ai.expandAcc -= ai.expandEvery;
+        const expandEveryBase = Number(ai.expandEveryBase || ai.expandEvery);
+        if (Number.isFinite(expandEveryBase) && expandEveryBase > 0) {
+          ai.expandEvery = expandEveryBase * (0.88 + this._rng() * 0.24);
+        }
+        if (!atWar) {
+          this._aiTryStartNeutralOperation(id, ai.persona);
+        }
+      }
+
+      const strategyEveryBase = Math.max(0.35, Number(ai.strategyEvery) || 1.20);
+      const strategyEvery = atWar ? (strategyEveryBase * 0.86) : (strategyEveryBase * 1.18);
+      if (ai.strategyAcc >= strategyEvery && budgets.strategy > 0) {
+        ai.strategyAcc -= strategyEvery;
+        this._aiStrategize(id);
+        budgets.strategy--;
+        this._markNationActivity(id, atWar ? 12 : 8);
+      }
+
+      const tradeEvery = Math.max(5.0, Number(ai.tradeEvery) || 8.5);
+      if (ai.tradeAcc >= tradeEvery && budgets.trade > 0) {
+        ai.tradeAcc -= tradeEvery;
+        this._aiTryCreateTradeDeal(id);
+        budgets.trade--;
+      }
+
+      if (ai.donateAcc >= 2.4) {
+        ai.donateAcc -= 2.4;
+
+        const allies = this._getActiveAlliesOf(id);
+        if (allies.length) {
+          const ally = allies[(this._rng() * allies.length) | 0];
+          const pIdAlly = this._pair(id, ally);
+          if ((this._alliedUntil[pIdAlly] || 0) > this.time) {
+            const supportP = clamp01(Number(ai.persona?.supportAllyP ?? 0.30));
+            const myStr = this._aiStrength(id);
+            const allyStr = this._aiStrength(ally);
+            const allyNeedsHelp = this._anyWar(ally) || allyStr < myStr * 0.82;
+
+            const g = Math.floor(Math.max(0, n.gold - 3000));
+            const t = Math.floor(Math.max(0, n.infantry - 58));
+            let donateP = 0.16 + 0.44 * supportP;
+            if (allyNeedsHelp) donateP += 0.20;
+
+            if ((g > 0 || t > 0) && this._rng() < clamp01(donateP)) {
+              const giveGBase = 100 + ((this._rng() * 240) | 0);
+              const giveTBase = 1 + ((this._rng() * 4) | 0);
+              const giveG = Math.min(g, allyNeedsHelp ? Math.round(giveGBase * 1.45) : giveGBase);
+              const giveT = Math.min(t, allyNeedsHelp ? (giveTBase + 1) : giveTBase);
+              if (giveG > 0 || giveT > 0) this.donate(id, ally, giveG, giveT);
+            }
+          }
+        }
+      }
+
+      return true;
+    }
+
   World.prototype._tickAI = function(dt) {
       const aiTotal = Math.max(0, (this._nationCount | 0) - 1);
       if (aiTotal <= 0) return;
@@ -2716,105 +3312,53 @@ export function installAI(World) {
       const firstId = clampInt(this._aiScanStart | 0, 2, this._nationCount);
       const tiles = Math.max(1, (this.w | 0) * (this.h | 0));
       const pressure = (tiles / 1_000_000) + (aiTotal / 180);
+      const profile = this.getPerformanceProfile ? this.getPerformanceProfile() : null;
+      const simCadenceMul = Math.max(1, Math.min(3, Number(profile?.simCadenceMul) || 1));
       let batchFrac = 0.44;
       if (pressure >= 3.0) batchFrac = 0.26;
       else if (pressure >= 2.0) batchFrac = 0.32;
-      const processCount = Math.min(aiTotal, clampInt(Math.ceil(aiTotal * batchFrac), 24, 140));
+      batchFrac = Math.max(0.18, batchFrac / simCadenceMul);
+      const processCount = Math.min(aiTotal, clampInt(Math.ceil(aiTotal * batchFrac), 18, 140));
       const now = Number(this.time) || 0;
       const maxElapsed = Math.max(0.25, (Number(dt) || 0) * 7);
 
-      // Smooth expensive AI phases across frames to avoid periodic spikes.
-      let tuneBudget = clampInt(Math.ceil(processCount * 0.45), 8, 56);
-      let buildBudget = clampInt(Math.ceil(processCount * 0.30), 6, 42);
-      let strategyBudget = clampInt(Math.ceil(processCount * 0.24), 5, 34);
+      const budgets = {
+        tune: clampInt(Math.ceil(processCount * 0.45), 6, 56),
+        build: clampInt(Math.ceil(processCount * 0.30), 5, 42),
+        strategy: clampInt(Math.ceil(processCount * 0.24), 4, 34),
+        trade: clampInt(Math.ceil(processCount * 0.18), 3, 24)
+      };
+      let batchMarks = this._aiBatchMarks;
+      if (!batchMarks || batchMarks.length !== (this._nationCount + 1)) {
+        batchMarks = this._aiBatchMarks = new Uint32Array(this._nationCount + 1);
+      }
+      let batchGen = ((this._aiBatchGen | 0) + 1) >>> 0;
+      if (batchGen === 0) {
+        batchMarks.fill(0);
+        batchGen = 1;
+      }
+      this._aiBatchGen = batchGen;
 
-      for (let n0 = 0; n0 < processCount; n0++) {
-        const id = 2 + ((firstId - 2 + n0) % aiTotal);
-        const ai = this._ai[id];
-        const n = this.nation[id];
-        if (!ai || !n || !n.alive) continue;
-        if (n.collapsed) continue;
-
-        const prevStepAt = Number(ai._lastAiStepAt);
-        let elapsed = Number(dt) || 0;
-        if (Number.isFinite(prevStepAt) && now > prevStepAt) {
-          elapsed = Math.max(elapsed, now - prevStepAt);
-        }
-        elapsed = Math.max(0, Math.min(maxElapsed, elapsed));
-        ai._lastAiStepAt = now;
-
-        ai.expandAcc += elapsed;
-        ai.buildAcc += elapsed;
-        ai.strategyAcc += elapsed;
-        ai.tuneAcc += elapsed;
-        ai.highTechAcc += elapsed;
-        ai.donateAcc += elapsed;
-
-        const atWar = this._anyWar(id);
-
-        const tuneEvery = atWar ? 0.65 : 0.92;
-        if (ai.tuneAcc >= tuneEvery && tuneBudget > 0) {
-          ai.tuneAcc -= tuneEvery;
-          this._aiTuneStance(id);
-          tuneBudget--;
-        }
-
-        if (ai.buildAcc >= ai.buildEvery && buildBudget > 0) {
-          ai.buildAcc -= ai.buildEvery;
-          this._aiBuildStep(id);
-          buildBudget--;
-        }
-
-        // Neutral expansion parity: AI uses the same committed neutral operation model as the player.
-        if (ai.expandAcc >= ai.expandEvery) {
-          ai.expandAcc -= ai.expandEvery;
-          const expandEveryBase = Number(ai.expandEveryBase || ai.expandEvery);
-          if (Number.isFinite(expandEveryBase) && expandEveryBase > 0) {
-            ai.expandEvery = expandEveryBase * (0.88 + this._rng() * 0.24);
-          }
-          if (!atWar) {
-            this._aiTryStartNeutralOperation(id, ai.persona);
-          }
-        }
-
-        const strategyEveryBase = Math.max(0.35, Number(ai.strategyEvery) || 1.20);
-        const strategyEvery = atWar ? (strategyEveryBase * 0.86) : (strategyEveryBase * 1.18);
-        if (ai.strategyAcc >= strategyEvery && strategyBudget > 0) {
-          ai.strategyAcc -= strategyEvery;
-          this._aiStrategize(id);
-          strategyBudget--;
-        }
-
-        if (ai.donateAcc >= 2.4) {
-          ai.donateAcc -= 2.4;
-
-          const allies = this._getActiveAlliesOf(id);
-          if (allies.length) {
-            const ally = allies[(this._rng() * allies.length) | 0];
-            const pIdAlly = this._pair(id, ally);
-            if ((this._alliedUntil[pIdAlly] || 0) > this.time) {
-              const supportP = clamp01(Number(ai.persona?.supportAllyP ?? 0.30));
-              const myStr = this._aiStrength(id);
-              const allyStr = this._aiStrength(ally);
-              const allyNeedsHelp = this._anyWar(ally) || allyStr < myStr * 0.82;
-
-              const g = Math.floor(Math.max(0, n.gold - 3000));
-              const t = Math.floor(Math.max(0, n.infantry - 58));
-              let donateP = 0.16 + 0.44 * supportP;
-              if (allyNeedsHelp) donateP += 0.20;
-
-              if ((g > 0 || t > 0) && this._rng() < clamp01(donateP)) {
-                const giveGBase = 100 + ((this._rng() * 240) | 0);
-                const giveTBase = 1 + ((this._rng() * 4) | 0);
-                const giveG = Math.min(g, allyNeedsHelp ? Math.round(giveGBase * 1.45) : giveGBase);
-                const giveT = Math.min(t, allyNeedsHelp ? (giveTBase + 1) : giveTBase);
-                if (giveG > 0 || giveT > 0) this.donate(id, ally, giveG, giveT);
-              }
-            }
-          }
-        }
+      const activeQuota = clampInt(Math.ceil(processCount * 0.7), 6, processCount);
+      let processed = 0;
+      let cursorOffset = 0;
+      for (; cursorOffset < aiTotal && processed < activeQuota; cursorOffset++) {
+        const id = 2 + ((firstId - 2 + cursorOffset) % aiTotal);
+        if (!this._isNationPriorityActive(id, now)) continue;
+        if (batchMarks[id] === batchGen) continue;
+        batchMarks[id] = batchGen;
+        if (this._processAiNationStep(id, dt, now, budgets, maxElapsed)) processed++;
       }
 
-      this._aiScanStart = 2 + ((firstId - 2 + processCount) % aiTotal);
+      let idleOffset = 0;
+      const idleStart = 2 + ((firstId - 2 + cursorOffset) % aiTotal);
+      for (; idleOffset < aiTotal && processed < processCount; idleOffset++) {
+        const id = 2 + ((idleStart - 2 + idleOffset) % aiTotal);
+        if (batchMarks[id] === batchGen) continue;
+        batchMarks[id] = batchGen;
+        if (this._processAiNationStep(id, dt, now, budgets, maxElapsed)) processed++;
+      }
+
+      this._aiScanStart = 2 + ((firstId - 2 + Math.max(1, cursorOffset + idleOffset)) % aiTotal);
     }
 }

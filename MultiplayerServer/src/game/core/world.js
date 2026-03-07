@@ -64,7 +64,9 @@ import {
   installMap,
   installNuke,
   installNavy,
+  installResources,
   installStructures,
+  installTrading,
   installWar
 } from "../systems/index.js";
 
@@ -236,6 +238,8 @@ export class World {
     // ===== NAVY state (Section 2) =====
     this.ships = [];
     this._nextShipId = 1;
+    this.tradeDeals = [];
+    this._nextTradeDealId = 1;
 
     this.operations = [];
     this._nextOpId = 1;
@@ -351,6 +355,8 @@ export class World {
     this._simTick = 0;
     this._diplomacyScanA = 1;
     this._aiScanStart = 2;
+    this._rebelScanStart = 1;
+    this._activeNationUntil = new Float32Array(this._nationCount + 1);
 
     this._diplomacyStepS = DIPLOMACY_STEP_S;
     this._diplomacyStepTicks = 1;
@@ -426,6 +432,13 @@ export class World {
     this._pixelWriteStamp = new Uint32Array(n);
     this._pixelWriteEpoch = 1;
     this._pixelWriteList = [];
+    // Sparse pixel dirty stream for renderer-side bin uploads.
+    this._pixelDirtyTileStamp = new Uint32Array(n);
+    this._pixelDirtyTileEpoch = 1;
+    this._pixelDirtyTiles = [];
+    this._pixelDirtyTilesBack = [];
+    this._pixelDirtyTilesOverflow = false;
+    this._pixelDirtyTileOverflowLimit = Math.max(24000, Math.min(260000, ((n * 0.06) | 0)));
     this._pixelDeferredStamp = new Uint32Array(n);
     this._pixelDeferredEpoch = 1;
     this._pixelDeferredList = [];
@@ -450,6 +463,8 @@ export class World {
       flushMs: 0, flushMsAvg: 0,
       labelsMs: 0, labelsMsAvg: 0
     };
+    this._performanceProfile = this._defaultPerformanceProfile();
+    this._performanceProfileVersion = 1;
     // Renderer-facing stream of changed tile indices (used by political map incremental updates).
     this._ownerDirtyPending = [];
     this._ownerDirtyBack = [];
@@ -467,15 +482,118 @@ export class World {
     const mode = String(opts?.mapMode || WORLDGEN.mapMode || MAP_MODE.GENERATOR).toLowerCase();
     this._mapMode = (mode === MAP_MODE.WORLD_MAP) ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
     this._earthData = opts?.earthData || null;
+    this._countryClaimEnabled = opts?.countryClaimEnabled !== false;
 
+    this._markAllNationsActive(18);
     this._configurePerfCadence();
     this.regenerate(seed);
+  }
+
+  _defaultPerformanceProfile() {
+    return Object.freeze({
+      qualityTier: 0,
+      workerEnabled: false,
+      maxPixelUploadBinsPerFrame: 0,
+      showLabels: true,
+      showShips: true,
+      showAtmosphere: true,
+      overlayCadenceMul: 1,
+      simCadenceMul: 1,
+      uiCadenceMul: 1
+    });
+  }
+
+  _normalizePerformanceProfile(next = null) {
+    const src = (next && typeof next === "object") ? next : {};
+    const prev = this._performanceProfile || this._defaultPerformanceProfile();
+    const numOr = (value, fallback) => {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    };
+    return Object.freeze({
+      qualityTier: clampInt(numOr(src.qualityTier, prev.qualityTier), 0, 3),
+      workerEnabled: Object.prototype.hasOwnProperty.call(src, "workerEnabled")
+        ? Boolean(src.workerEnabled)
+        : Boolean(prev.workerEnabled),
+      maxPixelUploadBinsPerFrame: Math.max(0, Math.floor(numOr(src.maxPixelUploadBinsPerFrame, prev.maxPixelUploadBinsPerFrame))),
+      showLabels: Object.prototype.hasOwnProperty.call(src, "showLabels")
+        ? Boolean(src.showLabels)
+        : Boolean(prev.showLabels),
+      showShips: Object.prototype.hasOwnProperty.call(src, "showShips")
+        ? Boolean(src.showShips)
+        : Boolean(prev.showShips),
+      showAtmosphere: Object.prototype.hasOwnProperty.call(src, "showAtmosphere")
+        ? Boolean(src.showAtmosphere)
+        : Boolean(prev.showAtmosphere),
+      overlayCadenceMul: Math.max(1, Math.min(2.5, numOr(src.overlayCadenceMul, prev.overlayCadenceMul))),
+      simCadenceMul: Math.max(1, Math.min(3.0, numOr(src.simCadenceMul, prev.simCadenceMul))),
+      uiCadenceMul: Math.max(1, Math.min(3.0, numOr(src.uiCadenceMul, prev.uiCadenceMul)))
+    });
+  }
+
+  getPerformanceProfile() {
+    return this._performanceProfile || this._defaultPerformanceProfile();
+  }
+
+  setPerformanceProfile(next = null) {
+    const normalized = this._normalizePerformanceProfile(next);
+    const prev = this._performanceProfile;
+    this._performanceProfile = normalized;
+    if (!prev || JSON.stringify(prev) !== JSON.stringify(normalized)) {
+      this._performanceProfileVersion = ((this._performanceProfileVersion | 0) + 1) | 0;
+      this._configurePerfCadence();
+      this._markAllNationsActive(8 + normalized.simCadenceMul * 4);
+    }
+    return normalized;
+  }
+
+  _markNationActivity(idRaw, ttlRaw = 6) {
+    const id = idRaw | 0;
+    if (id <= 0 || id > this._nationCount) return;
+    const ttl = Math.max(0.25, Number(ttlRaw) || 0);
+    const until = (Number(this.time) || 0) + ttl;
+    if (this._activeNationUntil && this._activeNationUntil.length > id) {
+      this._activeNationUntil[id] = Math.max(Number(this._activeNationUntil[id]) || 0, until);
+    }
+  }
+
+  _markNationPairActivity(aRaw, bRaw, ttlRaw = 10) {
+    this._markNationActivity(aRaw, ttlRaw);
+    this._markNationActivity(bRaw, ttlRaw);
+  }
+
+  _markAllNationsActive(ttlRaw = 10) {
+    const ttl = Math.max(0.5, Number(ttlRaw) || 0);
+    const until = (Number(this.time) || 0) + ttl;
+    const arr = this._activeNationUntil;
+    if (!arr || !arr.length) return;
+    for (let id = 1; id <= this._nationCount; id++) arr[id] = until;
+  }
+
+  _isNationPriorityActive(idRaw, nowRaw = this.time) {
+    const id = idRaw | 0;
+    if (id <= 0 || id > this._nationCount) return false;
+    if (id === OWNER.PLAYER) return true;
+    if ((this._warsByNation?.[id] | 0) > 0) return true;
+    const now = Number(nowRaw) || 0;
+    return (Number(this._activeNationUntil?.[id]) || 0) > now;
   }
 
   _configurePerfCadence() {
     const tiles = Math.max(1, (this.w | 0) * (this.h | 0));
     const nations = Math.max(1, this._nationCount | 0);
-    const pressure = (tiles / 1_000_000) + (nations / 180);
+    let pressure = (tiles / 1_000_000) + (nations / 180);
+    const perf = this._simPerf || null;
+    const profile = this._performanceProfile || this._defaultPerformanceProfile();
+    const simCadenceMul = Math.max(1, Math.min(3, Number(profile.simCadenceMul) || 1));
+    const overlayCadenceMul = Math.max(1, Math.min(2.5, Number(profile.overlayCadenceMul) || 1));
+
+    if (perf) {
+      const tickMsAvg = Math.max(0, Number(perf.tickMsAvg) || 0);
+      const heavyAvg = Math.max(0, Number(perf.aiMsAvg) || 0) + Math.max(0, Number(perf.opsMsAvg) || 0) + Math.max(0, Number(perf.warMsAvg) || 0);
+      pressure += clamp01((tickMsAvg - 8) / 18) * 1.35;
+      pressure += clamp01((heavyAvg - 7) / 18) * 0.8;
+    }
 
     let economyTargetS = 0.10;
     let navyTargetS = 0.05;
@@ -493,6 +611,10 @@ export class World {
       aiTargetS = 0.13;
       opTargetS = 0.07;
     }
+    economyTargetS *= simCadenceMul;
+    navyTargetS *= Math.max(1, simCadenceMul * 0.92);
+    aiTargetS *= Math.max(1, simCadenceMul * 1.08);
+    opTargetS *= Math.max(1, simCadenceMul);
 
     this._diplomacyStepTicks = toStepTicks(this._diplomacyStepS);
     this._diplomacyStepS = this._diplomacyStepTicks * SIM_DT_S;
@@ -515,7 +637,7 @@ export class World {
     this._speckleStepTicks = toStepTicks(SPECKLE_CLEAN_INTERVAL_S);
     this._speckleStepS = this._speckleStepTicks * SIM_DT_S;
 
-    this._labelStepTicks = toStepTicks(LABEL_STEP_S);
+    this._labelStepTicks = toStepTicks(LABEL_STEP_S * overlayCadenceMul);
     this._labelStepS = this._labelStepTicks * SIM_DT_S;
   }
 
@@ -698,6 +820,9 @@ export class World {
       if (Object.prototype.hasOwnProperty.call(opts, "earthData")) {
         this._earthData = opts.earthData || null;
       }
+      if (Object.prototype.hasOwnProperty.call(opts, "countryClaimEnabled")) {
+        this._countryClaimEnabled = opts.countryClaimEnabled !== false;
+      }
     }
 
     // NEW: keep current seed
@@ -710,6 +835,7 @@ export class World {
     if (!this._visitStamp || this._visitStamp.length !== n) this._visitStamp = new Uint32Array(n);
     if (!this._ownerTilePos || this._ownerTilePos.length !== n) this._ownerTilePos = new Int32Array(n);
     if (!this._pixelWriteStamp || this._pixelWriteStamp.length !== n) this._pixelWriteStamp = new Uint32Array(n);
+    if (!this._pixelDirtyTileStamp || this._pixelDirtyTileStamp.length !== n) this._pixelDirtyTileStamp = new Uint32Array(n);
     if (!this._pixelDeferredStamp || this._pixelDeferredStamp.length !== n) this._pixelDeferredStamp = new Uint32Array(n);
 
     this.time = 0;
@@ -718,12 +844,20 @@ export class World {
     this._simTick = 0;
     this._diplomacyScanA = 1;
     this._aiScanStart = 2;
+    this._rebelScanStart = 1;
+    if (this._activeNationUntil && this._activeNationUntil.length) this._activeNationUntil.fill(0);
     this._warPairScanOffset = 0;
     if (this._warPairLastSolveAt) this._warPairLastSolveAt.clear();
     this._lastPlayerOwnershipChangeAt = 0;
     this._pixelWriteEpoch = 1;
     this._pixelWriteStamp.fill(0);
     if (this._pixelWriteList) this._pixelWriteList.length = 0;
+    this._pixelDirtyTileEpoch = 1;
+    if (this._pixelDirtyTileStamp) this._pixelDirtyTileStamp.fill(0);
+    if (this._pixelDirtyTiles) this._pixelDirtyTiles.length = 0;
+    if (this._pixelDirtyTilesBack) this._pixelDirtyTilesBack.length = 0;
+    this._pixelDirtyTilesOverflow = false;
+    this._pixelDirtyTileOverflowLimit = Math.max(24000, Math.min(260000, ((n * 0.06) | 0)));
     this._pixelDeferredEpoch = 1;
     if (this._pixelDeferredStamp) this._pixelDeferredStamp.fill(0);
     if (this._pixelDeferredList) this._pixelDeferredList.length = 0;
@@ -760,6 +894,8 @@ export class World {
     // Reset navy state
     this.ships.length = 0;
     this._nextShipId = 1;
+    this.tradeDeals.length = 0;
+    this._nextTradeDealId = 1;
     this._portCount.fill(0);
     for (let i = 0; i <= this._nationCount; i++) this._portsByOwner[i].length = 0;
     for (let i = 0; i <= this._nationCount; i++) this._defencePostsByOwner[i].length = 0;
@@ -774,6 +910,7 @@ export class World {
     this._ownerTilePos.fill(-1);
     for (let i = 0; i <= this._nationCount; i++) this._ownerTiles[i].length = 0;
     if (typeof this._resetPixelDirtyBounds === "function") this._resetPixelDirtyBounds();
+    if (typeof this._resetPixelDirtyTiles === "function") this._resetPixelDirtyTiles();
 
     this.ownerVersion++;
     this.landOwnedCount.fill(0);
@@ -836,6 +973,7 @@ export class World {
     // Land/water topology changed, so components must be rebuilt every regeneration.
     this._recomputeWaterComponents();
     this._initNations();
+    if (typeof this._initAllNationResources === "function") this._initAllNationResources();
     this._spawnTerritories({ claim: false });
     this._beginSpawnPhase();
 
@@ -850,6 +988,7 @@ export class World {
     }
 
     this.dirty = true;
+    this._markAllNationsActive(20);
     this._pushEvent(`World regenerated.`);
   }
 
@@ -901,8 +1040,14 @@ export class World {
     // Economy and reinforcement are heavy on large maps; run at fixed tick cadence.
     if ((this._simTick % this._economyStepTicks) === 0) {
       this._tickWarExhaustion(this._economyStepS);
+      if (typeof this._tickResources === "function") {
+        this._tickResources(this._economyStepS);
+      }
       this._tickEconomy(this._economyStepS);
       this._tickReinforcements(this._economyStepS);
+      if (typeof this._tickTrading === "function") {
+        this._tickTrading(this._economyStepS);
+      }
     }
     perfStep("economyMs");
 
@@ -1223,6 +1368,18 @@ export class World {
     return null;
   }
 
+  _findNeutralOperation(attackerId) {
+    const A = attackerId | 0;
+    const ops = this.operations || [];
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
+      if (!op || op.kind !== "neutral") continue;
+      if ((op.attacker | 0) !== A) continue;
+      return op;
+    }
+    return null;
+  }
+
   _getAttackCommitRatio(ownerId) {
     const id = ownerId | 0;
     const n = this.nation[id];
@@ -1445,14 +1602,44 @@ export class World {
     return Math.max(0, c.pendingCount | 0);
   }
 
-  _structureOperationalCount(st) {
+  _structureBaseOperationalCount(st) {
     const total = this._structureTotalCount(st);
     const pending = this._structurePendingCount(st);
     return Math.max(0, total - pending);
   }
 
+  _structureOperationalCount(st) {
+    const base = this._structureBaseOperationalCount(st);
+    if (base <= 0) return 0;
+    const upkeepPerTick = (typeof this.getStructureOilUpkeepPerTick === "function")
+      ? Math.max(0, Number(this.getStructureOilUpkeepPerTick(st?.type)) || 0)
+      : 0;
+    if (!(upkeepPerTick > 0)) return base;
+
+    const suppliedRaw = st?.data?.resourceStatus?.oilSuppliedCount;
+    if (suppliedRaw == null) return base;
+    const supplied = Math.max(0, Number(suppliedRaw) | 0);
+    return supplied > 0 ? Math.min(base, supplied) : 0;
+  }
+
   _isStructureOperational(st) {
     return this._structureOperationalCount(st) > 0;
+  }
+
+  _getStructureInactiveReason(st) {
+    if (!st || typeof st !== "object") return "Structure unavailable.";
+    const base = this._structureBaseOperationalCount(st);
+    if (base <= 0) return `${title(st.type)} is still under construction.`;
+    const upkeepPerTick = (typeof this.getStructureOilUpkeepPerTick === "function")
+      ? Math.max(0, Number(this.getStructureOilUpkeepPerTick(st.type)) || 0)
+      : 0;
+    if (upkeepPerTick > 0) {
+      const suppliedRaw = st?.data?.resourceStatus?.oilSuppliedCount;
+      if (suppliedRaw == null) return `${title(st.type)} is unavailable.`;
+      const supplied = Math.max(0, Number(suppliedRaw) | 0);
+      if (supplied <= 0) return `${title(st.type)} has no oil supply.`;
+    }
+    return `${title(st.type)} is unavailable.`;
   }
 
   _queueStructureConstruction(st, queueCount = 1) {
@@ -2115,7 +2302,14 @@ export class World {
 
     const oid = ownerId | 0;
     if ((st.owner | 0) !== oid) return { ok: false, reason: "You do not control this Missile Silo." };
-    if (!this._isStructureOperational(st)) return { ok: false, reason: "Missile Silo is still under construction." };
+    if (!this._isStructureOperational(st)) {
+      return {
+        ok: false,
+        reason: (typeof this._getStructureInactiveReason === "function")
+          ? this._getStructureInactiveReason(st)
+          : "Missile Silo is unavailable."
+      };
+    }
 
     const nat = this.nation[oid];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
@@ -2177,7 +2371,14 @@ export class World {
     const st = this._getMissileSiloById(structId | 0);
     if (!st) return { ok: false, reason: "Missile Silo not found." };
     if ((st.owner | 0) !== oid) return { ok: false, reason: "You do not control this Missile Silo." };
-    if (!this._isStructureOperational(st)) return { ok: false, reason: "Missile Silo is still under construction." };
+    if (!this._isStructureOperational(st)) {
+      return {
+        ok: false,
+        reason: (typeof this._getStructureInactiveReason === "function")
+          ? this._getStructureInactiveReason(st)
+          : "Missile Silo is unavailable."
+      };
+    }
 
     const spec = this._nukeSpec(warheadType);
     if (!spec) return { ok: false, reason: "Unknown warhead type." };
@@ -2211,7 +2412,14 @@ export class World {
     const st = this._getMissileSiloById(structId | 0);
     if (!st) return { ok: false, reason: "Missile Silo not found." };
     if ((st.owner | 0) !== oid) return { ok: false, reason: "You do not control this Missile Silo." };
-    if (!this._isStructureOperational(st)) return { ok: false, reason: "Missile Silo is still under construction." };
+    if (!this._isStructureOperational(st)) {
+      return {
+        ok: false,
+        reason: (typeof this._getStructureInactiveReason === "function")
+          ? this._getStructureInactiveReason(st)
+          : "Missile Silo is unavailable."
+      };
+    }
 
     const nat = this.nation[oid];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
@@ -2959,6 +3167,10 @@ export class World {
       if (oldO > 0) this._recomputeNationEconomySnapshot(oldO);
       if (newO > 0) this._recomputeNationEconomySnapshot(newO);
     }
+    if (typeof this._recomputeNationResourceSnapshot === "function") {
+      if (oldO > 0) this._recomputeNationResourceSnapshot(oldO);
+      if (newO > 0) this._recomputeNationResourceSnapshot(newO);
+    }
   }
 
   _onStructureRemoved(st) {
@@ -2997,6 +3209,9 @@ export class World {
       if (ownerId > 0 && typeof this._recomputeNationEconomySnapshot === "function") {
         this._recomputeNationEconomySnapshot(ownerId);
       }
+      if (ownerId > 0 && typeof this._recomputeNationResourceSnapshot === "function") {
+        this._recomputeNationResourceSnapshot(ownerId);
+      }
       return;
     }
     for (let i = this.nukeFlights.length - 1; i >= 0; i--) {
@@ -3007,6 +3222,9 @@ export class World {
     }
     if (ownerId > 0 && typeof this._recomputeNationEconomySnapshot === "function") {
       this._recomputeNationEconomySnapshot(ownerId);
+    }
+    if (ownerId > 0 && typeof this._recomputeNationResourceSnapshot === "function") {
+      this._recomputeNationResourceSnapshot(ownerId);
     }
   }
 
@@ -3044,14 +3262,18 @@ placeStructure(type, ownerId, x, y) {
   if (ix < 0 || iy < 0 || ix >= this.w || iy >= this.h) return { ok: false, reason: "Out of bounds." };
 
   const idx = iy * this.w + ix;
-  if (!this.land[idx]) return { ok: false, reason: "Must place on land." };
-  if ((this.owner[idx] | 0) !== oid) return { ok: false, reason: "Must place inside your territory." };
-
-  // Ports must be built on the coast (adjacent to water).
-  if (t === "port" && !this._touchesWater4(idx)) return { ok: false, reason: "Ports must be built on the coast (adjacent to water)." };
-
   const nat = this.nation[oid];
   if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
+
+  if (t === "coastal_rig") {
+    if (this.land[idx]) return { ok: false, reason: "Coastal Rigs must be built on ocean tiles." };
+  } else {
+    if (!this.land[idx]) return { ok: false, reason: "Must place on land." };
+    if ((this.owner[idx] | 0) !== oid) return { ok: false, reason: "Must place inside your territory." };
+    if (t === "port" && !this._touchesWater4(idx)) {
+      return { ok: false, reason: "Ports must be built on the coast (adjacent to water)." };
+    }
+  }
 
   // 3x3 collision / stacking
   let sidHere = this._structAt[idx] | 0;
@@ -3063,6 +3285,7 @@ placeStructure(type, ownerId, x, y) {
       this._structAt[idx] = 0;
       sidHere = 0;
     } else if ((stHere.owner | 0) !== oid) {
+      if (t === "coastal_rig") return { ok: false, reason: "Space blocked by another structure." };
       // If we somehow have a foreign anchor on our tile, enforce destruction.
       if (((stHere.x | 0) === ix) && ((stHere.y | 0) === iy)) {
         this._removeStructureById(sidHere);
@@ -3081,12 +3304,29 @@ placeStructure(type, ownerId, x, y) {
         if (t === "missile_silo") return { ok: false, reason: "Missile Silo cannot be stacked." };
         if (t === "abm_launcher") return { ok: false, reason: "ABM Launcher cannot be stacked." };
         if (t === "airbase") return { ok: false, reason: "Airbase cannot be stacked." };
+        if (t === "coastal_rig") return { ok: false, reason: "Coastal Rig cannot be stacked." };
         const cur = this._structureTotalCount(stHere);
         if (cur >= STRUCT_STACK_MAX) return { ok: false, reason: `Max stack (${STRUCT_STACK_MAX}) reached.` };
 
         const cost = this.getBuildCost(t, oid) | 0;
         if (nat.gold < cost) return { ok: false, reason: `Not enough gold (need ${cost}).` };
+        const resourceCost = (typeof this.getStructureResourceCost === "function")
+          ? this.getStructureResourceCost(t)
+          : {
+              food: 0,
+              steel: (typeof this.getStructureSteelCost === "function")
+                ? Math.max(0, Number(this.getStructureSteelCost(t)) || 0)
+                : 0,
+              oil: 0
+            };
+        if (typeof this.canAffordResourceBundle === "function") {
+          const resourceRes = this.canAffordResourceBundle(oid, resourceCost, "Construction");
+          if (!resourceRes.ok) return resourceRes;
+        }
         nat.gold -= cost;
+        if (typeof this.spendResourceBundle === "function") {
+          this.spendResourceBundle(oid, resourceCost);
+        }
 
         stHere.count = cur + 1;
         this._queueStructureConstruction(stHere, 1);
@@ -3099,14 +3339,35 @@ placeStructure(type, ownerId, x, y) {
     }
   }
 
-  if (!this._canPlaceStructureFootprint(oid, ix, iy)) {
-    return { ok: false, reason: "Need a clear 3x3 space." };
+  const canPlace = (t === "coastal_rig")
+    ? (typeof this._canPlaceCoastalRigFootprint === "function"
+      ? this._canPlaceCoastalRigFootprint(oid, ix, iy)
+      : false)
+    : this._canPlaceStructureFootprint(oid, ix, iy);
+  if (!canPlace) {
+    return { ok: false, reason: t === "coastal_rig" ? "Need a clear 3x3 ocean space." : "Need a clear 3x3 space." };
   }
 
   const cost = this.getBuildCost(t, oid) | 0;
   if (nat.gold < cost) return { ok: false, reason: `Not enough gold (need ${cost}).` };
+  const resourceCost = (typeof this.getStructureResourceCost === "function")
+    ? this.getStructureResourceCost(t)
+    : {
+        food: 0,
+        steel: (typeof this.getStructureSteelCost === "function")
+          ? Math.max(0, Number(this.getStructureSteelCost(t)) || 0)
+          : 0,
+        oil: 0
+      };
+  if (typeof this.canAffordResourceBundle === "function") {
+    const resourceRes = this.canAffordResourceBundle(oid, resourceCost, "Construction");
+    if (!resourceRes.ok) return resourceRes;
+  }
 
   nat.gold -= cost;
+  if (typeof this.spendResourceBundle === "function") {
+    this.spendResourceBundle(oid, resourceCost);
+  }
 
   const st = this._addStructure(t, oid, ix, iy);
   this._queueStructureConstruction(st, 1);
@@ -3134,6 +3395,8 @@ placeStructure(type, ownerId, x, y) {
 
     const set = new Set(indices || []);
     if (set.size === 0) return { ok: false, reason: "Empty selection." };
+    const existing = this._findNeutralOperation(attacker);
+    const existingTarget = existing?.target instanceof Set ? existing.target : null;
 
     const target = new Set();
     for (const idx0 of set) {
@@ -3146,8 +3409,40 @@ placeStructure(type, ownerId, x, y) {
 
     // Build frontier (normal border-touch behavior).
     const frontier = new Set();
+    const attachmentSeeds = new Set();
+    const touchesExistingTarget4 = (idx) => {
+      if (!existingTarget || existingTarget.size === 0) return false;
+      const w = this.w | 0;
+      const h = this.h | 0;
+      const x = idx % w;
+      const y = (idx / w) | 0;
+
+      let ni = 0;
+      if (x > 0) {
+        ni = idx - 1;
+        if (this.land[ni] && existingTarget.has(ni)) return true;
+      }
+      if (x + 1 < w) {
+        ni = idx + 1;
+        if (this.land[ni] && existingTarget.has(ni)) return true;
+      }
+      if (y > 0) {
+        ni = idx - w;
+        if (this.land[ni] && existingTarget.has(ni)) return true;
+      }
+      if (y + 1 < h) {
+        ni = idx + w;
+        if (this.land[ni] && existingTarget.has(ni)) return true;
+      }
+      return false;
+    };
     for (const idx of target) {
-      if (this._touchesOwner4(idx, attacker)) frontier.add(idx);
+      if (this._touchesOwner4(idx, attacker)) {
+        frontier.add(idx);
+        attachmentSeeds.add(idx);
+        continue;
+      }
+      if (touchesExistingTarget4(idx)) attachmentSeeds.add(idx);
     }
 
     // Compute selection centroid (used to bias expansion toward the drawn region).
@@ -3160,12 +3455,14 @@ placeStructure(type, ownerId, x, y) {
     }
     const centroid = countXY > 0 ? { x: sumX / countXY, y: sumY / countXY } : null;
 
-    // If the selection contains disconnected neutral blobs, prune to the component reachable from the live border.
+    // If the selection contains disconnected neutral blobs, prune to the component reachable from
+    // the live border or the already-queued neutral front. This lets very fast follow-up strokes
+    // attach cleanly instead of getting dropped until the previous wave physically flips.
     // This prevents "missing pixels" and stalled ops when the player scribbles multiple islands at once.
-    if (frontier.size > 0 && target.size > frontier.size) {
+    if (attachmentSeeds.size > 0 && target.size > attachmentSeeds.size) {
       const reachable = new Set();
       const q = [];
-      for (const f0 of frontier) { const f = f0 | 0; reachable.add(f); q.push(f); }
+      for (const f0 of attachmentSeeds) { const f = f0 | 0; reachable.add(f); q.push(f); }
 
       while (q.length) {
         const cur = q.pop();
@@ -3201,7 +3498,7 @@ placeStructure(type, ownerId, x, y) {
     }
 
     // If disconnected, attempt an overseas transport (beachhead), otherwise fail.
-    if (frontier.size === 0) {
+    if (attachmentSeeds.size === 0) {
       const can = this.canStartOverseasNeutral(attacker, Array.from(target));
       if (!can.ok) return { ok: false, reason: can.reason || "Selection must touch your border." };
 
@@ -3214,6 +3511,56 @@ placeStructure(type, ownerId, x, y) {
 
     const committed = this._commitAttackPool(attacker);
     if (committed <= 0) return { ok: false, reason: "Attack Ratio is too low to commit expansion troops." };
+
+    if (existing && existingTarget) {
+      const pendingBefore = Math.max(0, existingTarget.size | 0);
+      const claimedBefore = Math.max(
+        0,
+        Number(existing.claimed) || 0,
+        (Number(existing.total) || 0) - pendingBefore
+      );
+      let added = 0;
+      for (const idx0 of target) {
+        const idx = idx0 | 0;
+        if (existingTarget.has(idx)) continue;
+        existingTarget.add(idx);
+        if (frontier.has(idx)) existing.frontier.add(idx);
+        added++;
+      }
+      if (added <= 0) {
+        nat.infantry = Math.max(0, (Number(nat.infantry) || 0) + committed);
+        return { ok: false, reason: "Selection already queued." };
+      }
+
+      const existingPool = Math.max(0, this._initAttackPool(existing));
+      existing.attackPool = existingPool + committed;
+      existing.committedAtStart = Math.max(0, Number(existing.committedAtStart) || 0) + committed;
+      existing._attackPoolReleased = false;
+      existing.total = claimedBefore + existingTarget.size;
+      existing.claimed = claimedBefore;
+
+      if (centroid) {
+        const prevCx = Number(existing.centroid?.x);
+        const prevCy = Number(existing.centroid?.y);
+        if (pendingBefore > 0 && Number.isFinite(prevCx) && Number.isFinite(prevCy)) {
+          const totalWeight = pendingBefore + added;
+          existing.centroid = {
+            x: ((prevCx * pendingBefore) + (centroid.x * added)) / Math.max(1, totalWeight),
+            y: ((prevCy * pendingBefore) + (centroid.y * added)) / Math.max(1, totalWeight)
+          };
+        } else {
+          existing.centroid = centroid;
+        }
+      }
+
+      existing._neutralRingDirty = 1;
+      if (!Array.isArray(existing.neutralRing) || existing.neutralRing.length <= 0) {
+        this._rebuildNeutralWaveOrder(existing, attacker);
+      }
+
+      this.focusOpId = existing.id;
+      return { ok: true, reason: "", merged: true };
+    }
 
     const op = {
       id: this._nextOpId++,
@@ -3238,7 +3585,7 @@ placeStructure(type, ownerId, x, y) {
       _attackPoolReleased: false
     };
 
-    this._rebuildOpFrontierQueue(op, attacker);
+    this._rebuildNeutralWaveOrder(op, attacker);
 
     this.operations.push(op);
     this.focusOpId = op.id;
@@ -3307,6 +3654,13 @@ placeStructure(type, ownerId, x, y) {
     if (this.gameOver) return { ok: false, reason: "Game over." };
     const nat = this.nation[A];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid nation." };
+    const oilNeed = (typeof this.getOilCostForAction === "function")
+      ? Math.max(0, Number(this.getOilCostForAction("warship")) || 0)
+      : 0;
+    if (oilNeed > 0 && typeof this.canAffordResourceBundle === "function") {
+      const oilRes = this.canAffordResourceBundle(A, { oil: oilNeed }, "Warship launch");
+      if (!oilRes.ok) return oilRes;
+    }
     if ((nat.gold || 0) < WARSHIP_LAUNCH_GOLD_COST) {
       return { ok: false, reason: `Not enough gold to launch a warship (need ${WARSHIP_LAUNCH_GOLD_COST}).` };
     }
@@ -3698,6 +4052,13 @@ placeStructure(type, ownerId, x, y) {
     if (this.gameOver) return { ok: false, reason: "Game over." };
     const nat = this.nation[A];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid nation." };
+    const oilNeed = (typeof this.getOilCostForAction === "function")
+      ? Math.max(0, Number(this.getOilCostForAction("transport_ship")) || 0)
+      : 0;
+    if (oilNeed > 0 && typeof this.canAffordResourceBundle === "function") {
+      const oilRes = this.canAffordResourceBundle(A, { oil: oilNeed }, "Transport launch");
+      if (!oilRes.ok) return oilRes;
+    }
 
     const opts = (options && typeof options === "object") ? options : {};
     const missionKind = String(opts.kind || "neutral").toLowerCase() === "war" ? "war" : "neutral";
@@ -3768,6 +4129,9 @@ placeStructure(type, ownerId, x, y) {
       targetIndices: arr.slice(0)
     };
 
+    if (oilNeed > 0 && typeof this.spendResourceBundle === "function") {
+      this.spendResourceBundle(A, { oil: oilNeed });
+    }
     this.ships.push(ship);
     return { ok: true, reason: "" };
   }
@@ -4296,6 +4660,7 @@ placeStructure(type, ownerId, x, y) {
       from: A,
       to: B
     });
+    this._markNationPairActivity(A, B, 18);
     return { ok: true, reason: "" };
   }
 
@@ -4311,6 +4676,7 @@ placeStructure(type, ownerId, x, y) {
     this._setCeasefire(A, B, 0);
     this._clearCeasefirePending(A, B);
     this._pushEvent(`${this._nameOf(A)} made peace with ${this._nameOf(B)}.`);
+    this._markNationPairActivity(A, B, 12);
     return { ok: true, reason: "" };
   }
 
@@ -4371,6 +4737,7 @@ placeStructure(type, ownerId, x, y) {
     } else if (A === OWNER.PLAYER || B === OWNER.PLAYER) {
       this._pushEvent(`${this._nameOf(A)} requested an alliance with ${this._nameOf(B)}.`);
     }
+    this._markNationPairActivity(A, B, 10);
     return { ok: true, reason: "" };
   }
 
@@ -4389,6 +4756,7 @@ placeStructure(type, ownerId, x, y) {
 
     if (!accept) {
       this._pushEvent(`${this._nameOf(to)} declined an alliance with ${this._nameOf(from)}.`);
+      this._markNationPairActivity(from, to, 8);
       return { ok: true, reason: "" };
     }
 
@@ -4404,6 +4772,7 @@ placeStructure(type, ownerId, x, y) {
       from,
       to
     });
+    this._markNationPairActivity(from, to, 16);
     return { ok: true, reason: "" };
   }
 
@@ -4440,6 +4809,7 @@ placeStructure(type, ownerId, x, y) {
       this._pushEvent(`${this._nameOf(A)} requested a ceasefire with ${this._nameOf(B)}.`);
     }
 
+    this._markNationPairActivity(A, B, 10);
     return { ok: true, reason: "" };
   }
 
@@ -4458,6 +4828,7 @@ placeStructure(type, ownerId, x, y) {
 
     if (!accept) {
       this._pushEvent(`${this._nameOf(to)} rejected a ceasefire with ${this._nameOf(from)}.`);
+      this._markNationPairActivity(from, to, 8);
       return { ok: true, reason: "" };
     }
 
@@ -4467,6 +4838,7 @@ placeStructure(type, ownerId, x, y) {
     const until = this.time + CEASEFIRE_DURATION_S;
     this._setCeasefire(from, to, until);
     this._pushEvent(`${this._nameOf(from)} and ${this._nameOf(to)} agreed to a ceasefire (${Math.round(CEASEFIRE_DURATION_S)}s).`);
+    this._markNationPairActivity(from, to, 14);
     return { ok: true, reason: "" };
   }
 
@@ -4489,6 +4861,7 @@ placeStructure(type, ownerId, x, y) {
     this.nation[to].infantry += t;
 
     this._pushEvent(`${this._nameOf(from)} donated ${g} gold and ${t} infantry to ${this._nameOf(to)}.`);
+    this._markNationPairActivity(from, to, 10);
     return { ok: true, reason: "" };
   }
 
@@ -4524,7 +4897,9 @@ placeStructure(type, ownerId, x, y) {
 
 // Attach subsystem methods onto World.prototype (keeps world.js focused on API + tick order).
 installMap(World);
+installResources(World);
 installEconomy(World);
+installTrading(World);
 installStructures(World);
 installWar(World);
 installNavy(World);

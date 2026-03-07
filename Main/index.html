@@ -9,7 +9,7 @@
     <meta name="pf-supabase-maps-table" content="%VITE_SUPABASE_MAPS_TABLE%" />
     <meta name="pf-supabase-rpc-increment-downloads" content="%VITE_SUPABASE_RPC_INCREMENT_DOWNLOADS%" />
     <link rel="icon" type="image/png" href="/GameLogo/pflogo.png" />
-    <title>PixelFront | Beta</title>
+    <title>PixelFront | Release</title>
     <link rel="stylesheet" href="./src/style.css" />
   </head>
 
@@ -18,8 +18,8 @@
       <canvas id="game" aria-label="Game canvas"></canvas>
       <main id="mainMenu" class="mainMenuOverlay ui-interactive" aria-label="Main menu" data-view="home">
         <section class="mainMenuCenter" aria-label="Main menu actions">
-          <h1 class="mainMenuTitle">PixelFront Beta</h1>
-          <p class="mainMenuVersion"> NEW UPDATE | v1.5</p>
+          <h1 class="mainMenuTitle">PixelFront</h1>
+          <p class="mainMenuVersion"> PRE-RELEASE | v1.7</p>
 
           <div class="mainMenuDeck" aria-live="polite">
             <div class="mainMenuTrack">
@@ -87,6 +87,7 @@
                     <label class="mainMenuField" for="mmCfgMapMode">
                       <span>Map Source</span>
                       <select id="mmCfgMapMode">
+                        <option value="political_earth">Political Earth Map</option>
                         <option value="earth">Earth Map</option>
                         <option value="custom">Saved Custom Map</option>
                       </select>
@@ -145,6 +146,24 @@
                       <div class="mainMenuLobbyPlayersTitle">Players</div>
                       <ul id="mmPlayLobbyPlayers" class="mainMenuLobbyPlayers"></ul>
                     </div>
+                    <div class="mainMenuLobbyMeta" aria-label="Lobby details">
+                      <div class="mainMenuLobbyMetaItem">
+                        <span>Role</span>
+                        <strong id="mmPlayLobbyRole">Host</strong>
+                      </div>
+                      <div class="mainMenuLobbyMetaItem">
+                        <span>Network</span>
+                        <strong id="mmPlayLobbyNetwork">Realtime reconnecting</strong>
+                      </div>
+                      <div class="mainMenuLobbyMetaItem">
+                        <span>World</span>
+                        <strong id="mmPlayLobbyWorld">Waiting for lobby spec</strong>
+                      </div>
+                      <div class="mainMenuLobbyMetaItem">
+                        <span>Players</span>
+                        <strong id="mmPlayLobbyCount">0 joined</strong>
+                      </div>
+                    </div>
                   </section>
 
                   <div class="mainMenuCardActions">
@@ -198,6 +217,21 @@
                     <h2 class="mainMenuCardTitle">Multiplayer</h2>
                     <button id="mmMultiplayerBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
                   </header>
+                  <div class="mainMenuMpHero">
+                    <div class="mainMenuMpBadgeRow">
+                      <span id="mmMultiplayerHealthBadge" class="mainMenuMpBadge" data-state="idle">Service Unchecked</span>
+                      <span id="mmMultiplayerRuntimeBadge" class="mainMenuMpBadge isSecondary" data-state="idle">Authoritative Runtime</span>
+                    </div>
+                    <p class="mainMenuMpLead">
+                      Private code lobbies backed by authoritative sync so diplomacy, structures, fleets, nukes, and trade stay aligned with solo.
+                    </p>
+                    <div class="mainMenuMpFeatureGrid" aria-label="Multiplayer features">
+                      <div class="mainMenuMpFeature">Authoritative world state</div>
+                      <div class="mainMenuMpFeature">Private lobby codes</div>
+                      <div class="mainMenuMpFeature">Solo ruleset parity</div>
+                      <div class="mainMenuMpFeature">Reconnect-aware lobby sync</div>
+                    </div>
+                  </div>
                   <div class="mainMenuButtons">
                     <button id="mmCreateLobbyBtn" class="mainMenuBtn" type="button">Create</button>
                     <button id="mmJoinLobbyBtn" class="mainMenuBtn" type="button">Join</button>
@@ -221,6 +255,7 @@
                   <div class="mainMenuCardActions">
                     <button id="mmJoinCodeBtn" class="mainMenuBtn isPrimary" type="button">Join Lobby</button>
                   </div>
+                  <div class="mainMenuMpJoinHint">Use the private code from your host. Codes are 4-8 letters or numbers.</div>
                   <p id="mmJoinStatus" class="mainMenuConfigSummary">Enter a code to join your friend lobby.</p>
                 </div>
               </section>
@@ -236,6 +271,24 @@
                     <div class="mainMenuLobbyPlayersTitle">Players</div>
                     <ul id="mmMpLobbyPlayers" class="mainMenuLobbyPlayers"></ul>
                   </div>
+                  <div class="mainMenuLobbyMeta" aria-label="Lobby details">
+                    <div class="mainMenuLobbyMetaItem">
+                      <span>Role</span>
+                      <strong id="mmMpLobbyRole">Guest</strong>
+                    </div>
+                    <div class="mainMenuLobbyMetaItem">
+                      <span>Network</span>
+                      <strong id="mmMpLobbyNetwork">Realtime reconnecting</strong>
+                    </div>
+                    <div class="mainMenuLobbyMetaItem">
+                      <span>World</span>
+                      <strong id="mmMpLobbyWorld">Waiting for host setup</strong>
+                    </div>
+                    <div class="mainMenuLobbyMetaItem">
+                      <span>Players</span>
+                      <strong id="mmMpLobbyCount">0 joined</strong>
+                    </div>
+                  </div>
                   <p id="mmMpLobbyStatus" class="mainMenuConfigSummary">Waiting for host to start.</p>
                 </div>
               </section>
@@ -244,7 +297,7 @@
         </section>
 
         <div class="mainMenuFooter" aria-label="Main menu footer controls">
-          <canvas id="mmPlayerFlagPreview" class="mainMenuFlagPreview" width="72" height="48" aria-label="Player flag preview"></canvas>
+          <canvas id="mmPlayerFlagPreview" class="mainMenuFlagPreview" width="56" height="56" aria-label="Country color preview"></canvas>
           <input
             id="mmNameInput"
             class="mainMenuNameInput"
@@ -257,21 +310,22 @@
 
           <div class="mainMenuQuickButtons" aria-label="Quick menu buttons">
             <button id="mmLibraryBtn" class="mainMenuQuickBtn" type="button" aria-label="Map Library">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M4 4.5A2.5 2.5 0 0 1 6.5 2h10A2.5 2.5 0 0 1 19 4.5v15a2.5 2.5 0 0 1-2.5 2.5h-10A2.5 2.5 0 0 1 4 19.5zm2 0v15c0 .28.22.5.5.5h10a.5.5 0 0 0 .5-.5v-15a.5.5 0 0 0-.5-.5h-10a.5.5 0 0 0-.5.5m2 2h7v2H8zm0 4h7v2H8zm0 4h5v2H8z"></path>
-              </svg>
+              <img class="mainMenuQuickBtnIcon" src="/UI_Icons/Main-Menu/MapLibrary.png" alt="" aria-hidden="true" draggable="false" />
             </button>
-            <button id="mmFlagBtn" class="mainMenuQuickBtn" type="button" aria-label="Flag Editor">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M6 3v18h2v-6.2l9.2 2.1c.8.2 1.6-.4 1.6-1.2V4.7c0-.8-.8-1.4-1.6-1.2L8 5.6V3z"></path>
-              </svg>
+            <button id="mmFlagBtn" class="mainMenuQuickBtn" type="button" aria-label="Country Color">
+              <img class="mainMenuQuickBtnIcon" src="/UI_Icons/Main-Menu/CountryColor.png" alt="" aria-hidden="true" draggable="false" />
             </button>
             <button id="mmBookBtn" class="mainMenuQuickBtn" type="button" aria-label="Guide">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M4 6.5C4 5.1 5.1 4 6.5 4H12v15.5H7.2c-1.3 0-2.4.9-2.7 2.2l-.1.3H4zm16 0V22h-.4l-.1-.3c-.3-1.3-1.5-2.2-2.8-2.2H12V4h5.5C18.9 4 20 5.1 20 6.5zM6 6v13.2c.4-.2.8-.2 1.2-.2H11V6zm12 0h-5v13h3.8c.4 0 .8.1 1.2.2z"></path>
-              </svg>
+              <img class="mainMenuQuickBtnIcon" src="/UI_Icons/Main-Menu/GuideBook.png" alt="" aria-hidden="true" draggable="false" />
             </button>
           </div>
+          <input
+            id="mmCountryColorInput"
+            type="color"
+            value="#4fa7f6"
+            aria-label="Country color picker"
+            style="position:fixed;left:14px;bottom:14px;width:2px;height:2px;opacity:0.001;pointer-events:auto;z-index:2147483647;"
+          />
         </div>
       </main>
       <div id="mainMenuLoading" class="mainMenuLoading" hidden aria-hidden="true">
@@ -616,6 +670,7 @@
 
             <button id="ctxAttack" class="btn danger" type="button">Attack</button>
             <button id="ctxIntel" class="btn" type="button">Intel</button>
+            <button id="ctxTrade" class="btn" type="button">Trade</button>
 
             <button id="ctxSendWarship" class="btn" type="button">Send Warship</button>
 
@@ -809,6 +864,128 @@
           </section>
         </div>
 
+        <div id="tradeModal" class="tradeModal ui-interactive" hidden>
+          <div id="tradeBackdrop" class="tradeBackdrop"></div>
+          <section id="tradePanel" class="panel tradePanel" role="dialog" aria-modal="true" aria-labelledby="tradeTitle">
+            <div class="tradeHeader">
+              <div>
+                <div id="tradeTitle" class="tradeTitle">Trade Deals</div>
+                <div id="tradeTargetNation" class="tradeSubtitle muted">Set up resource agreements with other nations.</div>
+              </div>
+              <button id="tradeClose" class="btn subtle" type="button" aria-label="Close trade panel">Close</button>
+            </div>
+
+            <div class="tradeGrid">
+              <div class="tradeSidebar">
+                <section class="tradeSection tradeResourceSection">
+                  <div class="tradeSectionHead">
+                    <div class="tradeSectionTitle">Your Resources</div>
+                    <div class="tradeSectionCaption">Current stockpiles and live production available for contracts.</div>
+                  </div>
+                  <div id="tradeMyResources" class="tradeResourceGrid"></div>
+                </section>
+
+                <section class="tradeSection tradeComposerSection">
+                  <div class="tradeSectionHead">
+                    <div class="tradeSectionTitle">Send Offer</div>
+                    <div class="tradeSectionCaption">Trade only with allied nations outside active war. Propose what you send and what you want back.</div>
+                  </div>
+                  <label class="tradeField" for="tradeNationSelect">
+                    <span>Nation</span>
+                    <select id="tradeNationSelect" class="tradeInput"></select>
+                  </label>
+                  <div class="tradeExchangeGrid">
+                    <div class="tradeFieldSet">
+                      <div class="tradeSubTitle">You Send</div>
+                      <div class="tradeFieldRow">
+                        <label class="tradeField" for="tradeOfferGoodsSelect">
+                          <span>Resource</span>
+                          <select id="tradeOfferGoodsSelect" class="tradeInput">
+                            <option value="food">Food</option>
+                            <option value="steel">Steel</option>
+                            <option value="oil">Oil</option>
+                          </select>
+                        </label>
+                        <label class="tradeField" for="tradeOfferRateInput">
+                          <span>Rate / minute</span>
+                          <input id="tradeOfferRateInput" class="tradeInput" type="number" min="1" max="5000" value="30" step="1" />
+                        </label>
+                      </div>
+                    </div>
+                    <div class="tradeFieldSet">
+                      <div class="tradeSubTitle">You Receive</div>
+                      <div class="tradeFieldRow">
+                        <label class="tradeField" for="tradeRequestGoodsSelect">
+                          <span>Resource</span>
+                          <select id="tradeRequestGoodsSelect" class="tradeInput">
+                            <option value="food">Food</option>
+                            <option value="steel">Steel</option>
+                            <option value="oil">Oil</option>
+                          </select>
+                        </label>
+                        <label class="tradeField" for="tradeRequestRateInput">
+                          <span>Rate / minute</span>
+                          <input id="tradeRequestRateInput" class="tradeInput" type="number" min="1" max="5000" value="30" step="1" />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                  <label class="tradeField" for="tradeDurationInput">
+                    <span>Duration (minutes)</span>
+                    <input id="tradeDurationInput" class="tradeInput" type="number" min="1" max="60" value="5" step="1" />
+                  </label>
+                  <button id="tradeCreateBtn" class="btn tradeCreateBtn" type="button">Send Trade Offer</button>
+                </section>
+              </div>
+
+              <section class="tradeSection tradeDealsSection">
+                <div class="tradeSectionHead">
+                  <div class="tradeSectionTitle">Trade Board</div>
+                  <div class="tradeSectionCaption">Review allied offers, respond to incoming requests, and track active barter agreements.</div>
+                </div>
+                <div class="tradeBoardShell">
+                  <div class="tradeBoardPrimary">
+                    <div class="tradeLane tradeLaneWide">
+                      <div class="tradeLaneHead">
+                        <div class="tradeLaneCopy">
+                          <div class="tradeSubTitle">Active Agreements</div>
+                          <div class="tradeLaneCaption">Live barter corridors already shipping resources.</div>
+                        </div>
+                        <div id="tradeCountActive" class="tradeLaneCount" aria-label="Number of active agreements">0</div>
+                      </div>
+                      <div id="tradeDealsActive" class="tradeDealsList tradeDealsListActive"></div>
+                    </div>
+                  </div>
+                  <div class="tradeBoardSecondary">
+                    <div class="tradeLane">
+                      <div class="tradeLaneHead">
+                        <div class="tradeLaneCopy">
+                          <div class="tradeSubTitle">Incoming Requests</div>
+                          <div class="tradeLaneCaption">Offers waiting on your response.</div>
+                        </div>
+                        <div id="tradeCountIncoming" class="tradeLaneCount" aria-label="Number of incoming requests">0</div>
+                      </div>
+                      <div id="tradeRequestsIncoming" class="tradeDealsList"></div>
+                    </div>
+                    <div class="tradeLane">
+                      <div class="tradeLaneHead">
+                        <div class="tradeLaneCopy">
+                          <div class="tradeSubTitle">Outgoing Requests</div>
+                          <div class="tradeLaneCaption">Offers you already sent to allies.</div>
+                        </div>
+                        <div id="tradeCountOutgoing" class="tradeLaneCount" aria-label="Number of outgoing requests">0</div>
+                      </div>
+                      <div id="tradeRequestsOutgoing" class="tradeDealsList"></div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            <div id="tradeStatus" class="hint muted tradeStatus"></div>
+          </section>
+        </div>
+
         <!-- Nation Intel panel (center) -->
         <div id="intelPanel" class="panel intelPanel ui-interactive" hidden>
           <div class="intelHeader">
@@ -897,6 +1074,42 @@
             </div>
           </section>
 
+          <section id="resourcesCard" class="panel">
+            <div class="panelTitle">Resources</div>
+            <div class="resourcesCardRows">
+              <div class="resourceMiniRow">
+                <div class="resourceMiniLabel">
+                  <img class="resourceMiniIcon" src="/UI_Icons/TradeResources/Food.png" alt="" aria-hidden="true" />
+                  <span>Food</span>
+                </div>
+                <div class="resourceMiniMeta">
+                  <div class="resourceMiniValue" id="statFoodVal">0</div>
+                  <div class="resourceMiniDelta" id="statFoodDelta">+0/s</div>
+                </div>
+              </div>
+              <div class="resourceMiniRow">
+                <div class="resourceMiniLabel">
+                  <img class="resourceMiniIcon" src="/UI_Icons/TradeResources/Steel.png" alt="" aria-hidden="true" />
+                  <span>Steel</span>
+                </div>
+                <div class="resourceMiniMeta">
+                  <div class="resourceMiniValue" id="statSteelVal">0</div>
+                  <div class="resourceMiniDelta" id="statSteelDelta">+0/s</div>
+                </div>
+              </div>
+              <div class="resourceMiniRow">
+                <div class="resourceMiniLabel">
+                  <img class="resourceMiniIcon" src="/UI_Icons/TradeResources/Oil.png" alt="" aria-hidden="true" />
+                  <span>Oil</span>
+                </div>
+                <div class="resourceMiniMeta">
+                  <div class="resourceMiniValue" id="statOilVal">0</div>
+                  <div class="resourceMiniDelta" id="statOilDelta">+0/s</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <section id="selectedCard" class="panel">
             <div class="panelTitle">Selected</div>
             <div class="selectedName" id="selectedName">None</div>
@@ -955,6 +1168,17 @@
           </div>
         </nav>
 
+        <nav id="tradesLaunchBar" class="ui-interactive" aria-label="Trade quick launch">
+          <div class="barLeft">
+            <div class="barTitle">Trades</div>
+          </div>
+          <div class="barButtons" role="group" aria-label="Trade controls">
+            <button class="btn structureBtn quickLaunchBtn" id="btnTradesPanel" type="button" title="Open Trade Panel">
+              Trades
+            </button>
+          </div>
+        </nav>
+
         <nav id="researchLaunchBar" class="ui-interactive" aria-label="Research quick launch" hidden aria-hidden="true">
           <div class="barLeft">
             <div class="barTitle">Research</div>
@@ -988,6 +1212,9 @@
             <button class="btn structureBtn" data-structure="port" id="btnPort" type="button">
               Port
             </button>
+            <button class="btn structureBtn" data-structure="coastal_rig" id="btnCoastalRig" type="button">
+              Coastal Rig
+            </button>
             <button class="btn structureBtn" data-structure="missile_silo" id="btnMissileSilo" type="button">
               Missile Silo
             </button>
@@ -1006,4 +1233,3 @@
     <script type="module" src="./src/main.js"></script>
   </body>
 </html>
-

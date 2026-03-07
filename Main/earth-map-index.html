@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Earth Map Preview</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #10131a;
+        color: #e9eefb;
+        font-family: "Segoe UI", Tahoma, sans-serif;
+      }
+
+      body {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        border-bottom: 1px solid #2e3547;
+        background: linear-gradient(180deg, #1a2030, #121726);
+      }
+
+      .toolbar strong {
+        margin-right: 8px;
+      }
+
+      .toolbar label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .toolbar input[type="range"] {
+        width: 180px;
+      }
+
+      .toolbar button,
+      .toolbar .file-label {
+        border: 1px solid #42506c;
+        background: #20293c;
+        color: #e9eefb;
+        padding: 6px 10px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+
+      .toolbar button:hover,
+      .toolbar .file-label:hover {
+        background: #2a3751;
+      }
+
+      .toolbar input[type="file"] {
+        display: none;
+      }
+
+      #viewport {
+        overflow: auto;
+        background:
+          radial-gradient(circle at top, #1f2534 0, #12151f 46%),
+          linear-gradient(45deg, #151b28 25%, transparent 25%, transparent 75%, #151b28 75%),
+          linear-gradient(45deg, #151b28 25%, transparent 25%, transparent 75%, #151b28 75%);
+        background-size: auto, 24px 24px, 24px 24px;
+        background-position: 0 0, 0 0, 12px 12px;
+        padding: 20px;
+      }
+
+      #mapCanvas {
+        display: block;
+        border: 1px solid #3a4661;
+        box-shadow: 0 12px 35px rgba(0, 0, 0, 0.35);
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        transform-origin: top left;
+      }
+
+      #status {
+        border-top: 1px solid #2e3547;
+        padding: 8px 14px;
+        font-size: 13px;
+        color: #d0d8f4;
+        background: #13192a;
+      }
+
+      #status.error {
+        color: #ffb3b3;
+      }
+
+      .muted {
+        color: #9aa7c7;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="toolbar">
+      <strong>Earth Map Viewer</strong>
+      <label>
+        Zoom
+        <input id="zoomControl" type="range" min="0.5" max="12" step="0.1" value="3" />
+        <span id="zoomValue">3x</span>
+      </label>
+      <label>
+        <input id="pixelPerfectToggle" type="checkbox" checked />
+        Pixel Perfect
+      </label>
+      <button id="fitBtn" type="button">Fit To View</button>
+      <button id="reloadBtn" type="button">Reload Assets</button>
+      <label class="file-label" for="filePicker">Load Files Manually</label>
+      <input id="filePicker" type="file" multiple accept=".tif,.tiff,.geojson,.json" />
+      <span class="muted">Expected files: `Basemap-1.tif` and `world-map-countries.geojson`</span>
+    </div>
+
+    <div id="viewport">
+      <canvas id="mapCanvas"></canvas>
+    </div>
+
+    <div id="status">Loading...</div>
+
+    <script type="module" src="./src/EarthMap/earth-map-viewer.js"></script>
+  </body>
+</html>

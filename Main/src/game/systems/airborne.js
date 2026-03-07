@@ -63,11 +63,23 @@ export function installAirborne(World) {
     const oid = ownerId | 0;
     if ((st.owner | 0) !== oid) return { ok: false, reason: "You do not control this Airbase." };
     if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(st)) {
-      return { ok: false, reason: "Airbase is still under construction." };
+      return {
+        ok: false,
+        reason: (typeof this._getStructureInactiveReason === "function")
+          ? this._getStructureInactiveReason(st)
+          : "Airbase is unavailable."
+      };
     }
 
     const nat = this.nation[oid];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
+    const oilNeed = (typeof this.getOilCostForAction === "function")
+      ? Math.max(0, Number(this.getOilCostForAction("transport_plane")) || 0)
+      : 0;
+    if (oilNeed > 0 && typeof this.canAffordResourceBundle === "function") {
+      const oilRes = this.canAffordResourceBundle(oid, { oil: oilNeed }, "Airborne launch");
+      if (!oilRes.ok) return oilRes;
+    }
 
     const d = this._ensureAirbaseData(st);
     const buildRemainingS = Math.max(0, Number(d.buildRemainingS) || 0);
@@ -121,7 +133,12 @@ export function installAirborne(World) {
     if (!st) return { ok: false, reason: "Airbase not found." };
     if ((st.owner | 0) !== oid) return { ok: false, reason: "You do not control this Airbase." };
     if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(st)) {
-      return { ok: false, reason: "Airbase is still under construction." };
+      return {
+        ok: false,
+        reason: (typeof this._getStructureInactiveReason === "function")
+          ? this._getStructureInactiveReason(st)
+          : "Airbase is unavailable."
+      };
     }
 
     const nat = this.nation[oid];
@@ -152,11 +169,23 @@ export function installAirborne(World) {
     if (!st) return { ok: false, reason: "Airbase not found." };
     if ((st.owner | 0) !== oid) return { ok: false, reason: "You do not control this Airbase." };
     if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(st)) {
-      return { ok: false, reason: "Airbase is still under construction." };
+      return {
+        ok: false,
+        reason: (typeof this._getStructureInactiveReason === "function")
+          ? this._getStructureInactiveReason(st)
+          : "Airbase is unavailable."
+      };
     }
 
     const nat = this.nation[oid];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
+    const oilNeed = (typeof this.getOilCostForAction === "function")
+      ? Math.max(0, Number(this.getOilCostForAction("transport_plane")) || 0)
+      : 0;
+    if (oilNeed > 0 && typeof this.canAffordResourceBundle === "function") {
+      const oilRes = this.canAffordResourceBundle(oid, { oil: oilNeed }, "Airborne launch");
+      if (!oilRes.ok) return oilRes;
+    }
 
     const tx = clampInt(targetX | 0, 0, this.w - 1);
     const ty = clampInt(targetY | 0, 0, this.h - 1);
@@ -205,6 +234,9 @@ export function installAirborne(World) {
     d.readyTransports = Math.max(0, (d.readyTransports | 0) - 1);
     this._activeAirbaseBuildIds.delete(st.id | 0);
     nat.infantry = Math.max(0, (Number(nat.infantry) || 0) - committedInfantry);
+    if (oilNeed > 0 && typeof this.spendResourceBundle === "function") {
+      this.spendResourceBundle(oid, { oil: oilNeed });
+    }
 
     const planeSpeed = Math.max(1, Number(AIRBORNE_PLANE_SPEED_TILES_PER_S) || 1);
     const dropCount = clampInt(

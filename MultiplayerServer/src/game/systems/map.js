@@ -2,6 +2,7 @@
 
 import {
   BIOME,
+  BIOME_COLORS,
   DRAFT_FRAC_MAX,
   DRAFT_FRAC_MIN,
   MAP_MODE,
@@ -282,6 +283,151 @@ const earthHeightFromKoppen = (code, latAbs, sea) => {
   return sea + rel;
 };
 
+const earthHeightFromBiomeId = (biomeIdRaw, sea, latAbs) => {
+  const biomeId = clampInt(Number(biomeIdRaw) || 0, 0, 255);
+  switch (biomeId) {
+    case BIOME.BEACH: return sea + 3;
+    case BIOME.GRASS: return sea + 16;
+    case BIOME.FOREST: return sea + 21;
+    case BIOME.JUNGLE: return sea + 18;
+    case BIOME.SAVANNA: return sea + 15;
+    case BIOME.DESERT: return sea + 13;
+    case BIOME.HIGHLAND: return sea + 28;
+    case BIOME.MOUNTAIN: return sea + 44;
+    case BIOME.SNOW: return sea + 23;
+    case BIOME.TAIGA: return sea + 24;
+    case BIOME.TUNDRA: return sea + 19;
+    case BIOME.WETLAND: return sea + 9;
+    case BIOME.STEPPE: return sea + 14;
+    case BIOME.TEMPERATE_RAINFOREST: return sea + 22;
+    case BIOME.MEDITERRANEAN: return sea + 17;
+    case BIOME.ALPINE: return sea + 38;
+    case BIOME.ICE_SHEET: return sea + (latAbs > 0.7 ? 25 : 21);
+    case BIOME.MANGROVE: return sea + 8;
+    case BIOME.BADLANDS: return sea + 18;
+    case BIOME.CORAL_REEF: return sea - 2;
+    case BIOME.OCEAN_DEEP: return sea - 16;
+    case BIOME.OCEAN_SHALLOW:
+    default:
+      return sea - 6;
+  }
+};
+
+function repairCountryCoverage(countryIdGrid, landGrid, wRaw, hRaw, maxGapTilesRaw = 1400) {
+  const w = Math.max(1, wRaw | 0);
+  const h = Math.max(1, hRaw | 0);
+  const n = w * h;
+  const maxGapTiles = Math.max(1, maxGapTilesRaw | 0);
+  if (!countryIdGrid || !landGrid) {
+    return {
+      gapComponents: 0,
+      filledComponents: 0,
+      filledTiles: 0,
+      remainingGapTiles: 0,
+      largestGapTiles: 0
+    };
+  }
+  if (countryIdGrid.length < n || landGrid.length < n) {
+    return {
+      gapComponents: 0,
+      filledComponents: 0,
+      filledTiles: 0,
+      remainingGapTiles: 0,
+      largestGapTiles: 0
+    };
+  }
+
+  const seen = new Uint8Array(n);
+  const q = new Int32Array(n);
+
+  let gapComponents = 0;
+  let filledComponents = 0;
+  let filledTiles = 0;
+  let remainingGapTiles = 0;
+  let largestGapTiles = 0;
+
+  for (let start = 0; start < n; start++) {
+    if (!landGrid[start]) continue;
+    if ((countryIdGrid[start] | 0) > 0) continue;
+    if (seen[start]) continue;
+
+    gapComponents++;
+    let qh = 0;
+    let qt = 0;
+    q[qt++] = start;
+    seen[start] = 1;
+
+    const comp = [];
+    let compSize = 0;
+    const neighborVotes = new Map();
+
+    while (qh < qt) {
+      const idx = q[qh++] | 0;
+      compSize++;
+      if (comp.length <= maxGapTiles) comp.push(idx);
+
+      const x = idx % w;
+      const y = (idx / w) | 0;
+
+      for (let oy = -1; oy <= 1; oy++) {
+        const ny = y + oy;
+        if (ny < 0 || ny >= h) continue;
+        for (let ox = -1; ox <= 1; ox++) {
+          if (ox === 0 && oy === 0) continue;
+          const nx = x + ox;
+          if (nx < 0 || nx >= w) continue;
+          const ni = ny * w + nx;
+          if (!landGrid[ni]) continue;
+
+          const nc = countryIdGrid[ni] | 0;
+          if (nc > 0) {
+            neighborVotes.set(nc, (neighborVotes.get(nc) | 0) + 1);
+            continue;
+          }
+
+          if (!seen[ni]) {
+            seen[ni] = 1;
+            q[qt++] = ni;
+          }
+        }
+      }
+    }
+
+    if (compSize > largestGapTiles) largestGapTiles = compSize;
+
+    if (compSize <= maxGapTiles && neighborVotes.size > 0) {
+      let bestCountry = 0;
+      let bestVotes = -1;
+      for (const [cid, votesRaw] of neighborVotes.entries()) {
+        const votes = votesRaw | 0;
+        if (votes > bestVotes || (votes === bestVotes && (cid | 0) < bestCountry)) {
+          bestCountry = cid | 0;
+          bestVotes = votes;
+        }
+      }
+
+      if (bestCountry > 0) {
+        for (let i = 0; i < comp.length; i++) {
+          countryIdGrid[comp[i] | 0] = bestCountry;
+        }
+        filledComponents++;
+        filledTiles += comp.length;
+        continue;
+      }
+    }
+
+    remainingGapTiles += compSize;
+  }
+
+  return {
+    gapComponents,
+    filledComponents,
+    filledTiles,
+    remainingGapTiles,
+    largestGapTiles
+  };
+}
+
 export function installMap(World) {
     // ===== worldgen =====
 
@@ -296,6 +442,19 @@ export function installMap(World) {
         earth.classIdGrid &&
         earth.landGrid.length >= earthN &&
         earth.classIdGrid.length >= earthN;
+
+      // Clear earth-visual caches unless world-map mode rebuilds them.
+      this._earthBaseRgb = null;
+      this._earthNeutralRgb = null;
+      this._earthCountryId = null;
+      this._earthCountryBorder = null;
+      this._earthCountryCoverage = null;
+      this._countryTilesById = null;
+      this._countryAnchorById = null;
+      this._countryTileCountById = null;
+      this._countryClaimMode = false;
+      this._countryClaimGuard = false;
+
       if (useEarth) {
         this._initLandEarth();
         return;
@@ -828,6 +987,20 @@ export function installMap(World) {
       const landGrid = earth.landGrid;
       const classIdGrid = earth.classIdGrid;
       const classCodes = Array.isArray(earth.classCodes) ? earth.classCodes : [""];
+      const biomeIdGrid = earth.biomeIdGrid;
+      const hasExplicitBiome = !!(biomeIdGrid && biomeIdGrid.length >= (gw * gh));
+      const isCustomMap = !!earth.isCustomMap;
+      const baseRgbGrid = earth.baseRgbGrid;
+      const hasBaseRgb = !!(baseRgbGrid && baseRgbGrid.length >= (gw * gh * 3));
+      const countryIdGrid = earth.countryIdGrid;
+      const hasCountryData = !!(countryIdGrid && countryIdGrid.length >= (gw * gh));
+      const countryColorById = earth.countryColorById;
+      const countryPaletteSize = countryColorById ? ((countryColorById.length / 3) | 0) : 0;
+
+      const earthBaseRgb = hasBaseRgb ? new Uint8ClampedArray(n * 3) : null;
+      const earthNeutralRgb = (hasBaseRgb || hasCountryData) ? new Uint8ClampedArray(n * 3) : null;
+      const earthCountryId = hasCountryData ? new Uint16Array(n) : null;
+      const earthCountryBorder = hasCountryData ? new Uint8Array(n) : null;
 
       if (!landGrid || !classIdGrid || (landGrid.length < (gw * gh)) || (classIdGrid.length < (gw * gh))) {
         return;
@@ -859,12 +1032,14 @@ export function installMap(World) {
           const gxf = xToGXf[x];
           const gx0 = clampInt(Math.floor(gxf), 0, gw - 1);
           const gx1 = clampInt(gx0 + 1, 0, gw - 1);
+          const gxN = clampInt(Math.round(gxf), 0, gw - 1);
           const tx = clamp01(gxf - gx0);
 
           const i00 = gy0 * gw + gx0;
           const i10 = gy0 * gw + gx1;
           const i01 = gy1 * gw + gx0;
           const i11 = gy1 * gw + gx1;
+          const iN = clampInt(Math.round(gyf), 0, gh - 1) * gw + gxN;
 
           const w00 = (1 - tx) * (1 - ty);
           const w10 = tx * (1 - ty);
@@ -876,33 +1051,91 @@ export function installMap(World) {
           const l01 = (landGrid[i01] | 0) > 0 ? 1 : 0;
           const l11 = (landGrid[i11] | 0) > 0 ? 1 : 0;
           const landScore = (l00 * w00) + (l10 * w10) + (l01 * w01) + (l11 * w11);
-          const isLand = landScore >= 0.50;
+          let isLand = landScore >= 0.50;
+          if (hasCountryData) {
+            isLand = (landGrid[iN] | 0) > 0;
+          }
+
+          let baseR = 0, baseG = 0, baseB = 0;
+          if (earthBaseRgb) {
+            const src = iN * 3;
+            const dst = idx * 3;
+            baseR = baseRgbGrid[src] | 0;
+            baseG = baseRgbGrid[src + 1] | 0;
+            baseB = baseRgbGrid[src + 2] | 0;
+            earthBaseRgb[dst] = baseR;
+            earthBaseRgb[dst + 1] = baseG;
+            earthBaseRgb[dst + 2] = baseB;
+          }
 
           land[idx] = isLand ? 1 : 0;
           if (!isLand) {
-            height[idx] = sea - 2;
-            biome[idx] = BIOME.OCEAN_SHALLOW;
+            if (earthCountryId) earthCountryId[idx] = 0;
+
+            if (hasExplicitBiome) {
+              let sampledBiome = BIOME.OCEAN_SHALLOW;
+              let bestSW = -1;
+              if (w00 > bestSW) { bestSW = w00; sampledBiome = biomeIdGrid[i00] | 0; }
+              if (w10 > bestSW) { bestSW = w10; sampledBiome = biomeIdGrid[i10] | 0; }
+              if (w01 > bestSW) { bestSW = w01; sampledBiome = biomeIdGrid[i01] | 0; }
+              if (w11 > bestSW) { bestSW = w11; sampledBiome = biomeIdGrid[i11] | 0; }
+              const normalized = clampInt(sampledBiome, 0, 255);
+              if (normalized === BIOME.OCEAN_DEEP || normalized === BIOME.CORAL_REEF) {
+                biome[idx] = normalized;
+              } else {
+                biome[idx] = BIOME.OCEAN_SHALLOW;
+              }
+              height[idx] = clampInt(earthHeightFromBiomeId(biome[idx], sea, latAbs), 0, sea - 1);
+            } else {
+              height[idx] = sea - 2;
+              biome[idx] = BIOME.OCEAN_SHALLOW;
+            }
             shade[idx] = 148;
+
+            if (earthNeutralRgb) {
+              const dst = idx * 3;
+              earthNeutralRgb[dst] = 52;
+              earthNeutralRgb[dst + 1] = 96;
+              earthNeutralRgb[dst + 2] = 156;
+            }
             continue;
           }
 
           this.totalLand++;
 
-          let classId = 0;
-          let bestW = -1;
-          if (l00 && w00 > bestW) { bestW = w00; classId = classIdGrid[i00] | 0; }
-          if (l10 && w10 > bestW) { bestW = w10; classId = classIdGrid[i10] | 0; }
-          if (l01 && w01 > bestW) { bestW = w01; classId = classIdGrid[i01] | 0; }
-          if (l11 && w11 > bestW) { bestW = w11; classId = classIdGrid[i11] | 0; }
-          if (bestW < 0) classId = classIdGrid[i00] | 0;
-          const code = classCodes[classId] || "";
+          if (earthCountryId) {
+            const countryId = countryIdGrid[iN] | 0;
+            earthCountryId[idx] = countryId;
+          }
 
-          biome[idx] = earthBiomeFromKoppen(code, latAbs);
+          let code = "";
+          if (hasExplicitBiome) {
+            let sampledBiome = BIOME.GRASS;
+            let bestBW = -1;
+            if (l00 && w00 > bestBW) { bestBW = w00; sampledBiome = biomeIdGrid[i00] | 0; }
+            if (l10 && w10 > bestBW) { bestBW = w10; sampledBiome = biomeIdGrid[i10] | 0; }
+            if (l01 && w01 > bestBW) { bestBW = w01; sampledBiome = biomeIdGrid[i01] | 0; }
+            if (l11 && w11 > bestBW) { bestBW = w11; sampledBiome = biomeIdGrid[i11] | 0; }
+            if (bestBW < 0) sampledBiome = biomeIdGrid[i00] | 0;
+            biome[idx] = clampInt(sampledBiome, 0, 255);
+          } else {
+            let classId = 0;
+            let bestW = -1;
+            if (l00 && w00 > bestW) { bestW = w00; classId = classIdGrid[i00] | 0; }
+            if (l10 && w10 > bestW) { bestW = w10; classId = classIdGrid[i10] | 0; }
+            if (l01 && w01 > bestW) { bestW = w01; classId = classIdGrid[i01] | 0; }
+            if (l11 && w11 > bestW) { bestW = w11; classId = classIdGrid[i11] | 0; }
+            if (bestW < 0) classId = classIdGrid[i00] | 0;
+            code = classCodes[classId] || "";
+            biome[idx] = earthBiomeFromKoppen(code, latAbs);
+          }
 
           const u = x / Math.max(1, (w - 1));
           const terrainN = (fbm01WrapX(0xE17A1465, u * 2.1, v * 2.1, 3) - 0.5) * 10;
           const ridgeN = (ridgeFbm01WrapX(0x6D2B79F1, u * 1.25, v * 1.25, 3) - 0.5) * 8;
-          const baseHeight = earthHeightFromKoppen(code, latAbs, sea);
+          const baseHeight = hasExplicitBiome
+            ? earthHeightFromBiomeId(biome[idx], sea, latAbs)
+            : earthHeightFromKoppen(code, latAbs, sea);
           const hCell = clampInt(baseHeight + terrainN + ridgeN, sea + 1, 255);
 
           height[idx] = hCell;
@@ -910,20 +1143,38 @@ export function installMap(World) {
           const alt01 = clamp01((hCell - sea) / Math.max(1, (255 - sea)));
           const jitter = (hash01(x, y) - 0.5) * 16;
           shade[idx] = clampInt(170 + alt01 * 48 + jitter, 112, 255);
+
+          if (earthNeutralRgb) {
+            const dst = idx * 3;
+            let nr = (BIOME_COLORS[biome[idx] | 0]?.r) ?? 112;
+            let ng = (BIOME_COLORS[biome[idx] | 0]?.g) ?? 128;
+            let nb = (BIOME_COLORS[biome[idx] | 0]?.b) ?? 100;
+
+            earthNeutralRgb[dst] = clampInt(Math.round(nr), 0, 255);
+            earthNeutralRgb[dst + 1] = clampInt(Math.round(ng), 0, 255);
+            earthNeutralRgb[dst + 2] = clampInt(Math.round(nb), 0, 255);
+          }
         }
       }
-
-      // Cull tiny islands to keep world-map sessions from stalling on micro-islands.
-      const earthMinIsland = clampInt(
-        Math.round((w * h) * 0.00035),
-        220,
-        18000
-      );
-      if (earthMinIsland > 1) this._cullTinyIslands(sea, earthMinIsland);
 
       // Recount land after topology cleanup.
       this.totalLand = 0;
       for (let i = 0; i < n; i++) if (land[i]) this.totalLand++;
+
+      let countryCoverage = null;
+      if (earthCountryId) {
+        for (let i = 0; i < n; i++) {
+          if (!land[i]) earthCountryId[i] = 0;
+        }
+        // Repair tiny raster seams so every practical land tile maps to a country id.
+        countryCoverage = repairCountryCoverage(earthCountryId, land, w, h, 1800);
+        if (countryCoverage.remainingGapTiles > 0) {
+          console.warn(
+            `[Earth] Country coverage still has ${countryCoverage.remainingGapTiles} unassigned land tiles ` +
+            `(${countryCoverage.gapComponents} gap components, largest ${countryCoverage.largestGapTiles}).`
+          );
+        }
+      }
 
       // Reuse ocean style logic, but keep world-map mode river-free.
       this._computeWaterDistances(sea);
@@ -940,17 +1191,144 @@ export function installMap(World) {
 
           if (!land[idx]) {
             const depth = clamp01((sea - hb) / 120);
-            biome[idx] = depth > 0.34 ? BIOME.OCEAN_DEEP : BIOME.OCEAN_SHALLOW;
+            const prevBiome = biome[idx] | 0;
+            const keepCustomOcean = (
+              hasExplicitBiome &&
+              (prevBiome === BIOME.OCEAN_DEEP || prevBiome === BIOME.OCEAN_SHALLOW || prevBiome === BIOME.CORAL_REEF)
+            );
+            if (!keepCustomOcean) biome[idx] = depth > 0.34 ? BIOME.OCEAN_DEEP : BIOME.OCEAN_SHALLOW;
             const sh = 150 - depth * 40 + (latAbs > 0.82 && depth < 0.25 ? 8 : 0);
             shade[idx] = clampInt(sh, 88, 170);
             continue;
           }
 
-          if (hb <= sea + 4 && biome[idx] !== BIOME.ICE_SHEET && this._touchesWater4(idx)) {
+          if (!isCustomMap && hb <= sea + 4 && biome[idx] !== BIOME.ICE_SHEET && this._touchesWater4(idx)) {
             biome[idx] = BIOME.BEACH;
           }
         }
       }
+
+      // Ensure every land cell resolves to a valid land biome.
+      for (let i = 0; i < n; i++) {
+        if (!land[i]) continue;
+        const b = biome[i] | 0;
+        if (b === BIOME.OCEAN_DEEP || b === BIOME.OCEAN_SHALLOW || b === BIOME.CORAL_REEF) {
+          const y = (i / w) | 0;
+          const latAbs = Math.abs((y / Math.max(1, h - 1)) * 2 - 1);
+          biome[i] = latAbs >= 0.78 ? BIOME.TUNDRA : BIOME.GRASS;
+          height[i] = Math.max(sea + 1, height[i] | 0);
+          shade[i] = clampInt((shade[i] | 0) + 8, 96, 255);
+        }
+      }
+
+      if (earthCountryId && earthCountryBorder) {
+        earthCountryBorder.fill(0);
+        for (let y = 0; y < h; y++) {
+          const row = y * w;
+          for (let x = 0; x < w; x++) {
+            const idx = row + x;
+            if (!land[idx]) continue;
+
+            const cid = earthCountryId[idx] | 0;
+            if (cid <= 0) continue;
+
+            let isCountryBorder = false;
+            for (let oy = -1; oy <= 1 && !isCountryBorder; oy++) {
+              const ny = y + oy;
+              if (ny < 0 || ny >= h) continue;
+              for (let ox = -1; ox <= 1; ox++) {
+                if (ox === 0 && oy === 0) continue;
+                const nx = x + ox;
+                if (nx < 0 || nx >= w) continue;
+                const ni = ny * w + nx;
+                const nc = earthCountryId[ni] | 0;
+                if (land[ni] && nc > 0 && nc !== cid) {
+                  isCountryBorder = true;
+                  break;
+                }
+              }
+            }
+
+            earthCountryBorder[idx] = isCountryBorder ? 1 : 0;
+          }
+        }
+      }
+
+      let countryTilesById = null;
+      let countryAnchorById = null;
+      let countryTileCountById = null;
+      if (earthCountryId) {
+        let maxCountryId = 0;
+        for (let i = 0; i < n; i++) {
+          const cid = earthCountryId[i] | 0;
+          if (cid > maxCountryId) maxCountryId = cid;
+        }
+        if (maxCountryId > 0) {
+          countryTilesById = new Array(maxCountryId + 1);
+          countryAnchorById = new Int32Array(maxCountryId + 1);
+          countryTileCountById = new Int32Array(maxCountryId + 1);
+          const countrySumX = new Float64Array(maxCountryId + 1);
+          const countrySumY = new Float64Array(maxCountryId + 1);
+          countryAnchorById.fill(-1);
+
+          for (let i = 0; i < n; i++) {
+            const cid = earthCountryId[i] | 0;
+            if (cid <= 0 || !land[i]) continue;
+            let list = countryTilesById[cid];
+            if (!list) {
+              list = [];
+              countryTilesById[cid] = list;
+            }
+            list.push(i);
+            countryTileCountById[cid] = (countryTileCountById[cid] | 0) + 1;
+            const x = i % w;
+            const y = (i / w) | 0;
+            countrySumX[cid] += x;
+            countrySumY[cid] += y;
+            if ((countryAnchorById[cid] | 0) < 0) countryAnchorById[cid] = i;
+          }
+
+          // Spawn anchors should sit near the center of each country's territory, not first tile hit.
+          for (let cid = 1; cid <= maxCountryId; cid++) {
+            const list = countryTilesById[cid];
+            if (!Array.isArray(list) || list.length <= 0) continue;
+            const count = countryTileCountById[cid] | 0;
+            if (count <= 0) continue;
+
+            const cx = countrySumX[cid] / count;
+            const cy = countrySumY[cid] / count;
+            let bestIdx = list[0] | 0;
+            let bestD2 = Number.POSITIVE_INFINITY;
+
+            for (let i = 0; i < list.length; i++) {
+              const idx = list[i] | 0;
+              const x = idx % w;
+              const y = (idx / w) | 0;
+              const dx = x - cx;
+              const dy = y - cy;
+              const d2 = (dx * dx) + (dy * dy);
+              if (d2 < bestD2) {
+                bestD2 = d2;
+                bestIdx = idx;
+              }
+            }
+
+            countryAnchorById[cid] = bestIdx;
+          }
+        }
+      }
+
+      this._earthBaseRgb = earthBaseRgb;
+      this._earthNeutralRgb = earthNeutralRgb;
+      this._earthCountryId = earthCountryId;
+      this._earthCountryBorder = earthCountryBorder;
+      this._earthCountryCoverage = countryCoverage;
+      this._countryTilesById = countryTilesById;
+      this._countryAnchorById = countryAnchorById;
+      this._countryTileCountById = countryTileCountById;
+      const claimEnabled = this._countryClaimEnabled !== false;
+      this._countryClaimMode = !!(claimEnabled && countryTilesById && countryTilesById.length > 1);
+      this._countryClaimGuard = false;
 
       // Reset ownership
       this.owner.fill(0);
@@ -2425,7 +2803,7 @@ World.prototype._applyRiverWetlands = function(sea) {
       return false;
     }
 
-World.prototype._initNations = function() {
+  World.prototype._initNations = function() {
     const namePool = [
 "Canama","Unisia","Mexaro","Guatemar","Belizor","Hondurel","Salvadoro","Nicaran","Costaverde","Panamor",
     "Cubria","Haiten","Dominor","Jamaik","Baharel","Barbador","Trinidaden","Grenador","Lucienne","Vincor",
@@ -2511,11 +2889,15 @@ World.prototype._initNations = function() {
 
         let name = "You";
         if (id !== OWNER.PLAYER) {
-          if (namePool.length) {
-            const ix = (this._rng() * namePool.length) | 0;
-            name = namePool.splice(ix, 1)[0];
+          if (this._isCountryClaimMode()) {
+            name = `Bot ${id - 1}`;
           } else {
-            name = `AI ${id - 1}`;
+            if (namePool.length) {
+              const ix = (this._rng() * namePool.length) | 0;
+              name = namePool.splice(ix, 1)[0];
+            } else {
+              name = `AI ${id - 1}`;
+            }
           }
         }
 
@@ -2551,9 +2933,223 @@ World.prototype._initNations = function() {
 
       this.player = this.nation[OWNER.PLAYER];
     }
+
+  World.prototype._isCountryClaimMode = function() {
+      return !!(
+        this._mapMode === MAP_MODE.WORLD_MAP &&
+        this._countryClaimMode &&
+        this._countryTilesById &&
+        this._earthCountryId
+      );
+    }
+
+  World.prototype._countryIdAtCell = function(x, y) {
+      const cx = x | 0;
+      const cy = y | 0;
+      if (cx < 0 || cy < 0 || cx >= (this.w | 0) || cy >= (this.h | 0)) return 0;
+      const idx = (cy * (this.w | 0) + cx) | 0;
+      if (!this.land[idx]) return 0;
+      const grid = this._earthCountryId;
+      if (!grid || idx < 0 || idx >= grid.length) return 0;
+      return grid[idx] | 0;
+    }
+
+  World.prototype._countryNameById = function(countryIdRaw) {
+      const cid = countryIdRaw | 0;
+      if (cid <= 0) return "";
+      const names = Array.isArray(this._earthData?.countryNames) ? this._earthData.countryNames : null;
+      if (names && cid < names.length) {
+        const label = String(names[cid] || "").trim();
+        if (label) return label;
+      }
+      const codes = Array.isArray(this._earthData?.countryCodes) ? this._earthData.countryCodes : null;
+      if (codes && cid < codes.length) {
+        const raw = String(codes[cid] || "").trim();
+        if (!raw) return "";
+        if (/^[A-Za-z]{3}$/.test(raw)) return raw.toUpperCase();
+        return title(raw.replace(/[_-]+/g, " "));
+      }
+      return "";
+    }
+
+  World.prototype._countryCodeById = function(countryIdRaw) {
+      const cid = countryIdRaw | 0;
+      if (cid <= 0) return "";
+      const iso3 = Array.isArray(this._earthData?.countryIso3) ? this._earthData.countryIso3 : null;
+      if (iso3 && cid < iso3.length) {
+        const code = String(iso3[cid] || "").trim().toUpperCase();
+        if (/^[A-Z]{3}$/.test(code)) return code;
+      }
+      const codes = Array.isArray(this._earthData?.countryCodes) ? this._earthData.countryCodes : null;
+      if (codes && cid < codes.length) {
+        const code = String(codes[cid] || "").trim().toUpperCase();
+        if (/^[A-Z]{3}$/.test(code)) return code;
+      }
+      return "";
+    }
+
+  World.prototype._countryAnchorCell = function(countryIdRaw) {
+      const cid = countryIdRaw | 0;
+      if (cid <= 0) return null;
+
+      const anchorArr = this._countryAnchorById;
+      if (anchorArr && cid < anchorArr.length) {
+        const idx = anchorArr[cid] | 0;
+        if (idx >= 0 && idx < (this.w * this.h) && this.land[idx]) {
+          return { x: (idx % this.w) | 0, y: ((idx / this.w) | 0) };
+        }
+      }
+
+      const list = this._countryTilesById?.[cid];
+      if (Array.isArray(list) && list.length > 0) {
+        const idx = list[0] | 0;
+        if (idx >= 0 && idx < (this.w * this.h) && this.land[idx]) {
+          return { x: (idx % this.w) | 0, y: ((idx / this.w) | 0) };
+        }
+      }
+      return null;
+    }
+
+  World.prototype._listSpawnableCountries = function(minTiles = 1) {
+      const out = [];
+      const counts = this._countryTileCountById;
+      if (!counts || counts.length <= 1) return out;
+      const threshold = Math.max(1, minTiles | 0);
+      for (let cid = 1; cid < counts.length; cid++) {
+        if ((counts[cid] | 0) < threshold) continue;
+        const anchor = this._countryAnchorCell(cid);
+        if (!anchor) continue;
+        out.push(cid | 0);
+      }
+      return out;
+    }
+
+  World.prototype._findRandomSpawnCountry = function() {
+      const phase = this._spawnPhase;
+      if (!phase || !phase.active || phase.mode !== "country") return 0;
+      const ids = Array.isArray(phase.countryIds) ? phase.countryIds : [];
+      if (ids.length <= 0) return 0;
+
+      const taken = phase.countryTakenByNation;
+      const tries = Math.max(64, ids.length * 2);
+      for (let t = 0; t < tries; t++) {
+        const cid = ids[(this._rng() * ids.length) | 0] | 0;
+        if (cid <= 0) continue;
+        if (taken && (taken[cid] | 0) > 0) continue;
+        return cid;
+      }
+
+      for (let i = 0; i < ids.length; i++) {
+        const cid = ids[i] | 0;
+        if (cid <= 0) continue;
+        if (taken && (taken[cid] | 0) > 0) continue;
+        return cid;
+      }
+      return 0;
+    }
+
+  World.prototype._lockCountrySpawnSelection = function(ownerId, countryIdRaw, opts = null) {
+      const phase = this._spawnPhase;
+      const id = ownerId | 0;
+      const cid = countryIdRaw | 0;
+      if (!phase || !phase.active || phase.mode !== "country") return { ok: false, reason: "Spawn phase already ended." };
+      if (id <= 0 || id > this._nationCount) return { ok: false, reason: "Invalid nation." };
+      if (cid <= 0) return { ok: false, reason: "Pick a valid country." };
+
+      const options = (opts && typeof opts === "object") ? opts : null;
+      const allowRepick = !!options?.allowRepick;
+      const wasPicked = !!phase.picked[id];
+      if (wasPicked && !allowRepick) {
+        return { ok: false, reason: id === OWNER.PLAYER ? "Country already locked." : "Nation already picked a country." };
+      }
+
+      if (!Array.isArray(phase.countryIds) || !phase.countryIds.includes(cid)) {
+        return { ok: false, reason: "This country is not available." };
+      }
+
+      const takenBy = (phase.countryTakenByNation && cid < phase.countryTakenByNation.length)
+        ? (phase.countryTakenByNation[cid] | 0)
+        : 0;
+      if (takenBy > 0 && takenBy !== id) return { ok: false, reason: "Country already taken." };
+
+      const prevCid = (phase.nationCountry && id < phase.nationCountry.length) ? (phase.nationCountry[id] | 0) : 0;
+      if (prevCid > 0 && prevCid !== cid && phase.countryTakenByNation && prevCid < phase.countryTakenByNation.length) {
+        phase.countryTakenByNation[prevCid] = 0;
+      }
+
+      if (phase.nationCountry && id < phase.nationCountry.length) phase.nationCountry[id] = cid;
+      if (phase.countryTakenByNation && cid < phase.countryTakenByNation.length) phase.countryTakenByNation[cid] = id;
+
+      const anchor = this._countryAnchorCell(cid);
+      if (!anchor) return { ok: false, reason: "Selected country has no valid land cells." };
+      this._spawnPos[id] = { x: anchor.x | 0, y: anchor.y | 0 };
+
+      if (!wasPicked) {
+        phase.picked[id] = 1;
+        phase.pickedCount = (phase.pickedCount | 0) + 1;
+        if (id !== OWNER.PLAYER) phase.aiPickedCount = (phase.aiPickedCount | 0) + 1;
+      }
+
+      const countryName = this._countryNameById(cid);
+      const countryCode = this._countryCodeById(cid);
+      const nation = this.nation?.[id] || null;
+      if (nation && typeof nation === "object") {
+        nation.countryId = cid;
+        nation.countryCode = countryCode;
+        nation.countryName = countryName;
+        if (id !== OWNER.PLAYER) {
+          nation.name = countryName || `Bot ${id - 1}`;
+        }
+      }
+
+      return {
+        ok: true,
+        x: anchor.x | 0,
+        y: anchor.y | 0,
+        countryId: cid,
+        countryName,
+        replaced: wasPicked
+      };
+    }
+
+  World.prototype._claimCountryTerritory = function(countryIdRaw, ownerIdRaw) {
+      const cid = countryIdRaw | 0;
+      const oid = ownerIdRaw | 0;
+      if (cid <= 0 || oid <= 0) return 0;
+      const list = this._countryTilesById?.[cid];
+      if (!Array.isArray(list) || list.length <= 0) return 0;
+
+      const prevGuard = !!this._countryClaimGuard;
+      this._countryClaimGuard = true;
+
+      const inBatch = (this._ownerBatchDepth | 0) > 0;
+      if (!inBatch) this._beginOwnerBatch();
+      try {
+        let changed = 0;
+        for (let i = 0; i < list.length; i++) {
+          const idx = list[i] | 0;
+          if (!this.land[idx]) continue;
+          if ((this.owner[idx] | 0) === oid) continue;
+          this._setOwner(idx, oid);
+          changed++;
+        }
+        return changed;
+      } finally {
+        if (!inBatch) this._endOwnerBatch();
+        this._countryClaimGuard = prevGuard;
+      }
+    }
   World.prototype._spawnTerritories = function(opts = null) {
       const options = (opts && typeof opts === "object") ? opts : null;
       const claimNow = options ? (options.claim !== false) : true;
+
+      if (this._isCountryClaimMode()) {
+        this._spawnMinDistSq = 0;
+        this._spawnClaimTargetSize = 0;
+        for (let id = 1; id <= this._nationCount; id++) this._spawnPos[id] = null;
+        if (claimNow) this._claimSpawnTerritories();
+        return;
+      }
 
       // Improved: avoid tiny islands by requiring decent local land density.
       const size = Math.min(this.w, this.h);
@@ -2631,6 +3227,28 @@ World.prototype._initNations = function() {
     }
 
   World.prototype._claimSpawnTerritories = function() {
+      if (this._isCountryClaimMode()) {
+        this.landOwnedCount.fill(0);
+        const phase = this._spawnPhase;
+        const nationCountry = (phase && phase.mode === "country" && phase.nationCountry)
+          ? phase.nationCountry
+          : null;
+
+        this._beginOwnerBatch();
+        try {
+          for (let id = 1; id <= this._nationCount; id++) {
+            const cid = nationCountry && id < nationCountry.length ? (nationCountry[id] | 0) : 0;
+            if (cid <= 0) continue;
+            this._claimCountryTerritory(cid, id);
+          }
+        } finally {
+          this._endOwnerBatch();
+        }
+
+        this.ownerVersion++;
+        return;
+      }
+
       this.landOwnedCount.fill(0);
       const targetSize = clampInt(
         Number(this._spawnClaimTargetSize) || 72,
@@ -2647,13 +3265,72 @@ World.prototype._initNations = function() {
       this.ownerVersion++;
     }
 
-  World.prototype._computeSpawnPhaseDurationS = function() {
-      const total = Math.max(2, this._nationCount | 0);
+  World.prototype._computeSpawnPhaseDurationS = function(totalNationsRaw = null) {
+      const total = Math.max(
+        2,
+        (totalNationsRaw == null ? (this._nationCount | 0) : (totalNationsRaw | 0))
+      );
       const sec = 10 + total * 0.085;
       return Math.max(10, Math.min(46, sec));
     }
 
   World.prototype._beginSpawnPhase = function() {
+      if (this._isCountryClaimMode()) {
+        const countryIds = this._listSpawnableCountries(1);
+        if (countryIds.length > 0) {
+          for (let i = countryIds.length - 1; i > 0; i--) {
+            const j = (this._rng() * (i + 1)) | 0;
+            const t = countryIds[i];
+            countryIds[i] = countryIds[j];
+            countryIds[j] = t;
+          }
+
+          const aiPool = [];
+          for (let id = 2; id <= this._nationCount; id++) {
+            if (this.nation[id]?.alive) aiPool.push(id);
+          }
+          for (let i = aiPool.length - 1; i > 0; i--) {
+            const j = (this._rng() * (i + 1)) | 0;
+            const t = aiPool[i];
+            aiPool[i] = aiPool[j];
+            aiPool[j] = t;
+          }
+
+          const maxAi = Math.max(0, countryIds.length - 1);
+          const aiQueue = aiPool.slice(0, maxAi);
+          if (aiPool.length > maxAi) {
+            for (let i = maxAi; i < aiPool.length; i++) {
+              const id = aiPool[i] | 0;
+              if (!this.nation[id]) continue;
+              this.nation[id].alive = false;
+              this.nation[id].collapsed = true;
+              this.nation[id].collapsedAt = this.time;
+              this._spawnPos[id] = null;
+            }
+          }
+
+          const totalNations = 1 + aiQueue.length;
+          const maxCountryId = countryIds.reduce((m, cid) => Math.max(m, cid | 0), 0);
+          this._spawnPhase = {
+            active: true,
+            elapsedS: 0,
+            durationS: this._computeSpawnPhaseDurationS(totalNations),
+            picked: new Uint8Array(this._nationCount + 1),
+            pickedCount: 0,
+            aiQueue,
+            aiCursor: 0,
+            aiPickedCount: 0,
+            mode: "country",
+            totalNations,
+            countryIds,
+            nationCountry: new Int32Array(this._nationCount + 1),
+            countryTakenByNation: new Int32Array(maxCountryId + 1)
+          };
+          return;
+        }
+        this._countryClaimMode = false;
+      }
+
       const aiQueue = [];
       for (let id = 2; id <= this._nationCount; id++) aiQueue.push(id);
       for (let i = aiQueue.length - 1; i > 0; i--) {
@@ -2671,7 +3348,9 @@ World.prototype._initNations = function() {
         pickedCount: 0,
         aiQueue,
         aiCursor: 0,
-        aiPickedCount: 0
+        aiPickedCount: 0,
+        mode: "tile",
+        totalNations: this._nationCount | 0
       };
     }
 
@@ -2706,15 +3385,20 @@ World.prototype._initNations = function() {
         };
       }
 
-      const total = self._nationCount | 0;
+      const total = Math.max(1, (phase.totalNations | 0) || (self._nationCount | 0));
       const picked = phase.pickedCount | 0;
       const progress01 = clamp01(phase.elapsedS / Math.max(0.001, Number(phase.durationS) || 0.001));
       const remainS = Math.max(0, (Number(phase.durationS) || 0) - (Number(phase.elapsedS) || 0));
       const remainText = `${Math.ceil(remainS)}s`;
       const playerPicked = !!phase.picked[OWNER.PLAYER];
-      const label = playerPicked
-        ? `Spawn Selection ${picked}/${total} - ${remainText}`
-        : `Pick Your Spawn ${picked}/${total} - ${remainText}`;
+      const mode = String(phase.mode || "tile");
+      const label = mode === "country"
+        ? (playerPicked
+          ? `Country Selection ${picked}/${total} - ${remainText}`
+          : `Pick Your Country ${picked}/${total} - ${remainText}`)
+        : (playerPicked
+          ? `Spawn Selection ${picked}/${total} - ${remainText}`
+          : `Pick Your Spawn ${picked}/${total} - ${remainText}`);
 
       return {
         active: true,
@@ -2910,11 +3594,31 @@ World.prototype._initNations = function() {
       if (!phase || !phase.active) return { ok: false, reason: "Spawn phase is over." };
       if (id <= 0 || id > self._nationCount) return { ok: false, reason: "Invalid nation." };
       if (!self.nation[id]?.alive) return { ok: false, reason: "Nation is not active." };
-      const canRepick = (id === OWNER.PLAYER);
+      const canRepick = !!(id === OWNER.PLAYER || self.nation?.[id]?.isHuman);
       if (phase.picked[id] && !canRepick) return { ok: false, reason: "Nation already spawned." };
 
       const tx = clampInt(x | 0, 0, self.w - 1);
       const ty = clampInt(y | 0, 0, self.h - 1);
+      if (phase.mode === "country") {
+        const pickedCountry = self._countryIdAtCell(tx, ty);
+        if (pickedCountry <= 0) return { ok: false, reason: "Pick land inside a country." };
+        const res = self._lockCountrySpawnSelection(
+          id,
+          pickedCountry,
+          canRepick ? { allowRepick: true } : null
+        );
+        if (!res.ok) return res;
+        return {
+          ok: true,
+          x: res.x | 0,
+          y: res.y | 0,
+          countryId: pickedCountry,
+          countryName: String(res.countryName || ""),
+          snapped: ((res.x | 0) !== tx || (res.y | 0) !== ty),
+          replaced: !!res.replaced
+        };
+      }
+
       const opts = canRepick
         ? { requireDensity: false, allowAnyBiome: true, minDistanceScale: 0.25 }
         : { requireDensity: false };
@@ -2943,6 +3647,20 @@ World.prototype._initNations = function() {
       const phase = this._spawnPhase;
       if (!phase || !phase.active) return false;
 
+      if (phase.mode === "country") {
+        while ((phase.aiCursor | 0) < phase.aiQueue.length) {
+          const id = phase.aiQueue[phase.aiCursor++] | 0;
+          if (id <= 0 || id > this._nationCount || phase.picked[id]) continue;
+
+          const cid = this._findRandomSpawnCountry();
+          if (cid <= 0) continue;
+
+          const res = this._lockCountrySpawnSelection(id, cid);
+          if (res.ok) return true;
+        }
+        return false;
+      }
+
       while ((phase.aiCursor | 0) < phase.aiQueue.length) {
         const id = phase.aiQueue[phase.aiCursor++] | 0;
         if (id <= 0 || id > this._nationCount || phase.picked[id]) continue;
@@ -2968,11 +3686,27 @@ World.prototype._initNations = function() {
       const phase = this._spawnPhase;
       if (!phase || !phase.active) return;
 
+      // If player never picked, assign a random country before filling remaining AI picks.
+      // This prevents "last leftover country" behavior when bots are near the cap.
+      if (!phase.picked[OWNER.PLAYER] && phase.mode === "country") {
+        const fallbackCountryEarly = this._findRandomSpawnCountry();
+        if (fallbackCountryEarly > 0) {
+          this._lockCountrySpawnSelection(OWNER.PLAYER, fallbackCountryEarly, { allowRepick: true });
+        }
+      }
+
       while (this._pickNextAISpawn()) { /* lock all AI picks */ }
 
       if (!phase.picked[OWNER.PLAYER]) {
-        const fallbackPlayer = this._findFallbackSpawnTile(OWNER.PLAYER, this._spawnPos[OWNER.PLAYER]);
-        if (fallbackPlayer) this._lockSpawnSelection(OWNER.PLAYER, fallbackPlayer.x, fallbackPlayer.y);
+        if (phase.mode === "country") {
+          const fallbackCountry = this._findRandomSpawnCountry();
+          if (fallbackCountry > 0) {
+            this._lockCountrySpawnSelection(OWNER.PLAYER, fallbackCountry, { allowRepick: true });
+          }
+        } else {
+          const fallbackPlayer = this._findFallbackSpawnTile(OWNER.PLAYER, this._spawnPos[OWNER.PLAYER]);
+          if (fallbackPlayer) this._lockSpawnSelection(OWNER.PLAYER, fallbackPlayer.x, fallbackPlayer.y);
+        }
       }
 
       const prevSuspendPixels = !!this._suspendPixelDirtyTracking;
@@ -2994,12 +3728,15 @@ World.prototype._initNations = function() {
       this._suspendPixelDirtyTracking = prevSuspendPixels;
       this._suspendOwnerVersionBump = prevSuspendOwner;
 
+      // Turn off spawn-state visuals before rebuilding pixels/borders so country
+      // selection outlines do not remain baked into the world texture.
+      phase.active = false;
+      phase.elapsedS = Number(phase.durationS) || phase.elapsedS;
+
       this._rebuildAllPixels();
       this._rebuildAllBorders();
       this.dirty = true;
 
-      phase.active = false;
-      phase.elapsedS = Number(phase.durationS) || phase.elapsedS;
       this._visitStamp = null;
       this._pushEvent("Spawn phase complete. Match started.");
     }
@@ -3011,7 +3748,8 @@ World.prototype._initNations = function() {
       const delta = Math.max(0, Number(dt) || 0);
       phase.elapsedS = Math.min(Number(phase.durationS) || 0, (Number(phase.elapsedS) || 0) + delta);
 
-      const aiTotal = Math.max(0, this._nationCount - 1);
+      const totalNations = Math.max(1, (phase.totalNations | 0) || (this._nationCount | 0));
+      const aiTotal = Math.max(0, totalNations - 1);
       const progress01 = clamp01((Number(phase.elapsedS) || 0) / Math.max(0.001, Number(phase.durationS) || 0.001));
       const targetAIPicks = Math.min(aiTotal, Math.floor(progress01 * aiTotal));
 
@@ -3202,6 +3940,7 @@ World.prototype._initNations = function() {
         const expandEvery = expandEveryBase * (0.90 + this._rng() * 0.20);
         const buildEvery = 1.10 + this._rng() * 0.85;
         const strategyEvery = 1.10 + this._rng() * 0.90;
+        const tradeEvery = 7.5 + this._rng() * 4.5;
         const highTechEveryWar = 2.0 + this._rng() * 1.6;
         const highTechEveryPeace = 4.6 + this._rng() * 3.0;
         const baseWarCooldownUntil = this.time + 8.0 + this._rng() * 10.0;
@@ -3214,6 +3953,7 @@ World.prototype._initNations = function() {
           buildAcc: this._rng() * buildEvery,
           strategyAcc: this._rng() * strategyEvery,
           tuneAcc: this._rng() * 0.65,
+          tradeAcc: this._rng() * tradeEvery,
           highTechAcc: this._rng() * highTechEveryPeace,
           donateAcc: this._rng() * 2.4,
           neutralCarry: 0,
@@ -3221,12 +3961,14 @@ World.prototype._initNations = function() {
           expandEvery,
           buildEvery,
           strategyEvery,
+          tradeEvery,
           highTechEveryWar,
           highTechEveryPeace,
           warCooldownUntil: Math.max(baseWarCooldownUntil, graceWarCooldownUntil),
           allianceCooldownUntil: this.time + 22.0 + this._rng() * 30.0,
           focusCooldownUntil: this.time + 18.0 + this._rng() * 18.0,
           transportCooldownUntil: this.time + 14.0 + this._rng() * 20.0,
+          tradeCooldownUntil: this.time + 18.0 + this._rng() * 20.0,
           warOffenseDelayUntil: 0,
           lastWarTarget: 0,
           lastAllianceTarget: 0,

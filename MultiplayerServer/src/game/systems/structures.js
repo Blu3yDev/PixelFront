@@ -34,6 +34,35 @@ export function installStructures(World) {
     return true;
   }
 
+  World.prototype._canPlaceCoastalRigFootprint = function(ownerId, cx, cy) {
+    const oid = ownerId | 0;
+    const x0 = cx | 0, y0 = cy | 0;
+    const w = this.w | 0;
+    const h = this.h | 0;
+
+    for (let dy = -STRUCT_FOOTPRINT_R; dy <= STRUCT_FOOTPRINT_R; dy++) {
+      for (let dx = -STRUCT_FOOTPRINT_R; dx <= STRUCT_FOOTPRINT_R; dx++) {
+        const x = x0 + dx;
+        const y = y0 + dy;
+        if (x < 0 || y < 0 || x >= w || y >= h) return false;
+        const idx = y * w + x;
+        if (this.land[idx]) return false;
+
+        const sid = this._structAt[idx] | 0;
+        if (!sid) continue;
+
+        const st = this._structureById.get(sid);
+        if (!st) {
+          this._structAt[idx] = 0;
+          continue;
+        }
+        if ((st.owner | 0) === oid && ((st.x | 0) === x0) && ((st.y | 0) === y0)) continue;
+        return false;
+      }
+    }
+    return true;
+  }
+
   World.prototype._markStructureFootprint = function(structId, cx, cy) {
     const sid = structId | 0;
     const x0 = cx | 0, y0 = cy | 0;

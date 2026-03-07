@@ -1,5 +1,7 @@
 export { installMap } from "./map.js";
+export { installResources } from "./resources.js";
 export { installEconomy } from "./economy.js";
+export { installTrading } from "./trading.js";
 export { installStructures } from "./structures.js";
 export { installWar } from "./war.js";
 export { installNavy } from "./navy.js";

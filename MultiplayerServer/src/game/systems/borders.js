@@ -6,6 +6,7 @@ import {
   CAPITAL_CAPTURE_GOLD_BASE,
   CAPITAL_CAPTURE_GOLD_MAX,
   CAPITAL_CAPTURE_GOLD_PER_LAND,
+  MAP_MODE,
   OWNER,
   RIVER_STYLE,
   SPECKLE_MAX_CHECKS_PER_PASS,
@@ -122,10 +123,20 @@ export function installBorders(World) {
       let checks = 0;
       const qLenStart = this._speckleQueue.length | 0;
       let maxChecks = SPECKLE_MAX_CHECKS_PER_PASS | 0;
-      if (qLenStart >= 120000) maxChecks = Math.min(maxChecks, 2500);
-      else if (qLenStart >= 80000) maxChecks = Math.min(maxChecks, 3400);
-      else if (qLenStart >= 40000) maxChecks = Math.min(maxChecks, 4600);
-      else maxChecks = Math.min(maxChecks, 7000);
+      if (qLenStart >= 120000) maxChecks = Math.min(maxChecks, 1800);
+      else if (qLenStart >= 80000) maxChecks = Math.min(maxChecks, 2400);
+      else if (qLenStart >= 40000) maxChecks = Math.min(maxChecks, 3200);
+      else maxChecks = Math.min(maxChecks, 4800);
+      const hasPerfNow = (typeof performance !== "undefined" && performance && typeof performance.now === "function");
+      const cleanupStartMs = hasPerfNow ? performance.now() : 0;
+      const cleanupBudgetMs = qLenStart >= 120000
+        ? 1.35
+        : qLenStart >= 80000
+          ? 1.55
+          : qLenStart >= 40000
+            ? 1.8
+            : 2.2;
+      const retryLater = [];
       let counts = this._speckleNeighborCounts;
       let touched = this._speckleNeighborTouched;
       const wantLen = (this._nationCount | 0) + 1;
@@ -138,6 +149,7 @@ export function installBorders(World) {
       const maxOwner = counts.length - 1;
 
       while (this._speckleQueue.length > 0 && checks < maxChecks) {
+        if (hasPerfNow && checks >= 192 && (performance.now() - cleanupStartMs) >= cleanupBudgetMs) break;
         const idx = this._speckleQueue.pop();
         if (!this._speckleSet.has(idx)) continue;
         checks++;
@@ -146,8 +158,9 @@ export function installBorders(World) {
 
         const age = this.time - (this.ownerStamp[idx] || 0);
         if (age < SPECKLE_MIN_AGE_S) {
-          // Keep the queue bounded under heavy combat; nearby future ownership changes can requeue this tile.
-          this._speckleSet.delete(idx);
+          // Keep candidate for a later pass once ownership is old enough to stabilize.
+          if ((retryLater.length | 0) < 32000) retryLater.push(idx);
+          else this._speckleSet.delete(idx);
           continue;
         }
 
@@ -190,13 +203,30 @@ export function installBorders(World) {
           continue;
         }
 
-        if (bestC >= 5 && curCount <= 2) {
+        const neutralHoleFill = (cur === OWNER.NONE && bestO > OWNER.NONE && bestC >= 5);
+        const enclaveFlip = (bestC >= 5 && curCount <= 3);
+        if (neutralHoleFill || enclaveFlip) {
           this._speckleSet.delete(idx);
           this._setOwner(idx, bestO);
           continue;
         }
 
         this._speckleSet.delete(idx);
+      }
+
+      if (retryLater.length > 0) {
+        const cap = 180000;
+        const q = this._speckleQueue;
+        const room = Math.max(0, cap - (q.length | 0));
+        const keep = Math.min(room, retryLater.length | 0);
+        for (let i = 0; i < keep; i++) {
+          q.push(retryLater[i] | 0);
+        }
+        if (keep < (retryLater.length | 0)) {
+          for (let i = keep; i < retryLater.length; i++) {
+            this._speckleSet.delete(retryLater[i] | 0);
+          }
+        }
       }
     }
 
@@ -211,6 +241,17 @@ export function installBorders(World) {
       this._pixelDirtyMaxY = -1;
     }
 
+  World.prototype._resetPixelDirtyTiles = function() {
+      if (Array.isArray(this._pixelDirtyTiles)) this._pixelDirtyTiles.length = 0;
+      if (Array.isArray(this._pixelDirtyTilesBack)) this._pixelDirtyTilesBack.length = 0;
+      this._pixelDirtyTilesOverflow = false;
+      this._pixelDirtyTileEpoch = ((this._pixelDirtyTileEpoch >>> 0) + 1) >>> 0;
+      if ((this._pixelDirtyTileEpoch >>> 0) === 0) {
+        this._pixelDirtyTileEpoch = 1;
+        if (this._pixelDirtyTileStamp) this._pixelDirtyTileStamp.fill(0);
+      }
+    }
+
   World.prototype._markAllPixelsDirty = function() {
       this._pixelDirtyPending = true;
       this._pixelDirtyFull = true;
@@ -218,6 +259,9 @@ export function installBorders(World) {
       this._pixelDirtyMinY = 0;
       this._pixelDirtyMaxX = this.w - 1;
       this._pixelDirtyMaxY = this.h - 1;
+      this._pixelDirtyTilesOverflow = true;
+      if (Array.isArray(this._pixelDirtyTiles)) this._pixelDirtyTiles.length = 0;
+      if (Array.isArray(this._pixelDirtyTilesBack)) this._pixelDirtyTilesBack.length = 0;
     }
 
   World.prototype._markPixelDirty = function(idx) {
@@ -244,6 +288,30 @@ export function installBorders(World) {
       if (x > this._pixelDirtyMaxX) this._pixelDirtyMaxX = x;
       if (y < this._pixelDirtyMinY) this._pixelDirtyMinY = y;
       if (y > this._pixelDirtyMaxY) this._pixelDirtyMaxY = y;
+
+      if (this._pixelDirtyTilesOverflow) return;
+      const stamp = this._pixelDirtyTileStamp;
+      const list = this._pixelDirtyTiles;
+      const ownerLen = this.owner ? (this.owner.length | 0) : 0;
+      if (!stamp || !Array.isArray(list) || stamp.length !== ownerLen) return;
+
+      let epoch = this._pixelDirtyTileEpoch >>> 0;
+      if (epoch === 0) {
+        epoch = 1;
+        this._pixelDirtyTileEpoch = 1;
+        stamp.fill(0);
+      }
+
+      if ((stamp[idx] >>> 0) === epoch) return;
+      stamp[idx] = epoch;
+
+      const limit = Math.max(10000, Number(this._pixelDirtyTileOverflowLimit) | 0);
+      if (list.length >= limit) {
+        this._pixelDirtyTilesOverflow = true;
+        list.length = 0;
+        return;
+      }
+      list.push(idx | 0);
     }
 
   World.prototype._consumePixelDirtyRect = function() {
@@ -272,6 +340,31 @@ export function installBorders(World) {
       return rect;
     }
 
+  World.prototype._consumePixelDirtyTiles = function() {
+      if (this._pixelDirtyFull || this._pixelDirtyTilesOverflow) {
+        this._resetPixelDirtyTiles();
+        return { full: true, items: null };
+      }
+
+      const items = Array.isArray(this._pixelDirtyTiles) ? this._pixelDirtyTiles : null;
+      if (!items || items.length === 0) {
+        return { full: false, items: [] };
+      }
+
+      const back = Array.isArray(this._pixelDirtyTilesBack) ? this._pixelDirtyTilesBack : [];
+      back.length = 0;
+      this._pixelDirtyTiles = back;
+      this._pixelDirtyTilesBack = items;
+
+      this._pixelDirtyTileEpoch = ((this._pixelDirtyTileEpoch >>> 0) + 1) >>> 0;
+      if ((this._pixelDirtyTileEpoch >>> 0) === 0) {
+        this._pixelDirtyTileEpoch = 1;
+        if (this._pixelDirtyTileStamp) this._pixelDirtyTileStamp.fill(0);
+      }
+
+      return { full: false, items };
+    }
+
   World.prototype._queuePixelWrite = function(idx) {
       if (idx < 0 || idx >= (this.owner?.length || 0)) return;
 
@@ -295,7 +388,7 @@ export function installBorders(World) {
 
       if (!this._renderInterestEnabled) {
         this._renderInterestRect = { x0: 0, y0: 0, x1: w - 1, y1: h - 1 };
-        this._flushDeferredPixelWrites(32000);
+        this._flushDeferredPixelWrites(26000);
         return;
       }
 
@@ -314,7 +407,8 @@ export function installBorders(World) {
       const visibleArea = Math.max(1, (x1 - x0 + 1) * (y1 - y0 + 1));
       const totalArea = Math.max(1, w * h);
       const frac = visibleArea / totalArea;
-      const budget = frac <= 0.12 ? 28000 : (frac <= 0.25 ? 16000 : 7000);
+      // Keep deferred catch-up strong enough that visible frontlines do not look holey.
+      const budget = frac <= 0.12 ? 22000 : (frac <= 0.25 ? 14000 : 8000);
       this._flushDeferredPixelWrites(budget);
     }
 
@@ -525,7 +619,7 @@ export function installBorders(World) {
       }
 
       const setSize = set.size | 0;
-      const speckleBudget = setSize >= 30000 ? 1800 : (setSize >= 12000 ? 3000 : (setSize >= 5000 ? 5000 : 9000));
+      const speckleBudget = setSize >= 30000 ? 3200 : (setSize >= 12000 ? 5200 : (setSize >= 5000 ? 7600 : 9800));
       if (setSize <= speckleBudget) {
         for (const idx0 of set) {
           const idx = idx0 | 0;
@@ -554,7 +648,7 @@ export function installBorders(World) {
   World.prototype._flushQueuedPixelWrites = function() {
       const list = this._pixelWriteList;
       if (!list || list.length === 0) {
-        this._flushDeferredPixelWrites(6000);
+        this._flushDeferredPixelWrites(5000);
         return;
       }
 
@@ -586,12 +680,15 @@ export function installBorders(World) {
         return;
       }
 
-      const tiles = Math.max(1, (this.w | 0) * (this.h | 0));
-      let budget = tiles >= 2_000_000 ? 7000 : (tiles >= 1_200_000 ? 10000 : 18000);
       const listLen = list.length | 0;
-      if (listLen >= 250000) budget = Math.min(budget, 4500);
-      else if (listLen >= 120000) budget = Math.min(budget, 6500);
-      else if (listLen >= 60000) budget = Math.min(budget, 8000);
+      const hasPlayerOps = (typeof this._hasPlayerVisualOperation === "function") && this._hasPlayerVisualOperation();
+      const tiles = Math.max(1, (this.w | 0) * (this.h | 0));
+      let budget = tiles >= 2_000_000 ? 4500 : (tiles >= 1_200_000 ? 7000 : 11000);
+      if (listLen >= 250000) budget = Math.min(budget, 3200);
+      else if (listLen >= 120000) budget = Math.min(budget, 4500);
+      else if (listLen >= 60000) budget = Math.min(budget, 6000);
+      else if (listLen >= 25000) budget = Math.min(budget, 8200);
+      if (hasPlayerOps) budget = Math.max(2400, Math.floor(budget * 0.95));
 
       const pending = Array.isArray(this._ownerDirtyPending) ? this._ownerDirtyPending : null;
       const limit = Math.max(10000, Number(this._ownerDirtyOverflowLimit) | 0);
@@ -749,10 +846,11 @@ export function installBorders(World) {
     }
 
   World.prototype._isRenderBorderCell = function(idx) {
-      // Visual-only border pixels. We render a border when:
-      //  - owned land touches water / map edge
-      //  - owned land touches neutral land
-      //  - owned land touches another owner, but only one side draws the border to avoid "double-thick clumps"
+      // Visual-only border pixels.
+      // Draw a border when a tile has:
+      // 1) external contact (water/map edge/neutral/selected foreign owner), and
+      // 2) at least one friendly neighbor.
+      // This suppresses noisy "all-border" rendering on isolated single-tile claims.
       if (!this.land[idx]) return false;
 
       const o = this.owner[idx] | 0;
@@ -764,35 +862,99 @@ export function installBorders(World) {
       const y = (idx / w) | 0;
       let ni = 0;
       let no = 0;
+      let hasFriendly = false;
+      let hasExternal = false;
 
-      if (x <= 0) return true;
-      ni = idx - 1;
-      if (!this.land[ni]) return true;
-      no = this.owner[ni] | 0;
-      if (no === OWNER.NONE) return true;
-      if (no > 0 && no !== o && o < no) return true;
+      if (x <= 0) {
+        hasExternal = true;
+      } else {
+        ni = idx - 1;
+        if (!this.land[ni]) {
+          hasExternal = true;
+        } else {
+          no = this.owner[ni] | 0;
+          if (no === o) hasFriendly = true;
+          else if (no === OWNER.NONE) hasExternal = true;
+          else if (no > 0 && no !== o && o < no) hasExternal = true;
+        }
+      }
 
-      if (x + 1 >= w) return true;
-      ni = idx + 1;
-      if (!this.land[ni]) return true;
-      no = this.owner[ni] | 0;
-      if (no === OWNER.NONE) return true;
-      if (no > 0 && no !== o && o < no) return true;
+      if (x + 1 >= w) {
+        hasExternal = true;
+      } else {
+        ni = idx + 1;
+        if (!this.land[ni]) {
+          hasExternal = true;
+        } else {
+          no = this.owner[ni] | 0;
+          if (no === o) hasFriendly = true;
+          else if (no === OWNER.NONE) hasExternal = true;
+          else if (no > 0 && no !== o && o < no) hasExternal = true;
+        }
+      }
 
-      if (y <= 0) return true;
-      ni = idx - w;
-      if (!this.land[ni]) return true;
-      no = this.owner[ni] | 0;
-      if (no === OWNER.NONE) return true;
-      if (no > 0 && no !== o && o < no) return true;
+      if (y <= 0) {
+        hasExternal = true;
+      } else {
+        ni = idx - w;
+        if (!this.land[ni]) {
+          hasExternal = true;
+        } else {
+          no = this.owner[ni] | 0;
+          if (no === o) hasFriendly = true;
+          else if (no === OWNER.NONE) hasExternal = true;
+          else if (no > 0 && no !== o && o < no) hasExternal = true;
+        }
+      }
 
-      if (y + 1 >= h) return true;
-      ni = idx + w;
-      if (!this.land[ni]) return true;
-      no = this.owner[ni] | 0;
-      if (no === OWNER.NONE) return true;
-      if (no > 0 && no !== o && o < no) return true;
+      if (y + 1 >= h) {
+        hasExternal = true;
+      } else {
+        ni = idx + w;
+        if (!this.land[ni]) {
+          hasExternal = true;
+        } else {
+          no = this.owner[ni] | 0;
+          if (no === o) hasFriendly = true;
+          else if (no === OWNER.NONE) hasExternal = true;
+          else if (no > 0 && no !== o && o < no) hasExternal = true;
+        }
+      }
 
+      return hasFriendly && hasExternal;
+    }
+
+  World.prototype._isSpawnCountryBorderCell = function(idxRaw) {
+      const idx = idxRaw | 0;
+      if (!this.land[idx]) return false;
+
+      const phase = this._spawnPhase;
+      if (!phase || !phase.active || String(phase.mode || "") !== "country") return false;
+
+      const country = this._earthCountryId;
+      if (!country || country.length <= idx) return false;
+      const cid = country[idx] | 0;
+      if (cid <= 0) return false;
+
+      const w = this.w | 0;
+      const h = this.h | 0;
+      const x = idx % w;
+      const y = (idx / w) | 0;
+
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        const row = yy * w;
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          const ni = row + xx;
+          if (!this.land[ni]) continue;
+          const ncid = country[ni] | 0;
+          if (ncid <= 0 || ncid !== cid) return true;
+        }
+      }
       return false;
     }
 
@@ -906,6 +1068,11 @@ export function installBorders(World) {
       if (oldOwner === OWNER.PLAYER || nOwner === OWNER.PLAYER) {
         this._lastPlayerOwnershipChangeAt = this.time;
       }
+      if (oldOwner > 0 || nOwner > 0) {
+        const majorClaim = inBatch ? 12 : 8;
+        if (oldOwner > 0) this._markNationActivity(oldOwner, majorClaim);
+        if (nOwner > 0) this._markNationActivity(nOwner, majorClaim);
+      }
 
       if (!this._suspendOwnerVersionBump) {
         if (inBatch) this._ownerBatchVersionDirty = true;
@@ -973,8 +1140,19 @@ export function installBorders(World) {
       const collapseDurationS = 140;
       const collapseRecoveryS = 180;
 
-      // Capital tile already flipped ownership in _setOwner(). Here we collapse the nation.
-      this._removeStructureById(capStructId);
+      // Keep the captured capital tile as a persistent structure (city) instead of deleting it.
+      const st = this._structureById?.get(capStructId | 0);
+      if (st) {
+        const oldStructOwner = st.owner | 0;
+        const nextStructOwner = (captorOwner > 0) ? (captorOwner | 0) : oldStructOwner;
+        st.type = "city";
+        if (nextStructOwner !== oldStructOwner) {
+          st.owner = nextStructOwner;
+          if (typeof this._onStructureOwnerChanged === "function") {
+            this._onStructureOwnerChanged(st, oldStructOwner, nextStructOwner);
+          }
+        }
+      }
 
       let bonusGold = 0;
       if (captorOwner > 0 && this.nation[captorOwner]) {
@@ -1017,7 +1195,7 @@ export function installBorders(World) {
             to: defeatedOwner
           });
         } else {
-          this._pushEvent(`${this._nameOf(defeatedOwner)}'s capital was destroyed - ${this._nameOf(defeatedOwner)} collapses.${recoveryNote}`, {
+          this._pushEvent(`${this._nameOf(defeatedOwner)}'s capital was captured - ${this._nameOf(defeatedOwner)} collapses.${recoveryNote}`, {
             kind: "nation_collapsed",
             from: OWNER.NONE,
             to: defeatedOwner
@@ -1032,7 +1210,7 @@ export function installBorders(World) {
           from: captorOwner,
           to: defeatedOwner
         });
-        else this._pushEvent(`${this._nameOf(defeatedOwner)}'s capital was destroyed.`, {
+        else this._pushEvent(`${this._nameOf(defeatedOwner)}'s capital was captured.`, {
           kind: "capital_captured",
           from: OWNER.NONE,
           to: defeatedOwner
@@ -1057,6 +1235,23 @@ export function installBorders(World) {
       const alive = [];
       for (let id = 1; id <= this._nationCount; id++) {
         if (this.nation[id]?.alive) alive.push(id);
+      }
+
+      // In authoritative multiplayer, outcome is session-scoped and derived server-side.
+      // Keep global hard-stop only for true last-nation-standing.
+      const humanIds = (this._humanNationIds instanceof Set)
+        ? Array.from(this._humanNationIds.values())
+            .map((id) => Math.max(1, Number(id) | 0))
+            .filter((id, idx, arr) => id <= (this._nationCount | 0) && arr.indexOf(id) === idx)
+        : [];
+      const multiplayerSessionScoped = humanIds.length > 1;
+      if (multiplayerSessionScoped) {
+        this.matchOutcome = null;
+        if (!this.gameOver && alive.length <= 1) {
+          const finalWinner = alive.length === 1 ? (alive[0] | 0) : 0;
+          if (finalWinner > 0) this.gameOver = { winner: finalWinner };
+        }
+        return;
       }
 
       const playerAlive = !!this.nation[OWNER.PLAYER]?.alive;
@@ -1204,9 +1399,13 @@ export function installBorders(World) {
       this._markPixelDirty(idx);
 
       const p = idx * 4;
+      const p3 = idx * 3;
 
       const b = this.biome[idx] | 0;
       const base = BIOME_COLORS[b] || { r: 70, g: 70, b: 70 };
+      const isEarthMap = (this._mapMode === MAP_MODE.WORLD_MAP);
+      const earthNeutralRgb = isEarthMap ? this._earthNeutralRgb : null;
+      const hasEarthNeutralRgb = !!(earthNeutralRgb && earthNeutralRgb.length >= ((this.owner.length | 0) * 3));
 
       // Shade multiplier 0..1-ish
       const sh = (this.shade[idx] | 0) / 255;
@@ -1342,11 +1541,14 @@ export function installBorders(World) {
       const o = this.owner[idx] | 0;
 
       if (o === OWNER.NONE) {
-        // Neutral land = biome color (the “world map” look)
-        const jitter = 0.94 + 0.08 * hash01(idx % this.w, (idx / this.w) | 0);
-        let r = base.r * sh * jitter;
-        let g = base.g * sh * jitter;
-        let bl = base.b * sh * jitter;
+        const jitter = 0.95 + 0.07 * hash01(idx % this.w, (idx / this.w) | 0);
+        let srcR = hasEarthNeutralRgb ? (earthNeutralRgb[p3] | 0) : base.r;
+        let srcG = hasEarthNeutralRgb ? (earthNeutralRgb[p3 + 1] | 0) : base.g;
+        let srcB = hasEarthNeutralRgb ? (earthNeutralRgb[p3 + 2] | 0) : base.b;
+
+        let r = srcR * sh * jitter;
+        let g = srcG * sh * jitter;
+        let bl = srcB * sh * jitter;
 
         if (riverVal > 0 && !this._isRenderBorderCell(idx)) {
           const a = clamp01((riverVal / 255) * (RIVER_STYLE?.alpha ?? 0.65));
@@ -1356,13 +1558,20 @@ export function installBorders(World) {
           bl = lerp(bl, rc.b, a);
         }
 
+        // Country selection phase: keep neutral land visible, but draw country edges only.
+        if (this._isSpawnCountryBorderCell(idx)) {
+          const borderMix = 0.72;
+          r = lerp(r, 22, borderMix);
+          g = lerp(g, 30, borderMix);
+          bl = lerp(bl, 44, borderMix);
+        }
+
         this.viewPixels[p + 0] = clamp8(r);
         this.viewPixels[p + 1] = clamp8(g);
         this.viewPixels[p + 2] = clamp8(bl);
         this.viewPixels[p + 3] = 255;
         return;
       }
-
       // Render border as an actual pixel (no stroke). This is purely visual and does not affect gameplay logic.
       if (this._isRenderBorderCell(idx)) {
         const tint = this.getOwnerTint(o);
@@ -1379,9 +1588,13 @@ export function installBorders(World) {
       const tint = this.getOwnerTint(o);
       const t = WORLDGEN.ownerBlend;
 
-      const r = lerp(base.r, tint.r, t);
-      const g = lerp(base.g, tint.g, t);
-      const bl = lerp(base.b, tint.b, t);
+      const srcR = hasEarthNeutralRgb ? (earthNeutralRgb[p3] | 0) : base.r;
+      const srcG = hasEarthNeutralRgb ? (earthNeutralRgb[p3 + 1] | 0) : base.g;
+      const srcB = hasEarthNeutralRgb ? (earthNeutralRgb[p3 + 2] | 0) : base.b;
+
+      const r = lerp(srcR, tint.r, t);
+      const g = lerp(srcG, tint.g, t);
+      const bl = lerp(srcB, tint.b, t);
 
       const jitter = 0.93 + 0.10 * hash01(idx % this.w, (idx / this.w) | 0);
       let rr = r * sh * jitter;
@@ -2047,3 +2260,4 @@ export function installBorders(World) {
 
 
 }
+

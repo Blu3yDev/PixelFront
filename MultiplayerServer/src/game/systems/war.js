@@ -353,6 +353,9 @@ export function installWar(World) {
   };
 
   World.prototype._tryAnnexBrokenFrontline = function(attackerId, defenderId, attackingNow = 0, attackOp = null) {
+    if (typeof this._isCountryClaimMode === "function" && this._isCountryClaimMode()) {
+      return { captured: 0, effort: 0, pressure: 0 };
+    }
     const A = attackerId | 0;
     const D = defenderId | 0;
     const nAtk = this.nation[A];
@@ -421,6 +424,9 @@ export function installWar(World) {
   };
 
   World.prototype._tryAutoAnnexCollapsedNation = function(attackerId, defenderId, attackingNow = 0, attackOp = null) {
+    if (typeof this._isCountryClaimMode === "function" && this._isCountryClaimMode()) {
+      return { captured: 0, effort: 0, annexed: false };
+    }
     const A = attackerId | 0;
     const D = defenderId | 0;
     if (A <= 0 || D <= 0 || A === D) return { captured: 0, effort: 0, annexed: false };
@@ -438,14 +444,24 @@ export function installWar(World) {
     const defCommit = commitFraction(nDef);
     const defCommitted = Math.max(0, defInf * defCommit);
     const capBroken = !nDef.capital || nDef.collapsed;
+    const defenderStillAttacking = this._hasAnyActiveAttackOperation(D);
 
     // Hard gate: only fire for truly broken nations.
-    const trulyCollapsed =
+    const capitalLostAndSpent =
       capBroken &&
-      pressure >= 0.88 &&
-      defInf <= 2 &&
-      defCommitted <= 1 &&
-      (defPop <= 2500 || nDef.collapsed);
+      !defenderStillAttacking &&
+      pressure >= 0.72 &&
+      defInf <= 4 &&
+      defCommitted <= 1.25;
+    const trulyCollapsed =
+      capitalLostAndSpent ||
+      (
+        capBroken &&
+        pressure >= 0.88 &&
+        defInf <= 2 &&
+        defCommitted <= 1 &&
+        (defPop <= 2500 || nDef.collapsed)
+      );
     if (!trulyCollapsed) return { captured: 0, effort: 0, annexed: false };
 
     let tiles = null;
@@ -510,6 +526,19 @@ export function installWar(World) {
       if ((op.defender | 0) !== D) continue;
       const kind = String(op.kind || "");
       if (kind === "war" || kind === "burstWar") return true;
+    }
+    return false;
+  };
+
+  World.prototype._hasAnyActiveAttackOperation = function(attacker) {
+    const A = attacker | 0;
+    if (A <= 0) return false;
+    const ops = this.operations || [];
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
+      if (!op || (op.attacker | 0) !== A) continue;
+      if (!this._isAttackOperation(op)) continue;
+      if ((Number(op.attackPool) || 0) > 0) return true;
     }
     return false;
   };

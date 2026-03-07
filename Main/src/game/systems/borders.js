@@ -6,6 +6,7 @@ import {
   CAPITAL_CAPTURE_GOLD_BASE,
   CAPITAL_CAPTURE_GOLD_MAX,
   CAPITAL_CAPTURE_GOLD_PER_LAND,
+  MAP_MODE,
   OWNER,
   RIVER_STYLE,
   SPECKLE_MAX_CHECKS_PER_PASS,
@@ -923,6 +924,40 @@ export function installBorders(World) {
       return hasFriendly && hasExternal;
     }
 
+  World.prototype._isSpawnCountryBorderCell = function(idxRaw) {
+      const idx = idxRaw | 0;
+      if (!this.land[idx]) return false;
+
+      const phase = this._spawnPhase;
+      if (!phase || !phase.active || String(phase.mode || "") !== "country") return false;
+
+      const country = this._earthCountryId;
+      if (!country || country.length <= idx) return false;
+      const cid = country[idx] | 0;
+      if (cid <= 0) return false;
+
+      const w = this.w | 0;
+      const h = this.h | 0;
+      const x = idx % w;
+      const y = (idx / w) | 0;
+
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        const row = yy * w;
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          const ni = row + xx;
+          if (!this.land[ni]) continue;
+          const ncid = country[ni] | 0;
+          if (ncid <= 0 || ncid !== cid) return true;
+        }
+      }
+      return false;
+    }
+
 
   World.prototype._refreshBorderCell = function(idxRaw) {
       const idx = idxRaw | 0;
@@ -1033,6 +1068,11 @@ export function installBorders(World) {
       if (oldOwner === OWNER.PLAYER || nOwner === OWNER.PLAYER) {
         this._lastPlayerOwnershipChangeAt = this.time;
       }
+      if (oldOwner > 0 || nOwner > 0) {
+        const majorClaim = inBatch ? 12 : 8;
+        if (oldOwner > 0) this._markNationActivity(oldOwner, majorClaim);
+        if (nOwner > 0) this._markNationActivity(nOwner, majorClaim);
+      }
 
       if (!this._suspendOwnerVersionBump) {
         if (inBatch) this._ownerBatchVersionDirty = true;
@@ -1100,8 +1140,19 @@ export function installBorders(World) {
       const collapseDurationS = 140;
       const collapseRecoveryS = 180;
 
-      // Capital tile already flipped ownership in _setOwner(). Here we collapse the nation.
-      this._removeStructureById(capStructId);
+      // Keep the captured capital tile as a persistent structure (city) instead of deleting it.
+      const st = this._structureById?.get(capStructId | 0);
+      if (st) {
+        const oldStructOwner = st.owner | 0;
+        const nextStructOwner = (captorOwner > 0) ? (captorOwner | 0) : oldStructOwner;
+        st.type = "city";
+        if (nextStructOwner !== oldStructOwner) {
+          st.owner = nextStructOwner;
+          if (typeof this._onStructureOwnerChanged === "function") {
+            this._onStructureOwnerChanged(st, oldStructOwner, nextStructOwner);
+          }
+        }
+      }
 
       let bonusGold = 0;
       if (captorOwner > 0 && this.nation[captorOwner]) {
@@ -1144,7 +1195,7 @@ export function installBorders(World) {
             to: defeatedOwner
           });
         } else {
-          this._pushEvent(`${this._nameOf(defeatedOwner)}'s capital was destroyed - ${this._nameOf(defeatedOwner)} collapses.${recoveryNote}`, {
+          this._pushEvent(`${this._nameOf(defeatedOwner)}'s capital was captured - ${this._nameOf(defeatedOwner)} collapses.${recoveryNote}`, {
             kind: "nation_collapsed",
             from: OWNER.NONE,
             to: defeatedOwner
@@ -1159,7 +1210,7 @@ export function installBorders(World) {
           from: captorOwner,
           to: defeatedOwner
         });
-        else this._pushEvent(`${this._nameOf(defeatedOwner)}'s capital was destroyed.`, {
+        else this._pushEvent(`${this._nameOf(defeatedOwner)}'s capital was captured.`, {
           kind: "capital_captured",
           from: OWNER.NONE,
           to: defeatedOwner
@@ -1348,9 +1399,13 @@ export function installBorders(World) {
       this._markPixelDirty(idx);
 
       const p = idx * 4;
+      const p3 = idx * 3;
 
       const b = this.biome[idx] | 0;
       const base = BIOME_COLORS[b] || { r: 70, g: 70, b: 70 };
+      const isEarthMap = (this._mapMode === MAP_MODE.WORLD_MAP);
+      const earthNeutralRgb = isEarthMap ? this._earthNeutralRgb : null;
+      const hasEarthNeutralRgb = !!(earthNeutralRgb && earthNeutralRgb.length >= ((this.owner.length | 0) * 3));
 
       // Shade multiplier 0..1-ish
       const sh = (this.shade[idx] | 0) / 255;
@@ -1486,11 +1541,14 @@ export function installBorders(World) {
       const o = this.owner[idx] | 0;
 
       if (o === OWNER.NONE) {
-        // Neutral land = biome color (the “world map” look)
-        const jitter = 0.94 + 0.08 * hash01(idx % this.w, (idx / this.w) | 0);
-        let r = base.r * sh * jitter;
-        let g = base.g * sh * jitter;
-        let bl = base.b * sh * jitter;
+        const jitter = 0.95 + 0.07 * hash01(idx % this.w, (idx / this.w) | 0);
+        let srcR = hasEarthNeutralRgb ? (earthNeutralRgb[p3] | 0) : base.r;
+        let srcG = hasEarthNeutralRgb ? (earthNeutralRgb[p3 + 1] | 0) : base.g;
+        let srcB = hasEarthNeutralRgb ? (earthNeutralRgb[p3 + 2] | 0) : base.b;
+
+        let r = srcR * sh * jitter;
+        let g = srcG * sh * jitter;
+        let bl = srcB * sh * jitter;
 
         if (riverVal > 0 && !this._isRenderBorderCell(idx)) {
           const a = clamp01((riverVal / 255) * (RIVER_STYLE?.alpha ?? 0.65));
@@ -1500,13 +1558,20 @@ export function installBorders(World) {
           bl = lerp(bl, rc.b, a);
         }
 
+        // Country selection phase: keep neutral land visible, but draw country edges only.
+        if (this._isSpawnCountryBorderCell(idx)) {
+          const borderMix = 0.72;
+          r = lerp(r, 22, borderMix);
+          g = lerp(g, 30, borderMix);
+          bl = lerp(bl, 44, borderMix);
+        }
+
         this.viewPixels[p + 0] = clamp8(r);
         this.viewPixels[p + 1] = clamp8(g);
         this.viewPixels[p + 2] = clamp8(bl);
         this.viewPixels[p + 3] = 255;
         return;
       }
-
       // Render border as an actual pixel (no stroke). This is purely visual and does not affect gameplay logic.
       if (this._isRenderBorderCell(idx)) {
         const tint = this.getOwnerTint(o);
@@ -1523,9 +1588,13 @@ export function installBorders(World) {
       const tint = this.getOwnerTint(o);
       const t = WORLDGEN.ownerBlend;
 
-      const r = lerp(base.r, tint.r, t);
-      const g = lerp(base.g, tint.g, t);
-      const bl = lerp(base.b, tint.b, t);
+      const srcR = hasEarthNeutralRgb ? (earthNeutralRgb[p3] | 0) : base.r;
+      const srcG = hasEarthNeutralRgb ? (earthNeutralRgb[p3 + 1] | 0) : base.g;
+      const srcB = hasEarthNeutralRgb ? (earthNeutralRgb[p3 + 2] | 0) : base.b;
+
+      const r = lerp(srcR, tint.r, t);
+      const g = lerp(srcG, tint.g, t);
+      const bl = lerp(srcB, tint.b, t);
 
       const jitter = 0.93 + 0.10 * hash01(idx % this.w, (idx / this.w) | 0);
       let rr = r * sh * jitter;
@@ -2191,3 +2260,4 @@ export function installBorders(World) {
 
 
 }
+

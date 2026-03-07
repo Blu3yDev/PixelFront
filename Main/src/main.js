@@ -1,11 +1,14 @@
-// src/main.js
+﻿// src/main.js
 import { createHUD } from "./ui.js";
 import { World, OWNER } from "./game/core/world.js";
-import { AIRBASE_LAUNCH_RADIUS_TILES, AIRBASE_TRANSPORT_BUILD_GOLD_COST, AIRBASE_TRANSPORT_BUILD_TIME_S, BIOME, BIOME_COLORS, DEBUG_ABM_TEST, DEBUG_MATCH_OUTCOME_TEST, MAP_MODE, MAX_ALLIES, SIM_DT_S, WORLD_SETUP, WORLD_SIZE_PRESET, WORLD_SIZE_PRESETS, WORLDGEN, attackCommitFromRatio } from "./game/config.js";
+import { AIRBASE_LAUNCH_RADIUS_TILES, AIRBASE_TRANSPORT_BUILD_GOLD_COST, AIRBASE_TRANSPORT_BUILD_TIME_S, BIOME, BIOME_COLORS, DEBUG_ABM_TEST, DEBUG_MATCH_OUTCOME_TEST, MAP_MODE, MAX_ALLIES, SIM_DT_S, TRADE_DEAL_MAX_DURATION_MIN, TRADE_DEAL_MAX_RATE_PER_MIN, TRADE_DEAL_MIN_DURATION_MIN, TRADE_DEAL_MIN_RATE_PER_MIN, WORLD_SETUP, WORLD_SIZE_PRESET, WORLD_SIZE_PRESETS, WORLDGEN, attackCommitFromRatio } from "./game/config.js";
 import { Renderer } from "./render.js";
 import { PaintInput } from "./input.js";
 import { loadEarthData } from "./game/data/earthData.js";
 import { createClient } from "@supabase/supabase-js";
+import { createMainMenuAuthController } from "./auth/mainMenuAuth.js";
+import { createPlayerStatsService } from "./auth/playerStatsService.js";
+import { createMainMenuLeaderboardController } from "./auth/mainMenuLeaderboard.js";
 import {
   FLAG_LAYOUT_OPTIONS,
   FLAG_MAX_STROKES,
@@ -20,11 +23,13 @@ import {
 } from "./flag.js";
 import menuSoundUrl from "../audios/MenuSound.mp3";
 import warSoundUrl from "../audios/WarSound.mp3";
+import countriesGeoJsonUrl from "./EarthMap/world-map-countries.geojson?url";
 
-// PF_BUILD: v25 2026-02-21
-window.__PF_BUILD = "v25";
-console.info("[PixelFront] BUILD v1.5 Beta loaded (v25)");
-document.title = "PixelFront | Beta";
+const PF_BUILD = "v27";
+// PF_BUILD: v27 2026-03-07
+window.__PF_BUILD = PF_BUILD;
+console.info(`[PixelFront] BUILD v1.7 Pre-Release loaded (${PF_BUILD})`);
+document.title = "PixelFront | Pre-Release";
 
 const canvas = document.getElementById("game");
 if (!canvas) throw new Error("[Boot] Missing canvas #game");
@@ -50,6 +55,9 @@ const SUPABASE_ANON_KEY = resolveSupabaseAnonKey();
 const SUPABASE_TABLE_PUBLIC_MAPS = resolveSupabaseMapsTable();
 const SUPABASE_RPC_INCREMENT_DOWNLOADS = resolveSupabaseDownloadsRpc();
 const SUPABASE_RPC_SUBMIT_RATING = String(import.meta?.env?.VITE_SUPABASE_RPC_SUBMIT_RATING || "submit_map_rating").trim();
+const SUPABASE_TABLE_PLAYER_PROFILES = String(import.meta?.env?.VITE_SUPABASE_PLAYER_PROFILES_TABLE || "player_profiles").trim() || "player_profiles";
+const SUPABASE_TABLE_PLAYER_SESSIONS = String(import.meta?.env?.VITE_SUPABASE_PLAYER_SESSIONS_TABLE || "player_game_sessions").trim() || "player_game_sessions";
+const SUPABASE_VIEW_PLAYER_LEADERBOARD = String(import.meta?.env?.VITE_SUPABASE_PLAYER_LEADERBOARD_VIEW || "player_leaderboard").trim() || "player_leaderboard";
 const SUPABASE_ENABLED = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 const SUPABASE_CONFIG_HINT = !SUPABASE_URL
   ? "Missing Supabase URL."
@@ -57,10 +65,23 @@ const SUPABASE_CONFIG_HINT = !SUPABASE_URL
 let supabasePublicMapsHasRatingColumns = null;
 const supabase = SUPABASE_ENABLED
   ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true
+      },
       global: { headers: { "x-client-info": "pixelfront-map-library" } }
     })
   : null;
+const playerStatsService = createPlayerStatsService({
+  supabase,
+  supabaseUrl: SUPABASE_URL,
+  supabaseAnonKey: SUPABASE_ANON_KEY,
+  profilesTable: SUPABASE_TABLE_PLAYER_PROFILES,
+  sessionsTable: SUPABASE_TABLE_PLAYER_SESSIONS,
+  leaderboardView: SUPABASE_VIEW_PLAYER_LEADERBOARD,
+  leaderboardLimit: 30
+});
 console.info(`[PixelFront] Map library config: ${SUPABASE_ENABLED ? "enabled" : "disabled"}${SUPABASE_CONFIG_HINT ? ` (${SUPABASE_CONFIG_HINT})` : ""}`);
 
 const hud = createHUD();
@@ -86,6 +107,13 @@ function notifyRuntimeError(prefixRaw, err) {
   }
 }
 
+function fmtTime(secRaw) {
+  const total = Math.max(0, Math.floor(Number(secRaw) || 0));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 if (typeof window !== "undefined" && window && typeof window.addEventListener === "function") {
   window.addEventListener("error", (ev) => {
     notifyRuntimeError("Client runtime error", ev?.error || ev?.message || ev);
@@ -101,7 +129,7 @@ const DEFAULT_CLIENT_SETTINGS = Object.freeze({
   showNationLabels: true,
   showShips: true,
   highlightNation: true,
-  showHatchOverlay: true,
+  showHatchOverlay: false,
   showHeatmap: false,
   nukeDestinationOverlay: true,
   politicalMapMode: false,
@@ -112,19 +140,112 @@ const DEFAULT_CLIENT_SETTINGS = Object.freeze({
   warMusicVolume: 9
 });
 let clientSettings = loadClientSettings();
+const DEFAULT_PERFORMANCE_PROFILE = Object.freeze({
+  qualityTier: 0,
+  workerEnabled: false,
+  maxPixelUploadBinsPerFrame: 0,
+  showLabels: true,
+  showShips: true,
+  showAtmosphere: true,
+  overlayCadenceMul: 1,
+  simCadenceMul: 1,
+  uiCadenceMul: 1
+});
+const PERFORMANCE_PROFILE_TIERS = Object.freeze([
+  Object.freeze({ qualityTier: 0, workerEnabled: false, maxPixelUploadBinsPerFrame: 0, showLabels: true, showShips: true, showAtmosphere: true, overlayCadenceMul: 1.00, simCadenceMul: 1.00, uiCadenceMul: 1.00 }),
+  Object.freeze({ qualityTier: 1, workerEnabled: false, maxPixelUploadBinsPerFrame: 220, showLabels: true, showShips: true, showAtmosphere: true, overlayCadenceMul: 1.08, simCadenceMul: 1.10, uiCadenceMul: 1.10 }),
+  Object.freeze({ qualityTier: 2, workerEnabled: false, maxPixelUploadBinsPerFrame: 160, showLabels: true, showShips: true, showAtmosphere: true, overlayCadenceMul: 1.16, simCadenceMul: 1.24, uiCadenceMul: 1.22 }),
+  Object.freeze({ qualityTier: 3, workerEnabled: false, maxPixelUploadBinsPerFrame: 112, showLabels: true, showShips: true, showAtmosphere: true, overlayCadenceMul: 1.26, simCadenceMul: 1.42, uiCadenceMul: 1.34 })
+]);
+const SOLO_WORKER_COMMAND_STRATEGY = Object.freeze({
+  setAttackRatio: "always",
+  setMobilization: "always",
+  setExperimentalAttackCollision: "always",
+  setPerformanceProfile: "always",
+  spawnDebugIncomingWarheadAtPlayer: "always",
+  startNeutral: "ok",
+  startWarFocus: "ok",
+  startBurstExpand: "ok",
+  startBurstAttack: "ok",
+  declareWar: "ok",
+  donate: "ok",
+  sendWarship: "ok",
+  requestCeasefire: "ok",
+  requestAlliance: "ok",
+  respondCeasefireRequest: "ok",
+  respondAllianceRequest: "ok",
+  respondTradeRequest: "ok",
+  startMissileSiloBuild: "ok",
+  startAirbaseTransportBuild: "ok",
+  requestTradeDeal: "ok",
+  pickSpawn: "ok",
+  launchMissileWarhead: "ok",
+  launchAirbaseTransport: "ok",
+  placeStructure: "ok",
+  cancelAllOperations: "positive",
+  cancelOperation: "truthy",
+  cancelShip: "truthy",
+  cancelTradeDeal: "truthy",
+  cancelTradeRequest: "truthy",
+  regenerate: "restart"
+});
+
+function createPerformanceProfileForWorld(tierRaw, worldRef = null) {
+  const tier = Math.max(0, Math.min(3, Number(tierRaw) | 0));
+  const base = PERFORMANCE_PROFILE_TIERS[tier] || DEFAULT_PERFORMANCE_PROFILE;
+  const worldTiles = Math.max(1, Number(worldRef?.w || 0) * Number(worldRef?.h || 0) || 1);
+  let cap = Math.max(0, Number(base.maxPixelUploadBinsPerFrame) || 0);
+  if (cap > 0) {
+    if (worldTiles >= 7_000_000) cap = Math.max(72, Math.round(cap * 0.68));
+    else if (worldTiles >= 2_000_000) cap = Math.max(96, Math.round(cap * 0.82));
+  }
+  return {
+    qualityTier: base.qualityTier,
+    workerEnabled: base.workerEnabled,
+    maxPixelUploadBinsPerFrame: cap,
+    showLabels: true,
+    showShips: true,
+    showAtmosphere: true,
+    overlayCadenceMul: Number(base.overlayCadenceMul) || 1,
+    simCadenceMul: Number(base.simCadenceMul) || 1,
+    uiCadenceMul: Number(base.uiCadenceMul) || 1
+  };
+}
+
+function computePerformanceTier(debugPerfRef, worldRef, currentTierRaw = 0) {
+  const currentTier = Math.max(0, Math.min(3, Number(currentTierRaw) | 0));
+  const perf = worldRef?._simPerf || null;
+  const cpu = Math.max(0, Number(debugPerfRef?.cpuMsAvg) || 0);
+  const backlog = Math.max(0, Number(debugPerfRef?.backlogTicksAvg) || 0);
+  const simTick = Math.max(0, Number(perf?.tickMsAvg) || 0);
+  const heavy = Math.max(0, Number(perf?.aiMsAvg) || 0) + Math.max(0, Number(perf?.opsMsAvg) || 0) + Math.max(0, Number(perf?.warMsAvg) || 0);
+
+  let nextTier = currentTier;
+  if (cpu >= 26 || backlog >= 1.8 || simTick >= 22 || heavy >= 15) nextTier = 3;
+  else if (cpu >= 19 || backlog >= 1.2 || simTick >= 15 || heavy >= 10) nextTier = Math.max(nextTier, 2);
+  else if (cpu >= 14 || backlog >= 0.75 || simTick >= 10 || heavy >= 6) nextTier = Math.max(nextTier, 1);
+
+  if (nextTier === currentTier) {
+    if (currentTier === 3 && cpu < 20 && backlog < 1.0 && simTick < 16 && heavy < 10) nextTier = 2;
+    else if (currentTier === 2 && cpu < 15 && backlog < 0.7 && simTick < 11 && heavy < 7) nextTier = 1;
+    else if (currentTier === 1 && cpu < 11.5 && backlog < 0.35 && simTick < 8 && heavy < 4.5) nextTier = 0;
+  }
+
+  return nextTier;
+}
 const MATCH_CONFIG_STORAGE_KEY = "pf-main-menu-match-config-v1";
 const MATCH_DIFFICULTY_PROFILES = Object.freeze({
   easy: Object.freeze({
-    playerStart: 1.55,
-    aiStart: 0.65,
-    playerIncomeOpen: 1.45,
-    playerIncomeLate: 1.25,
-    aiIncomeOpen: 0.62,
-    aiIncomeLate: 0.82,
-    aiAttackMul: 0.74,
-    aiMobShift: -0.12,
-    economyRampS: 360,
-    aiWarGraceS: 90
+    playerStart: 1.9,
+    aiStart: 0.52,
+    playerIncomeOpen: 1.68,
+    playerIncomeLate: 1.42,
+    aiIncomeOpen: 0.5,
+    aiIncomeLate: 0.7,
+    aiAttackMul: 0.62,
+    aiMobShift: -0.18,
+    economyRampS: 340,
+    aiWarGraceS: 132
   }),
   normal: Object.freeze({
     playerStart: 1.28,
@@ -139,28 +260,28 @@ const MATCH_DIFFICULTY_PROFILES = Object.freeze({
     aiWarGraceS: 96
   }),
   hard: Object.freeze({
-    playerStart: 1.06,
-    aiStart: 0.96,
-    playerIncomeOpen: 1.14,
-    playerIncomeLate: 0.98,
-    aiIncomeOpen: 0.84,
-    aiIncomeLate: 1.10,
-    aiAttackMul: 1.00,
-    aiMobShift: 0.01,
-    economyRampS: 480,
-    aiWarGraceS: 72
+    playerStart: 0.94,
+    aiStart: 1.1,
+    playerIncomeOpen: 1.0,
+    playerIncomeLate: 0.86,
+    aiIncomeOpen: 0.98,
+    aiIncomeLate: 1.24,
+    aiAttackMul: 1.12,
+    aiMobShift: 0.08,
+    economyRampS: 450,
+    aiWarGraceS: 48
   }),
   brutal: Object.freeze({
-    playerStart: 0.92,
-    aiStart: 1.08,
-    playerIncomeOpen: 1.04,
-    playerIncomeLate: 0.90,
-    aiIncomeOpen: 0.92,
-    aiIncomeLate: 1.26,
-    aiAttackMul: 1.10,
-    aiMobShift: 0.06,
-    economyRampS: 540,
-    aiWarGraceS: 60
+    playerStart: 0.8,
+    aiStart: 1.24,
+    playerIncomeOpen: 0.9,
+    playerIncomeLate: 0.72,
+    aiIncomeOpen: 1.08,
+    aiIncomeLate: 1.46,
+    aiAttackMul: 1.28,
+    aiMobShift: 0.14,
+    economyRampS: 520,
+    aiWarGraceS: 24
   })
 });
 const MATCH_DIFFICULTY_DEFAULTS = Object.freeze({
@@ -177,6 +298,7 @@ const MATCH_DIFFICULTY_DEFAULTS = Object.freeze({
 });
 const MATCH_PLAYER_BOOSTS = Object.freeze([1, 2, 5, 10]);
 const MAP_SOURCE = Object.freeze({
+  POLITICAL_EARTH: "political_earth",
   EARTH: "earth",
   CUSTOM: "custom"
 });
@@ -192,7 +314,7 @@ const DEFAULT_MATCH_CONFIG = Object.freeze({
   aiCount: null,
   difficulty: "normal",
   mapMode: MAP_MODE.WORLD_MAP,
-  mapSource: MAP_SOURCE.EARTH,
+  mapSource: MAP_SOURCE.POLITICAL_EARTH,
   customMapId: "",
   infiniteGold: false,
   infiniteTroops: false,
@@ -202,6 +324,9 @@ const DEFAULT_MATCH_CONFIG = Object.freeze({
   playerGoldBoost: 1,
   playerTroopsBoost: 1
 });
+let earthData = null;
+let earthCountryBotCap = 0;
+let earthCountryBotCapPromise = null;
 let activeMatchConfig = loadMatchConfig();
 let liveModifierAccS = 0;
 const MULTIPLAYER_API_BASE = resolveMultiplayerApiBase();
@@ -447,6 +572,353 @@ function resolveMultiplayerApiBase() {
   return "";
 }
 
+function countryKeyFromFeatureProps(propsRaw) {
+  const props = (propsRaw && typeof propsRaw === "object") ? propsRaw : {};
+  const preferred = [
+    "ADM0_A3",
+    "ISO_A3",
+    "SOV_A3",
+    "GU_A3",
+    "WB_A3",
+    "BRK_A3",
+    "name",
+    "NAME",
+    "NAME_LONG"
+  ];
+  for (let i = 0; i < preferred.length; i++) {
+    const key = preferred[i];
+    const value = String(props[key] || "").trim();
+    if (value) return value.toUpperCase();
+  }
+  return "";
+}
+
+async function loadEarthCountryBotCap() {
+  if (earthCountryBotCap > 0) return earthCountryBotCap;
+  if (earthCountryBotCapPromise) return earthCountryBotCapPromise;
+
+  earthCountryBotCapPromise = (async () => {
+    const response = await fetch(countriesGeoJsonUrl, { cache: "no-store" });
+    if (!response.ok) throw new Error(`Failed to load countries GeoJSON (${response.status}).`);
+    const geo = await response.json();
+    const features = Array.isArray(geo?.features) ? geo.features : [];
+    const keys = new Set();
+    for (let i = 0; i < features.length; i++) {
+      const props = features[i]?.properties;
+      const key = countryKeyFromFeatureProps(props);
+      if (key) keys.add(key);
+    }
+    const cap = Math.max(1, keys.size - 1);
+    earthCountryBotCap = cap;
+    return cap;
+  })();
+
+  try {
+    return await earthCountryBotCapPromise;
+  } finally {
+    earthCountryBotCapPromise = null;
+  }
+}
+
+function getEarthCountryBotCapFromData(data) {
+  const codes = Array.isArray(data?.countryCodes) ? data.countryCodes : null;
+  if (codes && codes.length > 1) return Math.max(1, (codes.length | 0) - 1);
+  return Math.max(0, earthCountryBotCap | 0);
+}
+
+function clampAiCountForCountryMode(aiCountRaw, matchConfig = null, earthDataRef = null) {
+  const ai = Math.max(1, Math.floor(Number(aiCountRaw) || 1));
+  const source = String(matchConfig?.mapSource ?? MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
+  if (source !== MAP_SOURCE.POLITICAL_EARTH) return ai;
+  const cap = getEarthCountryBotCapFromData(earthDataRef);
+  if (!(cap > 0)) return ai;
+  return Math.max(1, Math.min(cap, ai));
+}
+
+function normalizeCountryLookupKey(raw) {
+  return String(raw || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[.'`-]/g, " ")
+    .replace(/\(.*?\)/g, " ")
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const COUNTRY_IDENTITY_CODE_OVERRIDES = Object.freeze({
+  ESB: "GBR", // Dhekelia Cantonment
+  WSB: "GBR", // Akrotiri Sovereign Base Area
+  SOL: "SOM", // Somaliland
+  USG: "USA", // Guantanamo Bay Naval Base
+  CYN: "TUR", // Turkish Republic of Northern Cyprus
+  CNM: "CYP", // UN buffer zone in Cyprus
+  KAS: "IND", // Siachen Glacier
+  SPI: "ARG", // Southern Patagonian Ice Field
+  BRT: "EGY", // Bir Tawil
+  PGA: "USA", // Wake Island
+  BJN: "COL", // Bajo Nuevo Bank
+  SER: "COL", // Serranilla Bank
+  SCR: "PHL"  // Scarborough Shoal
+});
+
+const COUNTRY_IDENTITY_NAME_OVERRIDES = Object.freeze({
+  "dhekelia cantonment": "GBR",
+  "akrotiri sovereign base area": "GBR",
+  "somaliland": "SOM",
+  "guantanamo bay naval base": "USA",
+  "turkish republic of northern cyprus": "TUR",
+  "united nations buffer zone in cyprus": "CYP",
+  "siachen glacier": "IND",
+  "southern patagonian ice field": "ARG",
+  "bir tawil": "EGY",
+  "wake island": "USA",
+  "bajo nuevo bank": "COL",
+  "serranilla bank": "COL",
+  "scarborough shoal": "PHL"
+});
+
+function resolveCountryIdentityOverrideCode(codeRaw, nameRaw) {
+  const code = String(codeRaw || "").trim().toUpperCase();
+  if (/^[A-Z]{3}$/.test(code)) {
+    const direct = COUNTRY_IDENTITY_CODE_OVERRIDES[code];
+    if (direct && /^[A-Z]{3}$/.test(direct)) return direct;
+  }
+  const nameKey = normalizeCountryLookupKey(nameRaw);
+  if (nameKey) {
+    const byName = COUNTRY_IDENTITY_NAME_OVERRIDES[nameKey];
+    if (byName && /^[A-Z]{3}$/.test(byName)) return byName;
+  }
+  return "";
+}
+
+function extractRestCountryFlagUrl(row) {
+  const flags = (row && typeof row === "object" && row.flags && typeof row.flags === "object")
+    ? row.flags
+    : {};
+  const png = String(flags.png || "").trim();
+  if (png) return png;
+  const svg = String(flags.svg || "").trim();
+  if (svg) return svg;
+  return "";
+}
+
+async function loadRestCountriesIndex() {
+  if (restCountriesIndex) return restCountriesIndex;
+  if (restCountriesIndexPromise) return restCountriesIndexPromise;
+
+  restCountriesIndexPromise = (async () => {
+    const response = await fetch(REST_COUNTRIES_ALL_FIELDS_URL, { cache: "force-cache" });
+    if (!response.ok) throw new Error(`REST Countries fetch failed (${response.status}).`);
+    const rows = await response.json();
+    const list = Array.isArray(rows) ? rows : [];
+    const byCode = new Map();
+    const byName = new Map();
+
+    const attachName = (nameRaw, identity) => {
+      const key = normalizeCountryLookupKey(nameRaw);
+      if (!key) return;
+      if (!byName.has(key)) byName.set(key, identity);
+    };
+
+    for (let i = 0; i < list.length; i++) {
+      const row = list[i];
+      if (!row || typeof row !== "object") continue;
+      const code = String(row.cca3 || "").trim().toUpperCase();
+      if (!/^[A-Z]{3}$/.test(code)) continue;
+      const commonName = String(row?.name?.common || "").trim();
+      const officialName = String(row?.name?.official || "").trim();
+      const displayName = commonName || officialName || code;
+      const flagUrl = extractRestCountryFlagUrl(row);
+      const identity = { code, name: displayName, flagUrl };
+
+      byCode.set(code, identity);
+      attachName(commonName, identity);
+      attachName(officialName, identity);
+
+      const altSpellings = Array.isArray(row.altSpellings) ? row.altSpellings : [];
+      for (let j = 0; j < altSpellings.length; j++) {
+        attachName(altSpellings[j], identity);
+      }
+
+      const nativeName = row?.name?.nativeName;
+      if (nativeName && typeof nativeName === "object") {
+        const nativeRows = Object.values(nativeName);
+        for (let j = 0; j < nativeRows.length; j++) {
+          const nrow = nativeRows[j];
+          if (!nrow || typeof nrow !== "object") continue;
+          attachName(nrow.common, identity);
+          attachName(nrow.official, identity);
+        }
+      }
+    }
+
+    restCountriesIndex = { byCode, byName };
+    return restCountriesIndex;
+  })().catch((err) => {
+    console.warn("[Countries] Failed to load REST Countries index.", err);
+    restCountriesIndex = { byCode: new Map(), byName: new Map() };
+    return restCountriesIndex;
+  }).finally(() => {
+    restCountriesIndexPromise = null;
+  });
+
+  return restCountriesIndexPromise;
+}
+
+function lookupRestCountryIdentity(index, codeRaw, nameRaw) {
+  const ref = (index && typeof index === "object") ? index : null;
+  if (!ref) return null;
+  const byCode = ref.byCode instanceof Map ? ref.byCode : new Map();
+  const byName = ref.byName instanceof Map ? ref.byName : new Map();
+
+  const code = String(codeRaw || "").trim().toUpperCase();
+  if (/^[A-Z]{3}$/.test(code)) {
+    const direct = byCode.get(code);
+    if (direct) return direct;
+  }
+
+  const key = normalizeCountryLookupKey(nameRaw);
+  if (key) {
+    const named = byName.get(key);
+    if (named) return named;
+  }
+  return null;
+}
+
+function clearCountryIdentityOverrides(syncRenderer = true) {
+  activePlayerFlagImageUrl = "";
+  activeNationFlagImagesById = Object.create(null);
+  countryIdentitySigByNation.clear();
+  countryIdentityLastSyncAtMs = 0;
+  countryIdentitySyncQueued = false;
+  countryIdentitySyncInFlight = false;
+
+  if (!syncRenderer || !renderer) return;
+  if (typeof renderer.setPlayerFlagImage === "function") renderer.setPlayerFlagImage("");
+  if (typeof renderer.setNationFlagImages === "function") renderer.setNationFlagImages(activeNationFlagImagesById);
+}
+
+async function syncCountryIdentityOverrides(force = false) {
+  if (!world || String(world?._mapMode || "").toLowerCase() !== MAP_MODE.WORLD_MAP) return;
+  const countryClaimMode = world?._countryClaimEnabled !== false;
+  if (!countryClaimMode) {
+    const hadPlayer = !!String(activePlayerFlagImageUrl || "").trim();
+    const hadAi = Object.keys(activeNationFlagImagesById || {}).length > 0;
+    if (hadPlayer || hadAi) clearCountryIdentityOverrides(true);
+    return;
+  }
+  const now = Date.now();
+  if (!force && (now - countryIdentityLastSyncAtMs) < COUNTRY_IDENTITY_SYNC_INTERVAL_MS) return;
+  countryIdentityLastSyncAtMs = now;
+
+  const countries = await loadRestCountriesIndex();
+  const nations = Array.isArray(world.nation) ? world.nation : [];
+  let aiFlagsDirty = false;
+  let playerFlagDirty = false;
+
+  for (let id = 1; id < nations.length; id++) {
+    const nation = nations[id];
+    if (!nation || typeof nation !== "object") continue;
+
+    const countryId = Math.max(0, Number(nation.countryId) | 0);
+    const countryCode = String(nation.countryCode || "").trim().toUpperCase();
+    const countryName = String(nation.countryName || "").trim();
+    const overrideCode = resolveCountryIdentityOverrideCode(countryCode, countryName);
+    const resolvedCode = overrideCode || countryCode;
+    const sig = `${countryId}|${countryCode}|${countryName}|${resolvedCode}`;
+    const existingFlagUrl = (id === OWNER.PLAYER)
+      ? String(activePlayerFlagImageUrl || "").trim()
+      : String(activeNationFlagImagesById[id] || "").trim();
+    const needsFlagRetry = (countryId > 0) && !existingFlagUrl;
+    if (!force && countryIdentitySigByNation.get(id) === sig && !needsFlagRetry) continue;
+    countryIdentitySigByNation.set(id, sig);
+
+    if (id !== OWNER.PLAYER) {
+      if (countryId > 0 && countryName) {
+        nation.name = countryName;
+      } else {
+        nation.name = `Bot ${id - 1}`;
+      }
+    }
+
+    if (!(countryId > 0)) {
+      if (id === OWNER.PLAYER) {
+        if (activePlayerFlagImageUrl) {
+          activePlayerFlagImageUrl = "";
+          playerFlagDirty = true;
+        }
+      } else if (activeNationFlagImagesById[id]) {
+        delete activeNationFlagImagesById[id];
+        aiFlagsDirty = true;
+      }
+      continue;
+    }
+
+    let identity = lookupRestCountryIdentity(countries, resolvedCode, countryName) || null;
+    if (!identity && resolvedCode !== countryCode) {
+      identity = lookupRestCountryIdentity(countries, countryCode, countryName) || null;
+    }
+    const nextCode = String(identity?.code || resolvedCode || countryCode || "").trim().toUpperCase();
+    if (/^[A-Z]{3}$/.test(nextCode) && nextCode !== countryCode) {
+      nation.countryCode = nextCode;
+    }
+    const nextName = String(identity?.name || countryName || nation.name || "").trim();
+    const nextFlagUrl = String(identity?.flagUrl || "").trim();
+
+    if (id !== OWNER.PLAYER && nextName) {
+      nation.name = nextName;
+    }
+
+    if (id === OWNER.PLAYER) {
+      const resolvedPlayerFlagUrl = nextFlagUrl || String(activePlayerFlagImageUrl || "").trim();
+      if (resolvedPlayerFlagUrl !== activePlayerFlagImageUrl) {
+        activePlayerFlagImageUrl = resolvedPlayerFlagUrl;
+        playerFlagDirty = true;
+      }
+    } else {
+      const prev = String(activeNationFlagImagesById[id] || "").trim();
+      const resolvedAiFlagUrl = nextFlagUrl || prev;
+      if (resolvedAiFlagUrl) {
+        if (prev !== resolvedAiFlagUrl) {
+          activeNationFlagImagesById[id] = resolvedAiFlagUrl;
+          aiFlagsDirty = true;
+        }
+      }
+    }
+  }
+
+  if (renderer) {
+    if (playerFlagDirty && typeof renderer.setPlayerFlagImage === "function") {
+      renderer.setPlayerFlagImage(activePlayerFlagImageUrl);
+    }
+    if (aiFlagsDirty && typeof renderer.setNationFlagImages === "function") {
+      renderer.setNationFlagImages(activeNationFlagImagesById);
+    }
+  }
+}
+
+function scheduleCountryIdentitySync(force = false) {
+  if (countryIdentitySyncInFlight) {
+    if (force) countryIdentitySyncQueued = true;
+    return;
+  }
+  countryIdentitySyncInFlight = true;
+  void syncCountryIdentityOverrides(force)
+    .catch((err) => {
+      console.warn("[Countries] Failed to sync country identity overlays.", err);
+    })
+    .finally(() => {
+      countryIdentitySyncInFlight = false;
+      if (countryIdentitySyncQueued) {
+        countryIdentitySyncQueued = false;
+        scheduleCountryIdentitySync(true);
+      }
+    });
+}
+
 function computeWorldSize(mapMode = MAP_MODE.GENERATOR, matchConfig = null) {
   const cfg = sanitizeMatchConfig(matchConfig || activeMatchConfig);
   const toPositiveInt = (raw, fallback) => {
@@ -482,9 +954,10 @@ function computeWorldSize(mapMode = MAP_MODE.GENERATOR, matchConfig = null) {
   const cfgTileCap = Math.max(200000, toPositiveInt(WORLD_SETUP?.maxTotalTiles, preset.maxTotalTiles ?? 900000));
   let maxTiles = Math.max(200000, Math.min(cfgTileCap, deviceTileCap));
 
-  let aiCount = configuredAi;
+  let aiCount = clampAiCountForCountryMode(configuredAi, cfg, earthData);
   const maxAiByTiles = Math.max(1, ((maxTiles / minTilesPerNation) | 0) - 1);
   if (aiCount > maxAiByTiles) aiCount = maxAiByTiles;
+  aiCount = clampAiCountForCountryMode(aiCount, cfg, earthData);
 
   const requestedTiles = (aiCount + 1) * tilesPerNation;
   const totalTiles = Math.max(120000, Math.min(maxTiles, requestedTiles));
@@ -647,14 +1120,20 @@ const DEBUG_FORCE_CEASEFIRE_REQUEST = false;
 const DEBUG_MATCH_OUTCOME_TEST_DEFAULT = normalizeMatchOutcomeTestMode(DEBUG_MATCH_OUTCOME_TEST);
 const DEBUG_ABM_TEST_DEFAULT = normalizeDebugAbmTestConfig(DEBUG_ABM_TEST);
 
-let earthData = null;
 let activeMapMode = MAP_MODE.GENERATOR;
 let seed = 1;
 let world = null;
 let renderer = null;
 let input = null;
+let soloSimulationWorker = null;
+let soloSimulationReady = false;
+let soloSimulationPendingPackets = [];
+let soloSimulationDeferredVisualSyncPending = false;
+let soloSimulationDeferredOwnerAppliedHint = 0;
+let soloSimulationPerf = { backlogTicks: 0, simTickMsAvg: 0 };
 const MAIN_MENU_NAME_STORAGE_KEY = "pf-main-menu-name-v1";
 const PLAYER_FLAG_STORAGE_KEY = "pf-player-flag-v1";
+const PLAYER_COUNTRY_COLOR_STORAGE_KEY = "pf-player-country-color-v1";
 const MAP_LIBRARY_AUTHOR_STORAGE_KEY = "pf-map-library-author-v1";
 const MAP_LIBRARY_RATINGS_STORAGE_KEY = "pf-map-library-ratings-v1";
 let bootInProgress = false;
@@ -662,7 +1141,18 @@ let bootCompleted = false;
 let mainMenuController = null;
 let mainMenuLoadingController = null;
 let activePlayerFlag = loadPlayerFlag();
+let activePlayerCountryColorHex = loadPlayerCountryColor(activePlayerFlag);
 let activeNationFlagsById = Object.create(null);
+let activePlayerFlagImageUrl = "";
+let activeNationFlagImagesById = Object.create(null);
+const REST_COUNTRIES_ALL_FIELDS_URL = "https://restcountries.com/v3.1/all?fields=cca3,name,flags,altSpellings";
+let restCountriesIndex = null;
+let restCountriesIndexPromise = null;
+let countryIdentitySyncInFlight = false;
+let countryIdentitySyncQueued = false;
+let countryIdentityLastSyncAtMs = 0;
+const COUNTRY_IDENTITY_SYNC_INTERVAL_MS = 400;
+const countryIdentitySigByNation = new Map();
 const DEFAULT_MENU_BGM_VOLUME = 0.12;
 const DEFAULT_WAR_BGM_VOLUME = 0.09;
 let menuBgm = null;
@@ -862,6 +1352,11 @@ const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   startWarFocus: Object.freeze({ cmd: "start_war_focus" }),
   cancelAllOperations: Object.freeze({ cmd: "cancel_all_operations" }),
   cancelOperation: Object.freeze({ cmd: "cancel_operation" }),
+  createTradeDeal: Object.freeze({ cmd: "request_trade_deal" }),
+  requestTradeDeal: Object.freeze({ cmd: "request_trade_deal" }),
+  respondTradeRequest: Object.freeze({ cmd: "respond_trade_request" }),
+  cancelTradeRequest: Object.freeze({ cmd: "cancel_trade_request" }),
+  cancelTradeDeal: Object.freeze({ cmd: "cancel_trade_deal" }),
   donate: Object.freeze({ cmd: "donate" }),
   declareWar: Object.freeze({ cmd: "declare_war" }),
   sendWarship: Object.freeze({ cmd: "send_warship" }),
@@ -1606,6 +2101,16 @@ function applyMultiplayerEntities(worldRef, changedEntities) {
     worldRef.operations = changedEntities.operations;
     worldRef._nextOpId = maxEntityId(worldRef.operations, worldRef._nextOpId || 1);
   }
+
+  if (Array.isArray(changedEntities.tradeDeals)) {
+    worldRef.tradeDeals = changedEntities.tradeDeals;
+    worldRef._nextTradeDealId = maxEntityId(worldRef.tradeDeals, worldRef._nextTradeDealId || 1);
+  }
+
+  if (Array.isArray(changedEntities.tradeRequests)) {
+    worldRef.tradeRequests = changedEntities.tradeRequests;
+    worldRef._nextTradeRequestId = maxEntityId(worldRef.tradeRequests, worldRef._nextTradeRequestId || 1);
+  }
 }
 
 function syncNationFlagsFromAuthoritative(worldRef) {
@@ -1654,6 +2159,7 @@ function applyMultiplayerNationStats(worldRef, nationStats) {
 
   syncNationFlagsFromAuthoritative(worldRef);
   worldRef.player = worldRef.nation[OWNER.PLAYER] || worldRef.player || null;
+  scheduleCountryIdentitySync(true);
 }
 
 function applyMultiplayerRelations(worldRef, rel) {
@@ -1962,11 +2468,38 @@ function computeMultiplayerStateHashFromWorld(worldRef, tickRaw = 0) {
     }
   };
 
+  const mixTradeRows = (prefix, list) => {
+    const rows = Array.isArray(list) ? list : [];
+    h = multiplayerHashMixString(h, prefix);
+    h = multiplayerHashMixNumber(h, rows.length);
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      h = multiplayerHashMixNumber(h, Number(row.id) | 0);
+      h = multiplayerHashMixNumber(h, Number(row.from) | 0);
+      h = multiplayerHashMixNumber(h, Number(row.to) | 0);
+      h = multiplayerHashMixString(h, String(row.offerResource || ""));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.offerRatePerMinute) || 0) * 100));
+      h = multiplayerHashMixString(h, String(row.requestResource || ""));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.requestRatePerMinute) || 0) * 100));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.durationS) || 0) * 10));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.createdAt) || 0) * 10));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.decideAt) || 0) * 10));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.expiresAt) || 0) * 10));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.startAt) || 0) * 10));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.endAt) || 0) * 10));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.remainingS) || 0) * 10));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.transferredFrom) || 0) * 100));
+      h = multiplayerHashMixNumber(h, Math.round((Number(row.transferredTo) || 0) * 100));
+    }
+  };
+
   mixEntityList("st", worldRef.structures, ["owner"]);
   mixEntityList("sh", worldRef.ships, ["owner", "missionDefender"]);
   mixEntityList("nf", worldRef.nukeFlights, ["owner", "launchTargetOwner"]);
   mixEntityList("am", worldRef.airborneMissions, ["owner"]);
   mixEntityList("op", worldRef.operations, ["attacker", "defender"]);
+  mixTradeRows("td", worldRef.tradeDeals);
+  mixTradeRows("tr", worldRef.tradeRequests);
 
   return (h >>> 0).toString(16).padStart(8, "0");
 }
@@ -2122,6 +2655,256 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
 
   maybeHandleMultiplayerStateHashMismatch(packet);
   if (!deferVisualSync) refreshAllUI();
+  return true;
+}
+
+function applyAuthoritativePacketToWorld(worldRef, packet, optionsRaw = null) {
+  if (!worldRef || !packet || typeof packet !== "object") return { applied: false, ownerApplied: 0 };
+  const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : null;
+  const isFullSync = !!options?.isFullSync;
+  const deferVisualSync = !!options?.deferVisualSync;
+  let ownerApplied = 0;
+
+  if (isFullSync) {
+    if (packet.ownerPacked) {
+      ownerApplied = applyPackedOwnerSnapshot(
+        worldRef,
+        packet.ownerPacked,
+        String(packet?.ownerPackedFormat || "u16")
+      );
+    } else if (packet.changedTilesPacked) {
+      ownerApplied = applyPackedOwnerChangesFromBase64(
+        worldRef,
+        packet.changedTilesPacked,
+        String(packet?.changedTilesPackedFormat || "u32_u16_le")
+      );
+    } else if (Array.isArray(packet.changedTiles)) {
+      ownerApplied = applyOwnerChangesFromList(worldRef, packet.changedTiles);
+    }
+  } else if (packet.changedTilesPacked) {
+    ownerApplied = applyPackedOwnerChangesFromBase64(
+      worldRef,
+      packet.changedTilesPacked,
+      String(packet?.changedTilesPackedFormat || "u32_u16_le")
+    );
+  } else if (Array.isArray(packet.changedTiles) && packet.changedTiles.length > 0) {
+    ownerApplied = applyOwnerChangesFromList(worldRef, packet.changedTiles);
+  }
+
+  if (packet.changedEntities && typeof packet.changedEntities === "object") {
+    applyMultiplayerEntities(worldRef, packet.changedEntities);
+  }
+  if (Array.isArray(packet.nationStats)) {
+    applyMultiplayerNationStats(worldRef, packet.nationStats);
+  }
+  if (packet.relations && typeof packet.relations === "object") {
+    applyMultiplayerRelations(worldRef, packet.relations);
+  }
+  if (Array.isArray(packet.events)) {
+    applyMultiplayerEvents(worldRef, packet.events);
+  }
+  applyMultiplayerWorldMeta(worldRef, packet);
+  maybeRefreshMultiplayerDerivedState(worldRef, isFullSync);
+
+  if (isFullSync && ownerApplied > 0 && typeof worldRef._rebuildAllPixels === "function") {
+    try {
+      worldRef._rebuildAllPixels();
+      if (typeof worldRef._rebuildAllBorders === "function") worldRef._rebuildAllBorders();
+    } catch {
+      // Keep authoritative sync resilient; incremental flush still runs below.
+    }
+  }
+
+  if (Array.isArray(packet.leaderboard)) {
+    worldRef._serverLeaderboard = packet.leaderboard;
+  }
+
+  if (deferVisualSync) {
+    soloSimulationDeferredVisualSyncPending = true;
+    soloSimulationDeferredOwnerAppliedHint = Math.max(soloSimulationDeferredOwnerAppliedHint, ownerApplied | 0);
+  } else {
+    flushMultiplayerPixelWrites(worldRef, ownerApplied);
+    worldRef.dirty = true;
+  }
+
+  return { applied: true, ownerApplied };
+}
+
+function flushDeferredSoloSimulationVisualSync() {
+  if (!soloSimulationDeferredVisualSyncPending) return;
+  soloSimulationDeferredVisualSyncPending = false;
+  if (!world) return;
+  flushMultiplayerPixelWrites(world, soloSimulationDeferredOwnerAppliedHint);
+  soloSimulationDeferredOwnerAppliedHint = 0;
+  world.dirty = true;
+  refreshAllUI();
+}
+
+function updateSoloSimulationPerf(message) {
+  const backlogTicks = Math.max(0, Number(message?.backlogTicks) || 0);
+  const simPerf = (message?.simPerf && typeof message.simPerf === "object") ? message.simPerf : null;
+  soloSimulationPerf = {
+    backlogTicks,
+    simTickMsAvg: Math.max(0, Number(simPerf?.tickMsAvg) || 0)
+  };
+  if (world && simPerf && typeof world === "object" && world._simPerf && typeof world._simPerf === "object") {
+    Object.assign(world._simPerf, simPerf);
+  }
+}
+
+function drainSoloSimulationPackets() {
+  if (!world || soloSimulationPendingPackets.length <= 0) return;
+  const pending = soloSimulationPendingPackets.splice(0, soloSimulationPendingPackets.length);
+  for (let i = 0; i < pending.length; i++) {
+    const packet = pending[i];
+    applyAuthoritativePacketToWorld(world, packet, {
+      isFullSync: String(packet?.type || "") === "full_sync",
+      deferVisualSync: i < (pending.length - 1)
+    });
+  }
+  flushDeferredSoloSimulationVisualSync();
+}
+
+function buildSoloSimulationWorldState(worldRef) {
+  if (!worldRef || typeof worldRef !== "object") return null;
+  const plain = { ...worldRef };
+  const keys = Object.keys(plain);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (typeof plain[key] === "function") delete plain[key];
+  }
+  delete plain._perfNow;
+  return plain;
+}
+
+function shouldForwardSoloSimulationCommand(methodRaw, result) {
+  const method = String(methodRaw || "").trim();
+  const mode = SOLO_WORKER_COMMAND_STRATEGY[method];
+  if (!mode || mode === "restart") return false;
+  if (mode === "always") return true;
+  if (mode === "positive") return (Number(result) || 0) > 0;
+  if (mode === "truthy") return !!result;
+  return !(result && typeof result === "object" && result.ok === false);
+}
+
+function sendSoloSimulationCommand(method, args = []) {
+  if (!soloSimulationWorker || !soloSimulationReady || isMultiplayerMatchEnabled()) return false;
+  try {
+    soloSimulationWorker.postMessage({
+      type: "player_command",
+      method,
+      args: Array.isArray(args) ? args : []
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stopSoloSimulationWorker() {
+  soloSimulationReady = false;
+  soloSimulationPendingPackets.length = 0;
+  soloSimulationDeferredVisualSyncPending = false;
+  soloSimulationDeferredOwnerAppliedHint = 0;
+  soloSimulationPerf = { backlogTicks: 0, simTickMsAvg: 0 };
+  if (!soloSimulationWorker) return;
+  try {
+    soloSimulationWorker.postMessage({ type: "shutdown" });
+  } catch {}
+  try {
+    soloSimulationWorker.terminate();
+  } catch {}
+  soloSimulationWorker = null;
+}
+
+function installSoloSimulationCommandBridge(worldRef) {
+  if (!worldRef || typeof worldRef !== "object") return;
+  if (worldRef.__soloSimulationBridgeInstalled) return;
+  Object.defineProperty(worldRef, "__soloSimulationBridgeInstalled", {
+    value: true,
+    configurable: true,
+    enumerable: false,
+    writable: false
+  });
+
+  const methods = Object.keys(SOLO_WORKER_COMMAND_STRATEGY);
+  for (let i = 0; i < methods.length; i++) {
+    const method = methods[i];
+    const original = worldRef[method];
+    if (typeof original !== "function") continue;
+    const bound = original.bind(worldRef);
+    worldRef[method] = (...args) => {
+      const result = bound(...args);
+      if (method === "regenerate") {
+        stopSoloSimulationWorker();
+        startSoloSimulationWorker(worldRef);
+        return result;
+      }
+      if (shouldForwardSoloSimulationCommand(method, result)) {
+        sendSoloSimulationCommand(method, args);
+      }
+      return result;
+    };
+  }
+}
+
+function startSoloSimulationWorker(worldRef) {
+  stopSoloSimulationWorker();
+  if (!worldRef || typeof Worker !== "function" || isMultiplayerMatchEnabled()) return false;
+  const cfg = sanitizeMatchConfig(activeMatchConfig);
+  const profile = getDifficultyProfile(cfg.difficulty);
+
+  const worker = new Worker(new URL("./workers/soloSimWorker.js", import.meta.url), { type: "module" });
+  soloSimulationWorker = worker;
+  soloSimulationReady = false;
+
+  worker.onmessage = (event) => {
+    const msg = event?.data || {};
+    const type = String(msg?.type || "").trim();
+    if (type === "ready") {
+      soloSimulationReady = true;
+      return;
+    }
+    if (type === "snapshot_delta" || type === "full_sync") {
+      soloSimulationPendingPackets.push(msg);
+      return;
+    }
+    if (type === "perf_stats") {
+      updateSoloSimulationPerf(msg);
+      return;
+    }
+    if (type === "worker_error") {
+      console.warn("[solo-worker] fallback-to-main-thread", msg?.message || "worker error");
+      stopSoloSimulationWorker();
+    }
+  };
+  worker.onerror = () => {
+    stopSoloSimulationWorker();
+  };
+
+  try {
+    worker.postMessage({
+      type: "init_world",
+      worldState: buildSoloSimulationWorldState(worldRef),
+      liveRules: {
+        infiniteGold: !!cfg.infiniteGold,
+        infiniteTroops: !!cfg.infiniteTroops,
+        playerIncomeOpen: Number(profile.playerIncomeOpen) || 1,
+        playerIncomeLate: Number(profile.playerIncomeLate) || 1,
+        aiIncomeOpen: Number(profile.aiIncomeOpen) || 1,
+        aiIncomeLate: Number(profile.aiIncomeLate) || 1,
+        economyRampS: Number(profile.economyRampS) || 1
+      },
+      performanceProfile: (typeof worldRef.getPerformanceProfile === "function")
+        ? worldRef.getPerformanceProfile()
+        : DEFAULT_PERFORMANCE_PROFILE
+    });
+  } catch {
+    stopSoloSimulationWorker();
+    return false;
+  }
+
+  installSoloSimulationCommandBridge(worldRef);
   return true;
 }
 
@@ -2584,11 +3367,24 @@ function connectMultiplayerMatchSocket() {
 function getPlayer() {
   const fallbackAgg = attackCommitFromRatio(0.2);
   if (!world) {
-    return { gold: 0, goldPS: 0, population: 0, popCap: 0, popPS: 0, growthZone: "OK", infantry: 0, troopsCap: 0, infantryPS: 0, attackRatio: 0.2, aggression: fallbackAgg, attackCommit: fallbackAgg, mobilization: 0.30, stabilityFactor: 1, stabilityPct: 100, warExhaustion: 0, warExhaustionPct: 0, workersPop: 0, armyPop: 0 };
+    return { gold: 0, goldPS: 0, food: 0, foodPS: 0, foodDemandPS: 0, steel: 0, steelPS: 0, oil: 0, oilPS: 0, oilDemandPS: 0, population: 0, popCap: 0, popPS: 0, growthZone: "OK", infantry: 0, troopsCap: 0, infantryPS: 0, attackRatio: 0.2, aggression: fallbackAgg, attackCommit: fallbackAgg, mobilization: 0.30, stabilityFactor: 1, stabilityPct: 100, warExhaustion: 0, warExhaustionPct: 0, workersPop: 0, armyPop: 0 };
   }
   // Avoid crashes if world.player is temporarily unset.
   const p = world.player || (world.nation && world.nation[OWNER.PLAYER]);
-  return p || { gold: 0, goldPS: 0, population: 0, popCap: 0, popPS: 0, growthZone: "OK", infantry: 0, troopsCap: 0, infantryPS: 0, attackRatio: 0.2, aggression: fallbackAgg, attackCommit: fallbackAgg, mobilization: 0.30, stabilityFactor: 1, stabilityPct: 100, warExhaustion: 0, warExhaustionPct: 0, workersPop: 0, armyPop: 0 };
+  const resources = (typeof world.getNationResources === "function")
+    ? (world.getNationResources(OWNER.PLAYER) || {})
+    : {};
+  return {
+    ...(p || { gold: 0, goldPS: 0, population: 0, popCap: 0, popPS: 0, growthZone: "OK", infantry: 0, troopsCap: 0, infantryPS: 0, attackRatio: 0.2, aggression: fallbackAgg, attackCommit: fallbackAgg, mobilization: 0.30, stabilityFactor: 1, stabilityPct: 100, warExhaustion: 0, warExhaustionPct: 0, workersPop: 0, armyPop: 0 }),
+    food: Math.max(0, Number(resources.food) || 0),
+    foodPS: Number(resources.foodPS) || 0,
+    foodDemandPS: Number(resources.foodDemandPS) || 0,
+    steel: Math.max(0, Number(resources.steel) || 0),
+    steelPS: Number(resources.steelPS) || 0,
+    oil: Math.max(0, Number(resources.oil) || 0),
+    oilPS: Number(resources.oilPS) || 0,
+    oilDemandPS: Number(resources.oilDemandPS) || 0
+  };
 }
 
 function sanitizeClientSettings(next) {
@@ -3376,7 +4172,7 @@ function sanitizeMatchConfig(next) {
     : DEFAULT_MATCH_CONFIG.sizePreset;
 
   const aiRaw = Number(src.aiCount);
-  const aiCount = Number.isFinite(aiRaw) && aiRaw > 0
+  const aiCountRaw = Number.isFinite(aiRaw) && aiRaw > 0
     ? Math.max(1, Math.min(400, Math.floor(aiRaw)))
     : null;
 
@@ -3387,8 +4183,13 @@ function sanitizeMatchConfig(next) {
 
   const mapMode = MAP_MODE.WORLD_MAP;
   const mapSourceRaw = String(src.mapSource ?? src.mapMode ?? DEFAULT_MATCH_CONFIG.mapSource).toLowerCase();
-  const mapSource = mapSourceRaw === MAP_SOURCE.CUSTOM ? MAP_SOURCE.CUSTOM : MAP_SOURCE.EARTH;
+  const mapSource = mapSourceRaw === MAP_SOURCE.CUSTOM
+    ? MAP_SOURCE.CUSTOM
+    : (mapSourceRaw === MAP_SOURCE.POLITICAL_EARTH ? MAP_SOURCE.POLITICAL_EARTH : MAP_SOURCE.EARTH);
   const customMapId = String(src.customMapId || "").trim();
+  const aiCount = aiCountRaw == null
+    ? null
+    : clampAiCountForCountryMode(aiCountRaw, { mapSource }, earthData);
 
   const parseBoost = (value, fallback) => {
     const n = Number(value);
@@ -3454,6 +4255,48 @@ function savePlayerFlag(next) {
   try {
     if (typeof localStorage === "undefined") return;
     localStorage.setItem(PLAYER_FLAG_STORAGE_KEY, JSON.stringify(sanitizeFlag(next)));
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+function normalizeCountryColorHex(raw, fallback = "#4fa7f6") {
+  const text = String(raw || "").trim().toLowerCase();
+  if (/^#[0-9a-f]{6}$/.test(text)) return text;
+  return String(fallback || "#4fa7f6").trim().toLowerCase();
+}
+
+function countryColorHexToRgb(hex, fallback = "#4fa7f6") {
+  const safe = normalizeCountryColorHex(hex, fallback);
+  return {
+    r: parseInt(safe.slice(1, 3), 16) | 0,
+    g: parseInt(safe.slice(3, 5), 16) | 0,
+    b: parseInt(safe.slice(5, 7), 16) | 0
+  };
+}
+
+function loadPlayerCountryColor(flagDef = null) {
+  const fallbackFromFlag = (() => {
+    const color = String(flagDef?.colors?.[0] || "").trim().toLowerCase();
+    return /^#[0-9a-f]{6}$/.test(color) ? color : "#4fa7f6";
+  })();
+  try {
+    if (typeof localStorage === "undefined") return fallbackFromFlag;
+    const raw = localStorage.getItem(PLAYER_COUNTRY_COLOR_STORAGE_KEY);
+    if (!raw) return fallbackFromFlag;
+    return normalizeCountryColorHex(raw, fallbackFromFlag);
+  } catch {
+    return fallbackFromFlag;
+  }
+}
+
+function savePlayerCountryColor(nextHex) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(
+      PLAYER_COUNTRY_COLOR_STORAGE_KEY,
+      normalizeCountryColorHex(nextHex)
+    );
   } catch {
     // Ignore localStorage failures.
   }
@@ -3617,10 +4460,43 @@ function applyPlayerNameToWorld(worldRef, rawName) {
   if (!worldRef || !Array.isArray(worldRef.nation)) return;
   const player = worldRef.nation[OWNER.PLAYER];
   if (!player) return;
-  player.name = resolvePlayerDisplayName(rawName);
+  const nextName = resolvePlayerDisplayName(rawName);
+  const changed = String(player.name || "") !== nextName;
+  player.name = nextName;
   if (worldRef.player && typeof worldRef.player === "object") {
     worldRef.player.name = player.name;
   }
+  if (changed && soloSimulationWorker && !isMultiplayerMatchEnabled()) {
+    startSoloSimulationWorker(worldRef);
+  }
+}
+
+function applyPlayerCountryColorToWorld(worldRef, opts = null) {
+  if (!worldRef || !Array.isArray(worldRef.nation)) return false;
+  const player = worldRef.nation[OWNER.PLAYER];
+  if (!player || typeof player !== "object") return false;
+  const rgb = countryColorHexToRgb(activePlayerCountryColorHex);
+  const prev = (player.color && typeof player.color === "object") ? player.color : null;
+  const changed = !prev || (prev.r | 0) !== rgb.r || (prev.g | 0) !== rgb.g || (prev.b | 0) !== rgb.b;
+  if (!changed) return false;
+
+  const nextColor = { r: rgb.r, g: rgb.g, b: rgb.b };
+  player.color = nextColor;
+  if (worldRef.player && typeof worldRef.player === "object") {
+    worldRef.player.color = nextColor;
+  }
+
+  const options = (opts && typeof opts === "object") ? opts : null;
+  const rebuild = options?.rebuild !== false;
+  if (rebuild && typeof worldRef._rebuildAllPixels === "function") {
+    worldRef._rebuildAllPixels();
+    if (typeof worldRef._rebuildAllBorders === "function") worldRef._rebuildAllBorders();
+    worldRef.dirty = true;
+  }
+  if (soloSimulationWorker && !isMultiplayerMatchEnabled()) {
+    startSoloSimulationWorker(worldRef);
+  }
+  return true;
 }
 
 function applyMatchStartModifiers(worldRef, matchConfig, playerNameRaw = "") {
@@ -3645,6 +4521,7 @@ function applyMatchStartModifiers(worldRef, matchConfig, playerNameRaw = "") {
   }
 
   applyPlayerNameToWorld(worldRef, playerNameRaw);
+  applyPlayerCountryColorToWorld(worldRef, { rebuild: false });
 }
 
 function easeInOut01(value) {
@@ -3851,14 +4728,19 @@ let nukeLaunchMode = null; // { siloId:number, type:"atomic"|"hydrogen" }
 let airborneLaunchMode = null; // { airbaseId:number }
 let navalTransportLaunchMode = false; // true when quick-launching transport boats by click target
 let nukePreview = null; // curved arc preview payload from world.getMissileArcPreview()
+let refreshTradePanelView = null;
 
 const leaderboard = createLeaderboardOverlay();
 
 // hover / diplomacy
 let hoveredOwnerId = 0;
 let hoveredCell = null;
+let confirmedTargetMarker = null; // { x:number, y:number, untilMs:number }
 // Intel panels can be opened for multiple nations (managed by HUD).
 let activeAllyId = 0;
+let lastDiplomacyStatusSig = "";
+let lastDiplomacyAlliesSig = "";
+let lastDonationUiSig = "";
 let debugAllyRequestPending = DEBUG_FORCE_ALLY_REQUEST;
 let debugCeasefireRequestPending = DEBUG_FORCE_CEASEFIRE_REQUEST;
 
@@ -3904,7 +4786,8 @@ const BUILD_HOTKEY_BUTTON_IDS = Object.freeze({
   "5": "btnPort",
   "6": "btnMissileSilo",
   "7": "btnAbmLauncher",
-  "8": "btnAirbase"
+  "8": "btnAirbase",
+  "9": "btnCoastalRig"
 });
 
 const QUICK_LAUNCH_HOTKEY_BUTTON_IDS = Object.freeze({
@@ -3942,6 +4825,17 @@ function getSpawnPhaseStatusNow() {
       label: "Match in progress"
     };
   }
+}
+
+function isCountrySpawnPhaseNow() {
+  const phase = world?._spawnPhase;
+  return !!(phase && phase.active && String(phase.mode || "") === "country");
+}
+
+function spawnPhasePromptText() {
+  return isCountrySpawnPhaseNow()
+    ? "Pick your country. The match starts when the top bar fills."
+    : "Pick your spawn location. The match starts when the top bar fills.";
 }
 
 function syncSpawnProgressUI() {
@@ -4049,7 +4943,11 @@ function canPlayerIssueOrders(showReason = true) {
     }
   }
   if (isSpawnPhaseActiveNow()) {
-    if (showReason) hud.setOpMessage("Pick your spawn location before issuing orders.");
+    if (showReason) {
+      hud.setOpMessage(isCountrySpawnPhaseNow()
+        ? "Pick your country before issuing orders."
+        : "Pick your spawn location before issuing orders.");
+    }
     return false;
   }
   if (isSessionTerminalStateNow()) {
@@ -4364,6 +5262,39 @@ function refreshNukePreview() {
     hoveredCell.y | 0,
     nukeLaunchMode.type
   ) || null;
+}
+
+function setConfirmedTargetMarker(cell, durationMs = 1800) {
+  if (!cell) {
+    confirmedTargetMarker = null;
+    return;
+  }
+  confirmedTargetMarker = {
+    x: cell.x | 0,
+    y: cell.y | 0,
+    untilMs: performance.now() + Math.max(250, durationMs | 0)
+  };
+}
+
+function getConfirmedTargetMarker() {
+  const marker = confirmedTargetMarker;
+  if (!marker) return null;
+  if ((Number(marker.untilMs) || 0) <= performance.now()) {
+    confirmedTargetMarker = null;
+    return null;
+  }
+  return marker;
+}
+
+function getActiveTargetMarker() {
+  if (nukeLaunchMode || airborneLaunchMode || navalTransportLaunchMode) {
+    if (!hoveredCell) return getConfirmedTargetMarker();
+    return {
+      x: hoveredCell.x | 0,
+      y: hoveredCell.y | 0
+    };
+  }
+  return getConfirmedTargetMarker();
 }
 
 function createPlayerAlertState() {
@@ -4833,9 +5764,10 @@ async function initAndBoot(matchConfig = null, opts = null) {
   const requestedCustomMapId = String(options.customMapId || cfg.customMapId || "").trim();
   const wantsCustomMap = (
     !forcedWorldSpec &&
-    String(cfg.mapSource || MAP_SOURCE.EARTH).toLowerCase() === MAP_SOURCE.CUSTOM &&
+    String(cfg.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase() === MAP_SOURCE.CUSTOM &&
     !!requestedCustomMapId
   );
+  const politicalEarthMode = String(cfg.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase() === MAP_SOURCE.POLITICAL_EARTH;
   const customMap = wantsCustomMap ? loadCustomMapById(requestedCustomMapId) : null;
   if (wantsCustomMap && !customMap) {
     throw new Error("Selected custom map is missing. Open Map Editor and save or select a valid map.");
@@ -4852,6 +5784,7 @@ async function initAndBoot(matchConfig = null, opts = null) {
   if (configuredMode === MAP_MODE.WORLD_MAP) {
     if (customMap) {
       earthData = customMapToEarthData(customMap);
+      earthCountryBotCap = 0;
       if (!earthData) {
         throw new Error("Custom map data is invalid. Open Map Editor and save the map again.");
       }
@@ -4859,16 +5792,19 @@ async function initAndBoot(matchConfig = null, opts = null) {
     } else {
       try {
         earthData = await loadEarthData();
+        earthCountryBotCap = getEarthCountryBotCapFromData(earthData);
         console.info("[Earth] Earth assets loaded.");
       } catch (err) {
         if (strictWorldSpec || forcedWorldSpec) {
           throw new Error("World map assets failed to load for this multiplayer match.");
         }
         console.error("[Earth] Failed to load Earth assets, falling back to procedural map.", err);
+        earthCountryBotCap = 0;
       }
     }
   } else {
     earthData = null;
+    earthCountryBotCap = 0;
   }
   if (onLoading) onLoading(44, "Preparing world...");
 
@@ -4908,41 +5844,64 @@ async function initAndBoot(matchConfig = null, opts = null) {
   const worldW = worldSize.width;
   const worldH = worldSize.height;
 
+  // Warm REST Countries only for political-country matches.
+  if (politicalEarthMode) void loadRestCountriesIndex();
+
   if (onLoading) onLoading(62, "Preparing nations...");
   seed = forcedSeed || ((Date.now() >>> 0) || 1);
-  world = new World(worldW, worldH, seed, { mapMode: activeMapMode, earthData, aiCount: worldSize.aiCount });
+  stopSoloSimulationWorker();
+  world = new World(worldW, worldH, seed, {
+    mapMode: activeMapMode,
+    earthData,
+    aiCount: worldSize.aiCount,
+    countryClaimEnabled: politicalEarthMode
+  });
+  clearCountryIdentityOverrides(false);
   applyMatchWorldRestrictions(world, cfg);
   applyMatchStartModifiers(world, cfg, playerName);
-  if (onLoading) onLoading(70, "Preparing flags...");
-  activeNationFlagsById = await generateNationFlagsById(world, activePlayerFlag, (done, total) => {
-    if (!onLoading) return;
-    const frac = total > 0 ? (done / total) : 1;
-    const pct = 70 + Math.round(frac * 12);
-    onLoading(pct, "Preparing flags...");
-  });
+  if (onLoading) onLoading(70, "Preparing nations...");
+  activeNationFlagsById = Object.create(null);
+  activeNationFlagsById[OWNER.PLAYER] = sanitizeFlag(activePlayerFlag);
   if (onLoading) onLoading(82, "Preparing renderer...");
   renderer = new Renderer(ctx, canvas, world);
+  const effectiveClientSettings = sanitizeClientSettings(clientSettings);
+  clientSettings = effectiveClientSettings;
   if (renderer && typeof renderer.setClientSettings === "function") {
     renderer.setClientSettings({
-      showAIStructures: clientSettings.showAIStructures,
-      showAIFlags: clientSettings.showAIFlags,
-      showNationLabels: clientSettings.showNationLabels,
-      showShips: clientSettings.showShips,
-      highlightNation: clientSettings.highlightNation,
-      showHatchOverlay: clientSettings.showHatchOverlay,
-      showHeatmap: clientSettings.showHeatmap,
-      nukeDestinationOverlay: clientSettings.nukeDestinationOverlay,
-      politicalMapMode: clientSettings.politicalMapMode,
-      atmosphereEnabled: !clientSettings.disableAtmosphere,
-      reduceMotion: clientSettings.reduceMotion
+      showAIStructures: effectiveClientSettings.showAIStructures,
+      showAIFlags: effectiveClientSettings.showAIFlags,
+      showNationLabels: effectiveClientSettings.showNationLabels,
+      showShips: effectiveClientSettings.showShips,
+      highlightNation: effectiveClientSettings.highlightNation,
+      showHatchOverlay: effectiveClientSettings.showHatchOverlay,
+      showHeatmap: effectiveClientSettings.showHeatmap,
+      nukeDestinationOverlay: effectiveClientSettings.nukeDestinationOverlay,
+      politicalMapMode: effectiveClientSettings.politicalMapMode,
+      atmosphereEnabled: !effectiveClientSettings.disableAtmosphere,
+      reduceMotion: effectiveClientSettings.reduceMotion
     });
   }
+  const bootPerformanceProfile = createPerformanceProfileForWorld(0, world);
+  if (world && typeof world.setPerformanceProfile === "function") {
+    world.setPerformanceProfile(bootPerformanceProfile);
+  }
+  if (renderer && typeof renderer.setPerformanceProfile === "function") {
+    renderer.setPerformanceProfile(bootPerformanceProfile);
+  }
+  startSoloSimulationWorker(world);
   if (renderer && typeof renderer.setPlayerFlag === "function") {
     renderer.setPlayerFlag(activePlayerFlag);
   }
   if (renderer && typeof renderer.setNationFlags === "function") {
     renderer.setNationFlags(activeNationFlagsById);
   }
+  if (renderer && typeof renderer.setPlayerFlagImage === "function") {
+    renderer.setPlayerFlagImage(activePlayerFlagImageUrl);
+  }
+  if (renderer && typeof renderer.setNationFlagImages === "function") {
+    renderer.setNationFlagImages(activeNationFlagImagesById);
+  }
+  scheduleCountryIdentitySync(true);
   if (onLoading) onLoading(86, "Loading assets...");
   await warmupBootUiAssets((done, total) => {
     if (!onLoading) return;
@@ -4976,6 +5935,54 @@ async function initAndBoot(matchConfig = null, opts = null) {
   console.info(`[World] ${worldW}x${worldH} (${worldSize.totalTiles} tiles) | AIs: ${worldSize.aiCount} | preset: ${worldSize.sizePreset} | mode: ${activeMapMode} | diff: ${cfg.difficulty}`);
   boot();
   if (onLoading) onLoading(100, "Ready");
+}
+
+async function syncAccountProfileForStats(displayNameRaw = "") {
+  if (!playerStatsService?.enabled) return false;
+  try {
+    return await playerStatsService.syncProfile(resolvePlayerDisplayName(displayNameRaw));
+  } catch {
+    return false;
+  }
+}
+
+async function beginAccountMatchSessionTracking(displayNameRaw = "", modeRaw = "") {
+  if (!playerStatsService?.enabled) return false;
+  const displayName = resolvePlayerDisplayName(displayNameRaw || world?.nation?.[OWNER.PLAYER]?.name || loadMainMenuPlayerName());
+  const mode = String(modeRaw || (isMultiplayerMatchEnabled() ? "multiplayer" : "singleplayer")).toLowerCase() === "multiplayer"
+    ? "multiplayer"
+    : "singleplayer";
+  try {
+    return await playerStatsService.startSession({
+      displayName,
+      matchMode: mode
+    });
+  } catch (err) {
+    console.warn("[Stats] Failed to start tracked match session.", err);
+    return false;
+  }
+}
+
+async function finalizeAccountMatchSessionTracking(outcomeRaw = "abandon", playtimeSecondsRaw = null, displayNameRaw = "") {
+  if (!playerStatsService?.enabled || !playerStatsService.hasActiveSession()) return false;
+  const outcome = String(outcomeRaw || "abandon").toLowerCase();
+  const safeOutcome = outcome === "win" || outcome === "loss" ? outcome : "abandon";
+  const fallbackPlaytime = Math.max(0, Math.floor(Number(world?.time) || 0));
+  const playtimeSeconds = Number.isFinite(Number(playtimeSecondsRaw))
+    ? Math.max(0, Math.floor(Number(playtimeSecondsRaw)))
+    : fallbackPlaytime;
+  const displayName = resolvePlayerDisplayName(displayNameRaw || world?.nation?.[OWNER.PLAYER]?.name || loadMainMenuPlayerName());
+
+  try {
+    return await playerStatsService.finalizeSession({
+      outcome: safeOutcome,
+      playtimeSeconds,
+      displayName
+    });
+  } catch (err) {
+    console.warn("[Stats] Failed to finalize tracked match session.", err);
+    return false;
+  }
 }
 
 async function startGameFromMainMenu(payload = null) {
@@ -5032,6 +6039,7 @@ async function startGameFromMainMenu(payload = null) {
       mainMenuLoadingController.setProgress(100, "Ready");
       mainMenuLoadingController.hideSoon(260);
     }
+    await beginAccountMatchSessionTracking(playerName, multiplayerSession ? "multiplayer" : "singleplayer");
     bootCompleted = true;
   } catch (err) {
     console.error("[Boot] Failed to initialize world.", err);
@@ -5052,6 +6060,9 @@ async function startGameFromMainMenu(payload = null) {
 
 function leaveCurrentGameToMainMenu() {
   if (bootInProgress) return;
+  const sessionOutcome = currentSessionOutcomeResult() || "abandon";
+  const sessionPlaytime = Math.max(0, Math.floor(Number(world?.time) || 0));
+  void finalizeAccountMatchSessionTracking(sessionOutcome, sessionPlaytime);
 
   paused = true;
   hud.setPaused(true);
@@ -5119,6 +6130,9 @@ function createMainMenuLoadingController() {
 function createMainMenuController(options = null) {
   const opts = (options && typeof options === "object") ? options : {};
   const onStartRequested = (typeof opts.onStartRequested === "function") ? opts.onStartRequested : null;
+  const menuStatsService = (opts.playerStatsService && typeof opts.playerStatsService === "object")
+    ? opts.playerStatsService
+    : null;
   const root = document.getElementById("mainMenu");
   if (!root) return null;
 
@@ -5142,16 +6156,27 @@ function createMainMenuController(options = null) {
   const mpLobbyCode = document.getElementById("mmMpLobbyCode");
   const mpLobbyPlayers = document.getElementById("mmMpLobbyPlayers");
   const mpLobbyStatus = document.getElementById("mmMpLobbyStatus");
+  const mpLobbyRole = document.getElementById("mmMpLobbyRole");
+  const mpLobbyNetwork = document.getElementById("mmMpLobbyNetwork");
+  const mpLobbyWorld = document.getElementById("mmMpLobbyWorld");
+  const mpLobbyCount = document.getElementById("mmMpLobbyCount");
   const multiplayerStatus = document.getElementById("mmMultiplayerStatus");
+  const multiplayerHealthBadge = document.getElementById("mmMultiplayerHealthBadge");
+  const multiplayerRuntimeBadge = document.getElementById("mmMultiplayerRuntimeBadge");
   const joinStatus = document.getElementById("mmJoinStatus");
   const playLobbyCard = document.getElementById("mmPlayLobbyCard");
   const playLobbyCode = document.getElementById("mmPlayLobbyCode");
   const playLobbyPlayers = document.getElementById("mmPlayLobbyPlayers");
+  const playLobbyRole = document.getElementById("mmPlayLobbyRole");
+  const playLobbyNetwork = document.getElementById("mmPlayLobbyNetwork");
+  const playLobbyWorld = document.getElementById("mmPlayLobbyWorld");
+  const playLobbyCount = document.getElementById("mmPlayLobbyCount");
   const libraryBtn = document.getElementById("mmLibraryBtn");
   const flagBtn = document.getElementById("mmFlagBtn");
   const bookBtn = document.getElementById("mmBookBtn");
   const nameInput = document.getElementById("mmNameInput");
   const flagPreview = document.getElementById("mmPlayerFlagPreview");
+  const countryColorInput = document.getElementById("mmCountryColorInput");
   const statusText = document.getElementById("mmStatusText");
   const configSummary = document.getElementById("mmConfigSummary");
   const mapEditorSummary = document.getElementById("mmMapEditorSummary");
@@ -5395,6 +6420,8 @@ function createMainMenuController(options = null) {
   let mapLibraryPublishing = false;
   let mapLibraryLoadToken = 0;
   let mapLibrarySearchDebounceTimer = 0;
+  let authController = null;
+  let globalLeaderboardController = null;
 
   const safeStorageRead = (key) => {
     try {
@@ -5471,11 +6498,11 @@ function createMainMenuController(options = null) {
     const hasMaps = mapEditorSavedMetas.length > 0;
     if (matchInputs.mapMode) {
       if (!hasMaps && String(matchInputs.mapMode.value || "").toLowerCase() === MAP_SOURCE.CUSTOM) {
-        matchInputs.mapMode.value = MAP_SOURCE.EARTH;
+        matchInputs.mapMode.value = MAP_SOURCE.POLITICAL_EARTH;
       }
     }
     if (matchInputs.customMapId) {
-      const source = String(matchInputs.mapMode?.value || MAP_SOURCE.EARTH).toLowerCase();
+      const source = String(matchInputs.mapMode?.value || MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
       const showCustom = source === MAP_SOURCE.CUSTOM;
       if (!hasMaps) matchInputs.customMapId.value = "";
       matchInputs.customMapId.disabled = !showCustom || !hasMaps;
@@ -6219,6 +7246,9 @@ function createMainMenuController(options = null) {
   let multiplayerHealthOk = false;
   let multiplayerHealthCheckedAtMs = 0;
   let multiplayerHealthCheckInFlight = false;
+  let multiplayerHealthBuild = "";
+  let multiplayerHealthRuntimeSrc = "";
+  let multiplayerHealthReason = "";
   let multiplayerApiMode = "auto"; // auto | modern | legacy
   let lobbySocket = null;
   let lobbySocketConnected = false;
@@ -6287,6 +7317,58 @@ function createMainMenuController(options = null) {
           }
         : null
     };
+  };
+
+  const setMultiplayerBadge = (el, textRaw, stateRaw = "idle", titleRaw = "") => {
+    if (!el) return;
+    el.textContent = String(textRaw || "").trim() || "Unknown";
+    el.setAttribute("data-state", String(stateRaw || "idle").trim() || "idle");
+    const title = String(titleRaw || "").trim();
+    if (title) el.title = title;
+    else el.removeAttribute("title");
+  };
+
+  const shortenBadgeLabel = (raw, maxLen = 28) => {
+    const text = String(raw || "").trim();
+    if (!text) return "";
+    return text.length > maxLen ? `${text.slice(0, Math.max(8, maxLen - 3))}...` : text;
+  };
+
+  const runtimeBadgeLabel = () => {
+    const src = String(multiplayerHealthRuntimeSrc || "").replace(/\\/g, "/").trim().toLowerCase();
+    if (src.includes("/main/src")) return "Live Main Runtime";
+    if (src.includes("/multiplayerserver/src") || /\/src$/.test(src)) return "Synced Server Runtime";
+    if (multiplayerHealthBuild) return `Build ${shortenBadgeLabel(multiplayerHealthBuild, 20)}`;
+    return "Authoritative Runtime";
+  };
+
+  const describeLobbyNetwork = () => (
+    lobbySocketConnected
+      ? `Realtime connected${lobbyRttMs > 0 ? ` (${Math.round(lobbyRttMs)}ms)` : ""}`
+      : (multiplayerPollInFlight ? "Refreshing via API" : "Realtime reconnecting")
+  );
+
+  const describeLobbyWorld = (lobby) => {
+    if (!lobby) return "Waiting for lobby spec";
+    const spec = buildMultiplayerWorldSpecWire(lobby?.matchConfig, lobby?.start?.worldSpec);
+    if (!spec) return "Waiting for lobby spec";
+    const mode = String(spec.mapMode || "").toLowerCase() === String(MAP_MODE.WORLD_MAP || "").toLowerCase()
+      ? "Earth"
+      : "Generated";
+    const width = Math.max(0, Number(spec.width) | 0);
+    const height = Math.max(0, Number(spec.height) | 0);
+    const aiCount = Math.max(0, Number(spec.aiCount) | 0);
+    return `${mode} | ${width}x${height} | ${aiCount} AI`;
+  };
+
+  const syncLobbyMeta = (lobby, refs = null, roleFallback = "Guest") => {
+    const out = (refs && typeof refs === "object") ? refs : {};
+    const playerCount = Array.isArray(lobby?.players) ? lobby.players.length : 0;
+    const isHost = !!lobby?.host || String(roleFallback || "").trim().toLowerCase() === "host";
+    if (out.role) out.role.textContent = isHost ? "Host" : "Guest";
+    if (out.network) out.network.textContent = describeLobbyNetwork();
+    if (out.world) out.world.textContent = describeLobbyWorld(lobby);
+    if (out.count) out.count.textContent = `${playerCount} joined`;
   };
 
   const stopLobbyPolling = () => {
@@ -6492,11 +7574,19 @@ function createMainMenuController(options = null) {
   };
 
   const ensureMultiplayerReady = async () => {
-    if (!hasMultiplayerApi()) return { ok: false, reason: "Set VITE_MULTIPLAYER_API_URL to enable Create/Join." };
+    if (!hasMultiplayerApi()) {
+      multiplayerHealthBuild = "";
+      multiplayerHealthRuntimeSrc = "";
+      multiplayerHealthReason = "Set VITE_MULTIPLAYER_API_URL to enable Create/Join.";
+      refreshMultiplayerUI();
+      return { ok: false, reason: multiplayerHealthReason };
+    }
     const now = Date.now();
     if (multiplayerHealthOk && (now - multiplayerHealthCheckedAtMs) < MULTIPLAYER_HEALTH_CACHE_MS) return { ok: true };
     if (multiplayerHealthCheckInFlight) return { ok: true };
     multiplayerHealthCheckInFlight = true;
+    multiplayerHealthReason = "";
+    refreshMultiplayerUI();
     try {
       const health = await multiplayerFetch("/health", { method: "GET", timeoutMs: 10000, retries: 2 });
       const apiBase = String(MULTIPLAYER_API_BASE || "").trim();
@@ -6506,9 +7596,13 @@ function createMainMenuController(options = null) {
         console.warn(`[Multiplayer] backend missing build metadata at ${apiBase || "(unknown URL)"}; deploy is stale.`);
         multiplayerHealthOk = false;
         multiplayerHealthCheckedAtMs = Date.now();
+        multiplayerHealthBuild = build;
+        multiplayerHealthRuntimeSrc = runtimeSrc;
+        multiplayerHealthReason = `Multiplayer backend is outdated at ${apiBase || "(unknown URL)"}. Redeploy Railway from latest server code.`;
+        refreshMultiplayerUI();
         return {
           ok: false,
-          reason: `Multiplayer backend is outdated at ${apiBase || "(unknown URL)"}. Redeploy Railway from latest server code.`
+          reason: multiplayerHealthReason
         };
       }
       console.log(
@@ -6516,13 +7610,22 @@ function createMainMenuController(options = null) {
       );
       multiplayerHealthOk = true;
       multiplayerHealthCheckedAtMs = Date.now();
+      multiplayerHealthBuild = build;
+      multiplayerHealthRuntimeSrc = runtimeSrc;
+      multiplayerHealthReason = "";
+      refreshMultiplayerUI();
       return { ok: true };
     } catch (err) {
       multiplayerHealthOk = false;
       multiplayerHealthCheckedAtMs = Date.now();
-      return { ok: false, reason: err?.message || "Failed to reach multiplayer server." };
+      multiplayerHealthBuild = "";
+      multiplayerHealthRuntimeSrc = "";
+      multiplayerHealthReason = err?.message || "Failed to reach multiplayer server.";
+      refreshMultiplayerUI();
+      return { ok: false, reason: multiplayerHealthReason };
     } finally {
       multiplayerHealthCheckInFlight = false;
+      refreshMultiplayerUI();
     }
   };
 
@@ -6569,6 +7672,7 @@ function createMainMenuController(options = null) {
         }
       }, 3500);
       setStatus("Realtime lobby connected.");
+      refreshMultiplayerUI();
     };
 
     ws.onmessage = (ev) => {
@@ -6582,6 +7686,7 @@ function createMainMenuController(options = null) {
       if (type === "pong") {
         const ct = Number(msg?.clientTime) || 0;
         if (ct > 0) lobbyRttMs = Math.max(0, Date.now() - ct);
+        refreshMultiplayerUI();
         return;
       }
       if (type !== "hello" && type !== "lobby_update" && type !== "started") return;
@@ -6604,6 +7709,7 @@ function createMainMenuController(options = null) {
         clearInterval(lobbyPingTimer);
         lobbyPingTimer = 0;
       }
+      refreshMultiplayerUI();
     };
 
     ws.onerror = () => {
@@ -6740,13 +7846,44 @@ function createMainMenuController(options = null) {
   const refreshMultiplayerUI = () => {
     const lobby = activeMultiplayerLobby;
     const inHostMode = playMenuMode === "multiplayer_host";
+    const apiConfigured = hasMultiplayerApi();
+
+    if (!apiConfigured) {
+      setMultiplayerBadge(multiplayerHealthBadge, "API URL Missing", "error");
+    } else if (multiplayerHealthCheckInFlight) {
+      setMultiplayerBadge(multiplayerHealthBadge, "Checking Service", "warn");
+    } else if (multiplayerHealthOk) {
+      setMultiplayerBadge(multiplayerHealthBadge, "Service Online", "ok");
+    } else if (multiplayerHealthReason) {
+      setMultiplayerBadge(multiplayerHealthBadge, "Service Offline", "error", multiplayerHealthReason);
+    } else {
+      setMultiplayerBadge(multiplayerHealthBadge, "Service Unchecked", "idle");
+    }
+    setMultiplayerBadge(
+      multiplayerRuntimeBadge,
+      runtimeBadgeLabel(),
+      multiplayerHealthOk ? "ok" : "idle",
+      [multiplayerHealthBuild, multiplayerHealthRuntimeSrc].filter(Boolean).join(" | ")
+    );
 
     if (playLobbyCard) playLobbyCard.hidden = !inHostMode || !lobby;
     if (playLobbyCode) playLobbyCode.textContent = lobby?.code || "------";
     renderLobbyPlayers(playLobbyPlayers, lobby?.players || []);
+    syncLobbyMeta(lobby, {
+      role: playLobbyRole,
+      network: playLobbyNetwork,
+      world: playLobbyWorld,
+      count: playLobbyCount
+    }, "Host");
 
     if (mpLobbyCode) mpLobbyCode.textContent = lobby?.code || "------";
     renderLobbyPlayers(mpLobbyPlayers, lobby?.players || []);
+    syncLobbyMeta(lobby, {
+      role: mpLobbyRole,
+      network: mpLobbyNetwork,
+      world: mpLobbyWorld,
+      count: mpLobbyCount
+    }, lobby?.host ? "Host" : "Guest");
     if (mpLobbyTitle) {
       mpLobbyTitle.textContent = lobby?.host ? "Lobby (Host)" : "Lobby";
     }
@@ -6754,9 +7891,7 @@ function createMainMenuController(options = null) {
       if (lobby?.started) {
         mpLobbyStatus.textContent = "Lobby started. Launching match...";
       } else {
-        const net = lobbySocketConnected
-          ? `Realtime connected${lobbyRttMs > 0 ? ` (${Math.round(lobbyRttMs)}ms)` : ""}`
-          : "Realtime reconnecting...";
+        const net = describeLobbyNetwork();
         const flow = lobby?.host
           ? "Host controls are in Create mode."
           : "Waiting for host to start.";
@@ -6798,13 +7933,32 @@ function createMainMenuController(options = null) {
   const commitNameInput = () => {
     if (!nameInput) return;
     const raw = String(nameInput.value || "").trim();
+    const authLoggedIn = !!(authController?.enabled && authController.isAuthenticated());
+
     if (!raw || raw.toLowerCase() === "name") {
+      if (authLoggedIn) {
+        const fallback = resolvePlayerDisplayName(authController.getDisplayName() || raw);
+        safeStorageWrite(MAIN_MENU_NAME_STORAGE_KEY, fallback === "Player" ? "" : fallback);
+        nameInput.value = fallback;
+        if (world) applyPlayerNameToWorld(world, fallback);
+        void authController.commitDisplayName(fallback).catch((err) => {
+          setStatus(err?.message || "Failed to sync profile name.");
+        });
+        return;
+      }
       safeStorageWrite(MAIN_MENU_NAME_STORAGE_KEY, "");
       nameInput.value = "Name";
+      if (world) applyPlayerNameToWorld(world, "Player");
       return;
     }
-    safeStorageWrite(MAIN_MENU_NAME_STORAGE_KEY, raw);
-    nameInput.value = raw;
+    const resolved = resolvePlayerDisplayName(raw);
+    safeStorageWrite(MAIN_MENU_NAME_STORAGE_KEY, resolved === "Player" ? "" : resolved);
+    nameInput.value = resolved;
+    if (world) applyPlayerNameToWorld(world, resolved);
+    if (!authLoggedIn) return;
+    void authController.commitDisplayName(resolved).catch((err) => {
+      setStatus(err?.message || "Failed to sync profile name.");
+    });
   };
 
   const formatFlagLabel = (raw) => {
@@ -6819,12 +7973,31 @@ function createMainMenuController(options = null) {
 
   const cloneFlag = (flag) => sanitizeFlag(JSON.parse(JSON.stringify(sanitizeFlag(flag))));
 
+  const renderCountryColorPreview = () => {
+    if (!flagPreview || typeof flagPreview.getContext !== "function") return;
+    const ctx2d = flagPreview.getContext("2d", { alpha: true });
+    if (!ctx2d) return;
+    const w = Math.max(1, flagPreview.width | 0);
+    const h = Math.max(1, flagPreview.height | 0);
+    const centerX = w * 0.5;
+    const centerY = h * 0.5;
+    const radius = Math.max(2, Math.min(w, h) * 0.45);
+    const rgb = countryColorHexToRgb(activePlayerCountryColorHex);
+
+    ctx2d.clearRect(0, 0, w, h);
+    ctx2d.beginPath();
+    ctx2d.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    ctx2d.fillStyle = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+    ctx2d.fill();
+    ctx2d.lineWidth = Math.max(2, Math.round(Math.min(w, h) * 0.07));
+    ctx2d.strokeStyle = "rgba(255,255,255,0.92)";
+    ctx2d.stroke();
+  };
+
   const renderFlagTargets = (flag) => {
     const safe = sanitizeFlag(flag);
     activeNationFlagsById[OWNER.PLAYER] = safe;
-    if (flagPreview && typeof flagPreview.getContext === "function") {
-      renderFlagToCanvas(flagPreview, safe, { smoothing: false });
-    }
+    renderCountryColorPreview();
     if (flagEditorPreview && typeof flagEditorPreview.getContext === "function") {
       renderFlagToCanvas(flagEditorPreview, safe, { smoothing: true });
     }
@@ -7917,12 +9090,31 @@ function createMainMenuController(options = null) {
     return sanitizeClientSettings(out);
   };
 
+  const resolveEarthBotCap = () => {
+    const cap = getEarthCountryBotCapFromData(earthData);
+    return cap > 0 ? cap : Math.max(0, earthCountryBotCap | 0);
+  };
+
+  const refreshBotInputLimit = () => {
+    if (!matchInputs.aiCount) return 400;
+    const mapSource = String(matchInputs.mapMode?.value || MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
+    const earthCap = resolveEarthBotCap();
+    const maxBots = (mapSource === MAP_SOURCE.POLITICAL_EARTH && earthCap > 0) ? earthCap : 400;
+    matchInputs.aiCount.min = "1";
+    matchInputs.aiCount.max = String(Math.max(1, maxBots));
+    const cur = Number(matchInputs.aiCount.value);
+    if (Number.isFinite(cur) && cur > maxBots) {
+      matchInputs.aiCount.value = String(Math.max(1, maxBots));
+    }
+    return Math.max(1, maxBots);
+  };
+
   const applyMatchConfigToForm = (next) => {
     const cfg = sanitizeMatchConfig(next);
     if (matchInputs.aiCount) matchInputs.aiCount.value = cfg.aiCount ? String(cfg.aiCount) : "";
     if (matchInputs.sizePreset) matchInputs.sizePreset.value = cfg.sizePreset;
     if (matchInputs.difficulty) matchInputs.difficulty.value = cfg.difficulty;
-    if (matchInputs.mapMode) matchInputs.mapMode.value = String(cfg.mapSource || MAP_SOURCE.EARTH).toLowerCase();
+    if (matchInputs.mapMode) matchInputs.mapMode.value = String(cfg.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
     if (matchInputs.customMapId) matchInputs.customMapId.value = String(cfg.customMapId || "");
     if (matchInputs.infiniteGold) matchInputs.infiniteGold.checked = !!cfg.infiniteGold;
     if (matchInputs.infiniteTroops) matchInputs.infiniteTroops.checked = !!cfg.infiniteTroops;
@@ -7932,12 +9124,23 @@ function createMainMenuController(options = null) {
     if (matchInputs.playerGoldBoost) matchInputs.playerGoldBoost.value = String(cfg.playerGoldBoost);
     if (matchInputs.playerTroopsBoost) matchInputs.playerTroopsBoost.value = String(cfg.playerTroopsBoost);
     refreshMapSourceUi();
+    refreshBotInputLimit();
   };
 
   const readMatchConfigFromForm = () => {
+    const maxBots = refreshBotInputLimit();
     const rawAi = matchInputs.aiCount ? String(matchInputs.aiCount.value || "").trim() : "";
-    const aiCount = rawAi ? Number(rawAi) : null;
-    const mapSource = matchInputs.mapMode ? String(matchInputs.mapMode.value || MAP_SOURCE.EARTH).toLowerCase() : MAP_SOURCE.EARTH;
+    let aiCount = null;
+    if (rawAi) {
+      const parsed = Number(rawAi);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        aiCount = Math.max(1, Math.min(maxBots, Math.floor(parsed)));
+      }
+    }
+    if (matchInputs.aiCount && aiCount != null) {
+      matchInputs.aiCount.value = String(aiCount);
+    }
+    const mapSource = matchInputs.mapMode ? String(matchInputs.mapMode.value || MAP_SOURCE.POLITICAL_EARTH).toLowerCase() : MAP_SOURCE.POLITICAL_EARTH;
     const customMapId = (mapSource === MAP_SOURCE.CUSTOM && matchInputs.customMapId)
       ? String(matchInputs.customMapId.value || "").trim()
       : "";
@@ -7961,18 +9164,24 @@ function createMainMenuController(options = null) {
   const refreshConfigSummary = () => {
     if (!configSummary) return;
     const cfg = readMatchConfigFromForm();
+    const earthCap = String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.POLITICAL_EARTH
+      ? resolveEarthBotCap()
+      : 0;
     const botsText = cfg.aiCount ? String(cfg.aiCount) : `Preset (${WORLD_SIZE_PRESETS[cfg.sizePreset]?.aiCount ?? "auto"})`;
+    const botsCapText = earthCap > 0 ? `/${earthCap}` : "";
     const disabled = [];
     if (cfg.disableMissileSilo) disabled.push("Missile Silo");
     if (cfg.disableAbmLauncher) disabled.push("ABM Launcher");
     if (cfg.disableDefencePost) disabled.push("Defence Post");
     const ruleText = disabled.length ? `Disabled: ${disabled.join(", ")}` : "No structure bans";
-    let modeText = "Earth";
-    if (String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.CUSTOM) {
+    let modeText = "Political Earth";
+    if (String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.EARTH) {
+      modeText = "Earth";
+    } else if (String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.CUSTOM) {
       const meta = findCustomMapMetaById(cfg.customMapId);
       modeText = meta ? `Custom (${meta.name})` : "Custom (Select map)";
     }
-    configSummary.textContent = `Mode: ${modeText} | Size: ${cfg.sizePreset} | Bots: ${botsText} | Difficulty: ${cfg.difficulty.toUpperCase()} | ${ruleText}`;
+    configSummary.textContent = `Mode: ${modeText} | Size: ${cfg.sizePreset} | Bots: ${botsText}${botsCapText} | Difficulty: ${cfg.difficulty.toUpperCase()} | ${ruleText}`;
   };
 
   const persistSettingsFromForm = () => {
@@ -7998,6 +9207,38 @@ function createMainMenuController(options = null) {
       mpLobbyStatus.textContent = fallback;
     }
   };
+
+  globalLeaderboardController = createMainMenuLeaderboardController({
+    root,
+    statsService: menuStatsService,
+    setStatus,
+    refreshMs: 60000,
+    limit: 20
+  });
+
+  authController = createMainMenuAuthController({
+    root,
+    nameInput,
+    supabase,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: SUPABASE_ANON_KEY,
+    setStatus,
+    storageWrite: safeStorageWrite,
+    nameStorageKey: MAIN_MENU_NAME_STORAGE_KEY,
+    onNameResolved: (resolvedName) => {
+      if (world) applyPlayerNameToWorld(world, resolvedName);
+      void syncAccountProfileForStats(resolvedName);
+    },
+    onAuthStateChange: (authState) => {
+      const displayName = resolvePlayerDisplayName(authState?.displayName || "");
+      if (authState?.user) {
+        void syncAccountProfileForStats(displayName);
+      }
+      if (globalLeaderboardController && typeof globalLeaderboardController.refreshNow === "function") {
+        void globalLeaderboardController.refreshNow({ silent: true });
+      }
+    }
+  });
 
   const syncInteractiveState = () => {
     if (flagBtn) flagBtn.disabled = false;
@@ -8041,7 +9282,7 @@ function createMainMenuController(options = null) {
   setHint(settingsBtn, "Open client settings.");
   setHint(mapEditorBtn, "Open advanced map editor.");
   setHint(libraryBtn, "Browse and publish community maps.");
-  setHint(flagBtn, "Open flag editor.");
+  setHint(flagBtn, "Set your country color.");
   setHint(bookBtn, "Guide is empty for now.");
 
   if (playBtn) {
@@ -8198,7 +9439,7 @@ function createMainMenuController(options = null) {
         return;
       }
       if (String(activeMatchConfig.customMapId || "") === mapId) {
-        activeMatchConfig = sanitizeMatchConfig({ ...activeMatchConfig, mapSource: MAP_SOURCE.EARTH, customMapId: "" });
+        activeMatchConfig = sanitizeMatchConfig({ ...activeMatchConfig, mapSource: MAP_SOURCE.POLITICAL_EARTH, customMapId: "" });
         saveMatchConfig(activeMatchConfig);
       }
       refreshCustomMapPickers();
@@ -8641,9 +9882,106 @@ function createMainMenuController(options = null) {
       setStatus("Left lobby.");
     });
   }
+  const tryOpenColorPickerInput = (inputEl, safeHex, anchorEl = null) => {
+    if (!inputEl) return false;
+    if (inputEl.value !== safeHex) inputEl.value = safeHex;
+    inputEl.disabled = false;
+    inputEl.removeAttribute("disabled");
+    inputEl.style.position = "fixed";
+    inputEl.style.pointerEvents = "auto";
+    inputEl.style.opacity = "0.01";
+    inputEl.style.visibility = "visible";
+    inputEl.style.zIndex = "2147483647";
+    inputEl.style.width = "36px";
+    inputEl.style.height = "36px";
+    const rect = anchorEl && typeof anchorEl.getBoundingClientRect === "function"
+      ? anchorEl.getBoundingClientRect()
+      : null;
+    if (rect && Number.isFinite(rect.left) && Number.isFinite(rect.top)) {
+      const left = Math.max(4, Math.round(rect.left + (rect.width * 0.5) - 18));
+      const top = Math.max(4, Math.round(rect.top + (rect.height * 0.5) - 18));
+      inputEl.style.left = `${left}px`;
+      inputEl.style.top = `${top}px`;
+      inputEl.style.bottom = "auto";
+    }
+    let opened = false;
+    if (typeof inputEl.showPicker === "function") {
+      try {
+        inputEl.showPicker();
+        opened = true;
+      } catch {
+        opened = false;
+      }
+    }
+    if (!opened) {
+      try { inputEl.focus({ preventScroll: true }); } catch {}
+      try { inputEl.click(); opened = true; } catch {}
+    }
+    return opened;
+  };
+
+  const openFallbackCountryColorPicker = (safeHex) => {
+    if (typeof document === "undefined" || !document.body) return false;
+    const fallback = document.createElement("input");
+    fallback.type = "color";
+    fallback.value = safeHex;
+    fallback.setAttribute("aria-label", "Country color picker");
+    const cleanup = () => {
+      if (fallback.parentNode) fallback.parentNode.removeChild(fallback);
+    };
+    const applyFallbackValue = () => {
+      const next = normalizeCountryColorHex(fallback.value, activePlayerCountryColorHex);
+      if (countryColorInput) {
+        countryColorInput.value = next;
+        countryColorInput.dispatchEvent(new Event("input", { bubbles: true }));
+        countryColorInput.dispatchEvent(new Event("change", { bubbles: true }));
+      } else {
+        activePlayerCountryColorHex = next;
+        savePlayerCountryColor(activePlayerCountryColorHex);
+        renderFlagTargets(activePlayerFlag);
+        if (world) applyPlayerCountryColorToWorld(world, { rebuild: true });
+      }
+    };
+    fallback.addEventListener("input", applyFallbackValue);
+    fallback.addEventListener("change", () => {
+      applyFallbackValue();
+      cleanup();
+    }, { once: true });
+    fallback.addEventListener("blur", () => {
+      setTimeout(cleanup, 0);
+    }, { once: true });
+    document.body.appendChild(fallback);
+    const opened = tryOpenColorPickerInput(fallback, safeHex, flagBtn);
+    if (!opened) cleanup();
+    return opened;
+  };
+
   if (flagBtn) {
     flagBtn.addEventListener("click", () => {
-      openFlagEditor();
+      const safeHex = normalizeCountryColorHex(activePlayerCountryColorHex);
+      let opened = tryOpenColorPickerInput(countryColorInput, safeHex, flagBtn);
+      if (!opened) opened = openFallbackCountryColorPicker(safeHex);
+      setStatus(opened ? "Pick your country color." : "Color picker blocked by browser. Try clicking the color button again.");
+    });
+  }
+  if (countryColorInput) {
+    const syncColorInputValue = () => {
+      const safeHex = normalizeCountryColorHex(activePlayerCountryColorHex);
+      if (countryColorInput.value !== safeHex) countryColorInput.value = safeHex;
+    };
+    syncColorInputValue();
+    countryColorInput.addEventListener("input", () => {
+      activePlayerCountryColorHex = normalizeCountryColorHex(countryColorInput.value, activePlayerCountryColorHex);
+      savePlayerCountryColor(activePlayerCountryColorHex);
+      renderFlagTargets(activePlayerFlag);
+      if (world) applyPlayerCountryColorToWorld(world, { rebuild: true });
+    });
+    countryColorInput.addEventListener("change", () => {
+      activePlayerCountryColorHex = normalizeCountryColorHex(countryColorInput.value, activePlayerCountryColorHex);
+      savePlayerCountryColor(activePlayerCountryColorHex);
+      renderFlagTargets(activePlayerFlag);
+      if (world) applyPlayerCountryColorToWorld(world, { rebuild: true });
+      setStatus("Country color updated.");
     });
   }
   if (bookBtn) {
@@ -8725,6 +10063,7 @@ function createMainMenuController(options = null) {
   if (matchInputs.mapMode) {
     matchInputs.mapMode.addEventListener("change", () => {
       refreshMapSourceUi();
+      refreshBotInputLimit();
       refreshConfigSummary();
     });
   }
@@ -8984,6 +10323,19 @@ function createMainMenuController(options = null) {
   syncInteractiveState();
   setView("home");
 
+  void loadEarthCountryBotCap()
+    .then((cap) => {
+      if (!(cap > 0)) return;
+      refreshBotInputLimit();
+      activeMatchConfig = sanitizeMatchConfig(activeMatchConfig);
+      applyMatchConfigToForm(activeMatchConfig);
+      refreshConfigSummary();
+      saveMatchConfig(activeMatchConfig);
+    })
+    .catch(() => {
+      // Keep menu responsive when country metadata is unavailable.
+    });
+
   return {
     hide: () => {
       stopLobbyPolling();
@@ -9007,7 +10359,8 @@ mainMenuLoadingController = createMainMenuLoadingController();
 mainMenuController = createMainMenuController({
   onStartRequested: (cfg) => {
     void startGameFromMainMenu(cfg);
-  }
+  },
+  playerStatsService
 });
 
 if (!mainMenuController) {
@@ -9033,7 +10386,7 @@ function boot() {
   syncPauseAvailability();
   wasSpawnPhaseActive = isSpawnPhaseActiveNow();
   if (isSpawnPhaseActiveNow()) {
-    hud.setOpMessage("Pick your spawn location. The match starts when the top bar fills.");
+    hud.setOpMessage(spawnPhasePromptText());
   }
   if (isMultiplayerMatchEnabled()) {
     installMultiplayerWorldSync(world);
@@ -9098,7 +10451,12 @@ function boot() {
     clearAirborneLaunchMode();
     clearNavalTransportLaunchMode();
     clearSelection();
-    hud.setOpMessage("Build mode: click inside your territory to place. Esc cancels.");
+    const buildType = typeof hud.getBuildMode === "function" ? hud.getBuildMode() : null;
+    hud.setOpMessage(
+      buildType === "coastal_rig"
+        ? "Build mode: click any clear ocean area to place a Coastal Rig. Esc cancels."
+        : "Build mode: click inside your territory to place. Esc cancels."
+    );
     refreshAllUI();
   });
 
@@ -9199,6 +10557,16 @@ function boot() {
     refreshAllUI();
   });
 
+  if (hud.onTrade) {
+    hud.onTrade((targetId) => {
+      if ((targetId | 0) > OWNER.PLAYER && !isTradeNationEligible(targetId)) {
+        hud.setOpMessage("You can only trade with allied nations outside active war.");
+        return;
+      }
+      setTradeOpen(true, targetId);
+    });
+  }
+
   hud.onAllySelect((id) => {
     activeAllyId = id | 0;
     refreshDiplomacyUI();
@@ -9218,6 +10586,8 @@ function boot() {
       res = world.respondCeasefireRequest(ev.from, ev.to, accept);
     } else if (ev.kind === "ally_request") {
       res = world.respondAllianceRequest(ev.from, ev.to, accept);
+    } else if (ev.kind === "trade_request") {
+      res = world.respondTradeRequest(ev.requestId, OWNER.PLAYER, accept);
     }
 
     if (res && typeof res === "object") {
@@ -9237,6 +10607,9 @@ function boot() {
         } else if (ev.kind === "ceasefire_request") {
           const name = world.nation[ev.from]?.name || `AI ${ev.from - 1}`;
           hud.setOpMessage(accept ? `Ceasefire accepted with ${name}.` : `Ceasefire rejected with ${name}.`);
+        } else if (ev.kind === "trade_request") {
+          const name = world.nation[ev.from]?.name || `AI ${ev.from - 1}`;
+          hud.setOpMessage(accept ? `Trade offer accepted from ${name}.` : `Trade offer rejected from ${name}.`);
         } else {
           hud.setOpMessage("Decision sent.");
         }
@@ -9352,6 +10725,7 @@ function boot() {
   if (btnQuickTransportBoat) btnQuickTransportBoat.addEventListener("click", () => tryQuickLaunchTransportBoat());
   const btnQuickPlane = document.getElementById("btnQuickPlane");
   if (btnQuickPlane) btnQuickPlane.addEventListener("click", () => tryQuickLaunchTransportPlane());
+  const btnTradesPanel = document.getElementById("btnTradesPanel");
   const researchModal = document.getElementById("researchModal");
   const researchBackdrop = document.getElementById("researchBackdrop");
   const researchClose = document.getElementById("researchClose");
@@ -9368,6 +10742,808 @@ function boot() {
   const researchInfoTime = document.getElementById("researchInfoTime");
   const researchActionBtn = document.getElementById("researchActionBtn");
   const researchTabButtons = Array.from(document.querySelectorAll("[data-research-tab]"));
+  const tradeModal = document.getElementById("tradeModal");
+  const tradeBackdrop = document.getElementById("tradeBackdrop");
+  const tradeClose = document.getElementById("tradeClose");
+  const tradeTargetNation = document.getElementById("tradeTargetNation");
+  const tradeMyResources = document.getElementById("tradeMyResources");
+  const tradeRequestsIncoming = document.getElementById("tradeRequestsIncoming");
+  const tradeRequestsOutgoing = document.getElementById("tradeRequestsOutgoing");
+  const tradeDealsActive = document.getElementById("tradeDealsActive");
+  const tradeCountIncoming = document.getElementById("tradeCountIncoming");
+  const tradeCountOutgoing = document.getElementById("tradeCountOutgoing");
+  const tradeCountActive = document.getElementById("tradeCountActive");
+  const tradeNationSelect = document.getElementById("tradeNationSelect");
+  const tradeOfferGoodsSelect = document.getElementById("tradeOfferGoodsSelect");
+  const tradeOfferRateInput = document.getElementById("tradeOfferRateInput");
+  const tradeRequestGoodsSelect = document.getElementById("tradeRequestGoodsSelect");
+  const tradeRequestRateInput = document.getElementById("tradeRequestRateInput");
+  const tradeDurationInput = document.getElementById("tradeDurationInput");
+  const tradeCreateBtn = document.getElementById("tradeCreateBtn");
+  const tradeStatus = document.getElementById("tradeStatus");
+
+  const TRADE_RESOURCE_META = Object.freeze({
+    food: Object.freeze({ key: "food", label: "Food", icon: "F", iconPath: "/UI_Icons/TradeResources/Food.png", rateKey: "foodPS" }),
+    steel: Object.freeze({ key: "steel", label: "Steel", icon: "S", iconPath: "/UI_Icons/TradeResources/Steel.png", rateKey: "steelPS" }),
+    oil: Object.freeze({ key: "oil", label: "Oil", icon: "O", iconPath: "/UI_Icons/TradeResources/Oil.png", rateKey: "oilPS" })
+  });
+  const TRADE_RESOURCE_KEYS = Object.freeze(["food", "steel", "oil"]);
+
+  let tradeTargetNationId = 0;
+  let tradeStatusExpireAtMs = 0;
+
+  const isTradeOpen = () => !!(tradeModal && !tradeModal.hidden);
+
+  const getNationName = (nationIdRaw) => {
+    const nationId = Math.max(0, Number(nationIdRaw) | 0);
+    if (nationId <= 0) return "Unknown Nation";
+    if (nationId === OWNER.PLAYER) return "You";
+    return world?.nation?.[nationId]?.name || `AI ${Math.max(1, nationId) - 1}`;
+  };
+
+  const clampTradeInt = (valueRaw, minRaw, maxRaw, fallbackRaw) => {
+    const min = Math.max(0, Number(minRaw) | 0);
+    const max = Math.max(min, Number(maxRaw) | 0);
+    const fallback = Math.max(min, Math.min(max, Number(fallbackRaw) | 0));
+    const n = Math.floor(Number(valueRaw));
+    if (!Number.isFinite(n)) return fallback;
+    if (n < min) return min;
+    if (n > max) return max;
+    return n;
+  };
+
+  const showTradeStatus = (textRaw, isError = false, durationMs = 2600) => {
+    if (!tradeStatus) return;
+    const text = String(textRaw || "").trim();
+    tradeStatus.textContent = text;
+    tradeStatus.style.color = text
+      ? (isError ? "rgba(255, 142, 142, 0.95)" : "rgba(199, 244, 223, 0.95)")
+      : "";
+    tradeStatusExpireAtMs = text ? (Date.now() + Math.max(800, Number(durationMs) | 0)) : 0;
+  };
+
+  const clearTradeStatusIfExpired = () => {
+    if (!tradeStatus) return;
+    if (!(tradeStatusExpireAtMs > 0)) return;
+    if (Date.now() < tradeStatusExpireAtMs) return;
+    tradeStatusExpireAtMs = 0;
+    tradeStatus.textContent = "";
+    tradeStatus.style.color = "";
+  };
+
+  const updateTradeTargetTitle = () => {
+    if (!tradeTargetNation) return;
+    const targetId = Math.max(0, tradeTargetNationId | 0);
+    if (targetId > 0 && targetId !== OWNER.PLAYER) {
+      tradeTargetNation.textContent = `Trading ally: ${getNationName(targetId)}`;
+    } else if (tradeNationSelect?.disabled) {
+      tradeTargetNation.textContent = "No allied trade partners are currently available.";
+    } else {
+      tradeTargetNation.textContent = "Send barter offers to allied nations outside active war.";
+    }
+  };
+
+  const isTradeNationEligible = (nationIdRaw) => {
+    const nationId = Math.max(0, Number(nationIdRaw) | 0);
+    if (!(nationId > OWNER.PLAYER)) return false;
+    const nation = world?.nation?.[nationId];
+    if (!nation?.alive) return false;
+    const rel = (typeof world?.getRelation === "function")
+      ? world.getRelation(OWNER.PLAYER, nationId)
+      : null;
+    if (rel?.atWar || rel?.warActive) return false;
+    return !!rel?.allied;
+  };
+
+  const populateTradeNationOptions = (preferredTargetRaw = 0) => {
+    if (!tradeNationSelect) return 0;
+    const preferredTarget = Math.max(0, Number(preferredTargetRaw) | 0);
+    const previous = Math.max(0, Number(tradeNationSelect.value) | 0);
+    tradeNationSelect.innerHTML = "";
+
+    let selected = 0;
+    for (let id = 2; id < (world?.nation?.length || 0); id++) {
+      if (!isTradeNationEligible(id)) continue;
+      const n = world.nation[id];
+      const option = document.createElement("option");
+      option.value = String(id);
+      option.textContent = String(n.name || `AI ${id - 1}`);
+      tradeNationSelect.appendChild(option);
+      if (!selected && (id === preferredTarget || id === previous)) selected = id;
+      if (!selected) selected = id;
+    }
+
+    if (selected > 0) {
+      tradeNationSelect.value = String(selected);
+    } else {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No allied trade partners available";
+      tradeNationSelect.appendChild(option);
+      tradeNationSelect.value = "";
+    }
+    tradeTargetNationId = selected | 0;
+    tradeNationSelect.disabled = !(selected > 0);
+    if (tradeCreateBtn) tradeCreateBtn.disabled = !(selected > 0);
+    return selected | 0;
+  };
+
+  const decorateTradeGoodsOptions = (selectEl) => {
+    const select = (selectEl && typeof selectEl === "object") ? selectEl : null;
+    if (!select) return;
+    const options = Array.from(select.options || []);
+    for (let i = 0; i < options.length; i++) {
+      const opt = options[i];
+      if (!opt) continue;
+      const key = String(opt.value || "").toLowerCase();
+      const meta = TRADE_RESOURCE_META[key];
+      if (!meta) continue;
+      opt.textContent = meta.label;
+    }
+  };
+
+  const createTradeResourceIcon = (metaRaw, classNameRaw = "tradeResIcon", altRaw = "") => {
+    const meta = (metaRaw && typeof metaRaw === "object") ? metaRaw : {};
+    const iconWrap = document.createElement("span");
+    iconWrap.className = String(classNameRaw || "tradeResIcon");
+
+    const img = document.createElement("img");
+    img.className = "tradeResIconImg";
+    img.alt = String(altRaw || meta.label || "Resource");
+    img.src = String(meta.iconPath || "");
+    img.loading = "lazy";
+    img.decoding = "async";
+    iconWrap.appendChild(img);
+    return iconWrap;
+  };
+
+  const renderTradeResources = () => {
+    if (!tradeMyResources) return;
+    const stats = (typeof world.getNationResources === "function")
+      ? world.getNationResources(OWNER.PLAYER)
+      : null;
+    tradeMyResources.innerHTML = "";
+    if (!stats || typeof stats !== "object") {
+      const empty = document.createElement("div");
+      empty.className = "tradeDealEmpty";
+      empty.textContent = "Resource data unavailable.";
+      tradeMyResources.appendChild(empty);
+      return;
+    }
+
+    for (let i = 0; i < TRADE_RESOURCE_KEYS.length; i++) {
+      const key = TRADE_RESOURCE_KEYS[i];
+      const meta = TRADE_RESOURCE_META[key];
+      if (!meta) continue;
+      const row = document.createElement("div");
+      row.className = "tradeResourceRow";
+
+      const icon = createTradeResourceIcon(meta, "tradeResIcon", meta.label);
+      row.appendChild(icon);
+
+      const labelWrap = document.createElement("div");
+      const label = document.createElement("div");
+      label.className = "tradeResourceLabel";
+      label.textContent = meta.label;
+      const rate = Math.max(0, Number(stats[meta.rateKey]) || 0);
+      const stock = Math.max(0, Number(stats[key]) || 0);
+      const details = document.createElement("div");
+      details.className = "tradeResourceMeta";
+      if (key === "food") {
+        const demand = Math.max(0, Number(stats.foodDemandPS) || 0);
+        details.textContent = `${fmtCompactLocal(stock)} stored  |  +${rate.toFixed(2)}/s  |  demand ${demand.toFixed(2)}/s`;
+      } else if (key === "oil") {
+        const demand = Math.max(0, Number(stats.oilDemandPS) || 0);
+        details.textContent = `${fmtCompactLocal(stock)} stored  |  +${rate.toFixed(2)}/s  |  demand ${demand.toFixed(2)}/s`;
+      } else {
+        details.textContent = `${fmtCompactLocal(stock)} stored  |  +${rate.toFixed(2)}/s`;
+      }
+      labelWrap.appendChild(label);
+      labelWrap.appendChild(details);
+      row.appendChild(labelWrap);
+      tradeMyResources.appendChild(row);
+    }
+  };
+
+  const markTradeRequestEventHandled = (requestIdRaw) => {
+    const requestId = Math.max(0, Number(requestIdRaw) | 0);
+    if (!(requestId > 0)) return;
+    const buckets = [world?.events, world?.globalEvents];
+    for (let b = 0; b < buckets.length; b++) {
+      const list = buckets[b];
+      if (!Array.isArray(list)) continue;
+      for (let i = 0; i < list.length; i++) {
+        const ev = list[i];
+        if (!ev || ev.kind !== "trade_request") continue;
+        if ((ev.requestId | 0) !== requestId) continue;
+        ev.handled = true;
+        ev.actions = null;
+      }
+    }
+  };
+
+  const cancelTradeRequestFromUi = (requestIdRaw) => {
+    const requestId = Math.max(0, Number(requestIdRaw) | 0);
+    if (!(requestId > 0)) return;
+    if (!canPlayerIssueOrders()) return;
+    const res = (typeof world.cancelTradeRequest === "function")
+      ? world.cancelTradeRequest(requestId, OWNER.PLAYER)
+      : { ok: false, reason: "Trade request cancel API unavailable." };
+    if (isQueuedActionResult(res)) {
+      showTradeStatus("Trade request cancellation queued.");
+      hud.setOpMessage("Trade request cancellation queued.");
+    } else if (res && res.ok) {
+      markTradeRequestEventHandled(requestId);
+      showTradeStatus("Trade offer cancelled.");
+      hud.setOpMessage("Trade offer cancelled.");
+    } else {
+      const reason = String(res?.reason || "Unable to cancel trade offer.");
+      showTradeStatus(reason, true);
+      hud.setOpMessage(reason);
+    }
+    refreshAllUI();
+  };
+
+  const respondTradeRequestFromUi = (requestIdRaw, accept = false) => {
+    const requestId = Math.max(0, Number(requestIdRaw) | 0);
+    if (!(requestId > 0)) return;
+    if (!canPlayerIssueOrders()) return;
+    const res = (typeof world.respondTradeRequest === "function")
+      ? world.respondTradeRequest(requestId, OWNER.PLAYER, !!accept)
+      : { ok: false, reason: "Trade response API unavailable." };
+    if (isQueuedActionResult(res)) {
+      showTradeStatus("Trade decision queued.");
+      hud.setOpMessage("Trade decision queued.");
+    } else if (res && res.ok) {
+      markTradeRequestEventHandled(requestId);
+      const text = accept ? "Trade offer accepted." : "Trade offer rejected.";
+      showTradeStatus(text);
+      hud.setOpMessage(text);
+    } else {
+      const reason = String(res?.reason || "Unable to respond to trade offer.");
+      showTradeStatus(reason, true);
+      hud.setOpMessage(reason);
+    }
+    refreshAllUI();
+  };
+
+  const appendTradeMetric = (host, labelTextRaw, valueTextRaw) => {
+    if (!host) return;
+    const metric = document.createElement("div");
+    metric.className = "tradeDealMetric";
+
+    const metricLabel = document.createElement("span");
+    metricLabel.className = "tradeDealMetricLabel";
+    metricLabel.textContent = String(labelTextRaw || "");
+
+    const metricValue = document.createElement("strong");
+    metricValue.className = "tradeDealMetricValue";
+    metricValue.textContent = String(valueTextRaw || "");
+
+    metric.appendChild(metricLabel);
+    metric.appendChild(metricValue);
+    host.appendChild(metric);
+  };
+
+  const setTradeCountBadge = (host, valueRaw) => {
+    if (!host) return;
+    const value = Math.max(0, Number(valueRaw) | 0);
+    host.textContent = String(value);
+    host.dataset.empty = value > 0 ? "false" : "true";
+  };
+
+  const createTradeFlowLeg = (labelTextRaw, resourceRaw, rateRaw) => {
+    const resourceKey = String(resourceRaw || "").toLowerCase();
+    const meta = TRADE_RESOURCE_META[resourceKey] || { key: resourceKey, label: resourceKey || "Resource", iconPath: "" };
+    const leg = document.createElement("div");
+    leg.className = "tradeFlowLeg";
+    leg.dataset.resource = resourceKey;
+
+    const icon = createTradeResourceIcon(meta, "tradeDealBadgeIcon tradeFlowIcon", `${meta.label} icon`);
+    icon.setAttribute("aria-hidden", "true");
+    icon.querySelector("img")?.setAttribute("alt", "");
+    leg.appendChild(icon);
+
+    const copy = document.createElement("div");
+    copy.className = "tradeFlowCopy";
+
+    const label = document.createElement("div");
+    label.className = "tradeFlowLabel";
+    label.textContent = String(labelTextRaw || "");
+
+    const value = document.createElement("div");
+    value.className = "tradeFlowValue";
+    value.textContent = `${fmtCompactLocal(Math.max(0, Number(rateRaw) || 0))}/min ${meta.label}`;
+
+    copy.appendChild(label);
+    copy.appendChild(value);
+    leg.appendChild(copy);
+    return leg;
+  };
+
+  const createTradeFlowPair = (sendResource, sendRate, receiveResource, receiveRate) => {
+    const pair = document.createElement("div");
+    pair.className = "tradeFlowPair";
+    pair.appendChild(createTradeFlowLeg("You send", sendResource, sendRate));
+
+    const arrow = document.createElement("div");
+    arrow.className = "tradeFlowArrow";
+    arrow.textContent = "for";
+    pair.appendChild(arrow);
+
+    pair.appendChild(createTradeFlowLeg("You receive", receiveResource, receiveRate));
+    return pair;
+  };
+
+  const getPerspectiveTrade = (itemRaw) => {
+    const item = (itemRaw && typeof itemRaw === "object") ? itemRaw : null;
+    if (!item) return null;
+    const playerIsFrom = (item.from | 0) === OWNER.PLAYER;
+    return {
+      youSendResource: playerIsFrom ? item.offerResource : item.requestResource,
+      youSendRatePerMinute: playerIsFrom ? item.offerRatePerMinute : item.requestRatePerMinute,
+      youReceiveResource: playerIsFrom ? item.requestResource : item.offerResource,
+      youReceiveRatePerMinute: playerIsFrom ? item.requestRatePerMinute : item.offerRatePerMinute,
+      sentAmount: playerIsFrom ? item.transferredFrom : item.transferredTo,
+      receivedAmount: playerIsFrom ? item.transferredTo : item.transferredFrom
+    };
+  };
+
+  const cancelTradeDealFromUi = (dealIdRaw) => {
+    const dealId = Math.max(0, Number(dealIdRaw) | 0);
+    if (!(dealId > 0)) return;
+    if (!canPlayerIssueOrders()) return;
+    const res = (typeof world.cancelTradeDeal === "function")
+      ? world.cancelTradeDeal(dealId, OWNER.PLAYER)
+      : { ok: false, reason: "Trade cancel API unavailable." };
+    if (isQueuedActionResult(res)) {
+      showTradeStatus("Trade agreement cancellation queued.");
+      hud.setOpMessage("Trade agreement cancellation queued.");
+    } else if (res && res.ok) {
+      showTradeStatus("Trade agreement cancelled.");
+      hud.setOpMessage("Trade agreement cancelled.");
+    } else {
+      const reason = String(res?.reason || "Unable to cancel trade agreement.");
+      showTradeStatus(reason, true);
+      hud.setOpMessage(reason);
+    }
+    refreshAllUI();
+  };
+
+  const createTradeRequestRow = (requestRaw, directionRaw = "incoming") => {
+    const request = (requestRaw && typeof requestRaw === "object") ? requestRaw : null;
+    if (!request) return null;
+    const direction = String(directionRaw || "incoming");
+    const isIncoming = direction === "incoming";
+    const row = document.createElement("div");
+    row.className = `tradeDealRow tradeRequestRow ${isIncoming ? "isIncoming" : "isOutgoing"}`;
+
+    const fromName = getNationName(request.from);
+    const toName = getNationName(request.to);
+    const remainingS = Math.max(0, Number(request.remainingS) || 0);
+    const durationMin = Math.max(1, Math.round((Math.max(0, Number(request.durationS) || 0)) / 60));
+    const perspective = isIncoming
+      ? {
+          youSendResource: request.requestResource,
+          youSendRatePerMinute: request.requestRatePerMinute,
+          youReceiveResource: request.offerResource,
+          youReceiveRatePerMinute: request.offerRatePerMinute
+        }
+      : {
+          youSendResource: request.offerResource,
+          youSendRatePerMinute: request.offerRatePerMinute,
+          youReceiveResource: request.requestResource,
+          youReceiveRatePerMinute: request.requestRatePerMinute
+        };
+    row.dataset.resource = String(perspective.youReceiveResource || perspective.youSendResource || "").toLowerCase();
+
+    const top = document.createElement("div");
+    top.className = "tradeDealTop";
+
+    const heading = document.createElement("div");
+    heading.className = "tradeDealHeading";
+
+    const route = document.createElement("div");
+    route.className = "tradeDealRoute";
+    route.textContent = `${fromName} -> ${toName}`;
+
+    const title = document.createElement("div");
+    title.className = "tradeDealTitle";
+    title.textContent = isIncoming
+      ? `${fromName} wants this barter agreement.`
+      : `Offer sent to ${toName}.`;
+
+    const meta = document.createElement("div");
+    meta.className = "tradeDealMeta";
+    meta.textContent = isIncoming
+      ? `Respond within ${fmtTime(remainingS)}. Duration ${durationMin} min once accepted.`
+      : `${toName} has ${fmtTime(remainingS)} to respond. Duration ${durationMin} min if accepted.`;
+
+    heading.appendChild(route);
+    heading.appendChild(title);
+    heading.appendChild(meta);
+    top.appendChild(heading);
+
+    const badges = document.createElement("div");
+    badges.className = "tradeDealBadges";
+
+    const statusBadge = document.createElement("span");
+    statusBadge.className = `tradeDealBadge tradeDealDirection ${isIncoming ? "isIncoming" : "isOutgoing"}`;
+    statusBadge.textContent = isIncoming ? "Awaiting You" : "Awaiting Ally";
+    badges.appendChild(statusBadge);
+
+    const pendingBadge = document.createElement("span");
+    pendingBadge.className = "tradeDealBadge tradeDealStateBadge";
+    pendingBadge.textContent = "Pending";
+    badges.appendChild(pendingBadge);
+    top.appendChild(badges);
+
+    const main = document.createElement("div");
+    main.className = "tradeDealMain";
+
+    const content = document.createElement("div");
+    content.className = "tradeDealContent";
+
+    const flow = createTradeFlowPair(
+      perspective.youSendResource,
+      perspective.youSendRatePerMinute,
+      perspective.youReceiveResource,
+      perspective.youReceiveRatePerMinute
+    );
+    content.appendChild(flow);
+
+    const aside = document.createElement("div");
+    aside.className = "tradeDealAside";
+
+    const stats = document.createElement("div");
+    stats.className = "tradeDealStats tradeDealStatsCompact";
+    appendTradeMetric(stats, "Decision", fmtTime(remainingS));
+    appendTradeMetric(stats, "Duration", `${durationMin} min`);
+    aside.appendChild(stats);
+
+    const actions = document.createElement("div");
+    actions.className = "tradeRequestActions";
+    if (isIncoming) {
+      const acceptBtn = document.createElement("button");
+      acceptBtn.type = "button";
+      acceptBtn.className = "btn tradeDealAction";
+      acceptBtn.textContent = "Accept";
+      acceptBtn.disabled = !canPlayerIssueOrders();
+      acceptBtn.addEventListener("click", () => respondTradeRequestFromUi(request.id, true));
+      actions.appendChild(acceptBtn);
+
+      const rejectBtn = document.createElement("button");
+      rejectBtn.type = "button";
+      rejectBtn.className = "btn subtle tradeDealAction";
+      rejectBtn.textContent = "Reject";
+      rejectBtn.disabled = !canPlayerIssueOrders();
+      rejectBtn.addEventListener("click", () => respondTradeRequestFromUi(request.id, false));
+      actions.appendChild(rejectBtn);
+    } else {
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.className = "btn subtle tradeDealAction";
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.disabled = !canPlayerIssueOrders();
+      cancelBtn.addEventListener("click", () => cancelTradeRequestFromUi(request.id));
+      actions.appendChild(cancelBtn);
+    }
+    aside.appendChild(actions);
+
+    main.appendChild(content);
+    main.appendChild(aside);
+
+    row.appendChild(top);
+    row.appendChild(main);
+    return row;
+  };
+
+  const createTradeDealRow = (dealRaw) => {
+    const deal = (dealRaw && typeof dealRaw === "object") ? dealRaw : null;
+    if (!deal) return null;
+    const row = document.createElement("div");
+    row.className = "tradeDealRow tradeAgreementRow isIncoming";
+
+    const fromName = getNationName(deal.from);
+    const toName = getNationName(deal.to);
+    const remainingS = Math.max(0, Number(deal.remainingS) || 0);
+    const durationS = Math.max(0, Number(deal.durationS) || 0);
+    const elapsedS = Math.max(0, durationS - remainingS);
+    const progressPct = durationS > 0 ? Math.max(0, Math.min(100, Math.round((elapsedS / durationS) * 100))) : 0;
+    const durationMin = Math.max(1, Math.round(durationS / 60));
+    const partnerId = (deal.from | 0) === OWNER.PLAYER ? (deal.to | 0) : (deal.from | 0);
+    const perspective = getPerspectiveTrade(deal);
+    if (!perspective) return null;
+    row.dataset.resource = String(perspective.youReceiveResource || perspective.youSendResource || "").toLowerCase();
+
+    const top = document.createElement("div");
+    top.className = "tradeDealTop";
+
+    const heading = document.createElement("div");
+    heading.className = "tradeDealHeading";
+
+    const route = document.createElement("div");
+    route.className = "tradeDealRoute";
+    route.textContent = `${fromName} <-> ${toName}`;
+
+    const title = document.createElement("div");
+    title.className = "tradeDealTitle";
+    title.textContent = `Barter agreement with ${getNationName(partnerId)}.`;
+
+    const meta = document.createElement("div");
+    meta.className = "tradeDealMeta";
+    meta.textContent = `${fmtTime(remainingS)} left. ${durationMin} minute agreement.`;
+
+    heading.appendChild(route);
+    heading.appendChild(title);
+    heading.appendChild(meta);
+    top.appendChild(heading);
+
+    const badges = document.createElement("div");
+    badges.className = "tradeDealBadges";
+
+    const activeBadge = document.createElement("span");
+    activeBadge.className = "tradeDealBadge tradeDealDirection isIncoming";
+    activeBadge.textContent = "Active";
+    badges.appendChild(activeBadge);
+
+    const sourceBadge = document.createElement("span");
+    sourceBadge.className = "tradeDealBadge tradeDealStateBadge";
+    sourceBadge.textContent = (deal.from | 0) === OWNER.PLAYER ? "You Proposed" : `${fromName} Proposed`;
+    badges.appendChild(sourceBadge);
+    top.appendChild(badges);
+
+    const main = document.createElement("div");
+    main.className = "tradeDealMain";
+
+    const content = document.createElement("div");
+    content.className = "tradeDealContent";
+
+    const flow = createTradeFlowPair(
+      perspective.youSendResource,
+      perspective.youSendRatePerMinute,
+      perspective.youReceiveResource,
+      perspective.youReceiveRatePerMinute
+    );
+    content.appendChild(flow);
+
+    const aside = document.createElement("div");
+    aside.className = "tradeDealAside";
+
+    const stats = document.createElement("div");
+    stats.className = "tradeDealStats";
+    appendTradeMetric(stats, "Sent", fmtCompactLocal(Math.max(0, Number(perspective.sentAmount) || 0)));
+    appendTradeMetric(stats, "Received", fmtCompactLocal(Math.max(0, Number(perspective.receivedAmount) || 0)));
+    appendTradeMetric(stats, "Remaining", fmtTime(remainingS));
+    appendTradeMetric(stats, "Duration", `${durationMin} min`);
+    aside.appendChild(stats);
+
+    const progressWrap = document.createElement("div");
+    progressWrap.className = "tradeDealTimeline";
+    const progressLabel = document.createElement("div");
+    progressLabel.className = "tradeDealProgressMeta";
+    progressLabel.textContent = `Cycle progress ${progressPct}%`;
+    progressWrap.appendChild(progressLabel);
+
+    const progress = document.createElement("div");
+    progress.className = "tradeDealProgress";
+    const progressFill = document.createElement("div");
+    progressFill.className = "tradeDealProgressFill";
+    progressFill.style.width = `${progressPct}%`;
+    progress.appendChild(progressFill);
+    progressWrap.appendChild(progress);
+    aside.appendChild(progressWrap);
+
+    const actions = document.createElement("div");
+    actions.className = "tradeRequestActions";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "btn subtle tradeDealAction";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.disabled = !canPlayerIssueOrders();
+    cancelBtn.addEventListener("click", () => cancelTradeDealFromUi(deal.id));
+    actions.appendChild(cancelBtn);
+    aside.appendChild(actions);
+
+    main.appendChild(content);
+    main.appendChild(aside);
+
+    row.appendChild(top);
+    row.appendChild(main);
+    return row;
+  };
+
+  const renderTradeDealLists = () => {
+    if (!tradeRequestsIncoming || !tradeRequestsOutgoing || !tradeDealsActive) return;
+    const deals = (typeof world.getTradeDeals === "function")
+      ? world.getTradeDeals(OWNER.PLAYER)
+      : null;
+    const incomingRequests = Array.isArray(deals?.incomingRequests) ? deals.incomingRequests.slice() : [];
+    const outgoingRequests = Array.isArray(deals?.outgoingRequests) ? deals.outgoingRequests.slice() : [];
+    const activeDeals = Array.isArray(deals?.active) ? deals.active.slice() : [];
+
+    const sortByRemaining = (a, b) => {
+      const remainingDelta = (Number(a?.remainingS) || 0) - (Number(b?.remainingS) || 0);
+      if (Math.abs(remainingDelta) > 0.00001) return remainingDelta;
+      return (Number(a?.id) | 0) - (Number(b?.id) | 0);
+    };
+    incomingRequests.sort(sortByRemaining);
+    outgoingRequests.sort(sortByRemaining);
+    activeDeals.sort(sortByRemaining);
+    setTradeCountBadge(tradeCountIncoming, incomingRequests.length);
+    setTradeCountBadge(tradeCountOutgoing, outgoingRequests.length);
+    setTradeCountBadge(tradeCountActive, activeDeals.length);
+
+    const renderList = (host, rows, emptyText, rowFactory) => {
+      host.innerHTML = "";
+      if (!rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "tradeDealEmpty";
+        empty.textContent = emptyText;
+        host.appendChild(empty);
+        return;
+      }
+      for (let i = 0; i < rows.length; i++) {
+        const row = rowFactory(rows[i]);
+        if (row) host.appendChild(row);
+      }
+    };
+
+    renderList(tradeRequestsIncoming, incomingRequests, "No incoming trade offers from allies.", (row) => createTradeRequestRow(row, "incoming"));
+    renderList(tradeRequestsOutgoing, outgoingRequests, "No outgoing trade offers pending.", (row) => createTradeRequestRow(row, "outgoing"));
+    renderList(tradeDealsActive, activeDeals, "No active barter agreements.", (row) => createTradeDealRow(row));
+  };
+
+  function refreshTradePanel(forceRebuildNations = false) {
+    if (!isTradeOpen()) return;
+    if (forceRebuildNations || !isTradeNationEligible(tradeTargetNationId) || !(tradeNationSelect?.options?.length > 0)) {
+      populateTradeNationOptions(tradeTargetNationId);
+    } else if (tradeNationSelect) {
+      tradeTargetNationId = Math.max(0, Number(tradeNationSelect.value) | 0);
+    }
+    clearTradeStatusIfExpired();
+    updateTradeTargetTitle();
+    renderTradeResources();
+    renderTradeDealLists();
+  }
+
+  function setTradeOpen(open, targetNationIdRaw = 0) {
+    if (!tradeModal) return;
+    const shouldOpen = !!open;
+    if (!shouldOpen) {
+      tradeModal.hidden = true;
+      btnTradesPanel?.classList.remove("isOpen");
+      showTradeStatus("", false, 0);
+      return;
+    }
+
+    if (typeof isResearchOpen === "function" && typeof setResearchOpen === "function" && isResearchOpen()) {
+      setResearchOpen(false);
+    }
+    hud.hideContextMenu();
+    tradeModal.hidden = false;
+    btnTradesPanel?.classList.add("isOpen");
+    const targetNationId = Math.max(0, Number(targetNationIdRaw) | 0);
+    tradeTargetNationId = targetNationId;
+    populateTradeNationOptions(targetNationId);
+    decorateTradeGoodsOptions(tradeOfferGoodsSelect);
+    decorateTradeGoodsOptions(tradeRequestGoodsSelect);
+
+    if (tradeOfferRateInput) {
+      tradeOfferRateInput.value = String(clampTradeInt(
+        tradeOfferRateInput.value,
+        TRADE_DEAL_MIN_RATE_PER_MIN,
+        TRADE_DEAL_MAX_RATE_PER_MIN,
+        30
+      ));
+    }
+    if (tradeRequestRateInput) {
+      tradeRequestRateInput.value = String(clampTradeInt(
+        tradeRequestRateInput.value,
+        TRADE_DEAL_MIN_RATE_PER_MIN,
+        TRADE_DEAL_MAX_RATE_PER_MIN,
+        30
+      ));
+    }
+    if (tradeDurationInput) {
+      tradeDurationInput.value = String(clampTradeInt(
+        tradeDurationInput.value,
+        TRADE_DEAL_MIN_DURATION_MIN,
+        TRADE_DEAL_MAX_DURATION_MIN,
+        5
+      ));
+    }
+    refreshTradePanel(true);
+  }
+
+  refreshTradePanelView = () => refreshTradePanel(false);
+
+  if (tradeNationSelect) {
+    tradeNationSelect.addEventListener("change", () => {
+      tradeTargetNationId = Math.max(0, Number(tradeNationSelect.value) | 0);
+      refreshTradePanel(false);
+    });
+  }
+  if (tradeOfferRateInput) {
+    tradeOfferRateInput.min = String(TRADE_DEAL_MIN_RATE_PER_MIN);
+    tradeOfferRateInput.max = String(TRADE_DEAL_MAX_RATE_PER_MIN);
+  }
+  if (tradeRequestRateInput) {
+    tradeRequestRateInput.min = String(TRADE_DEAL_MIN_RATE_PER_MIN);
+    tradeRequestRateInput.max = String(TRADE_DEAL_MAX_RATE_PER_MIN);
+  }
+  if (tradeDurationInput) {
+    tradeDurationInput.min = String(TRADE_DEAL_MIN_DURATION_MIN);
+    tradeDurationInput.max = String(TRADE_DEAL_MAX_DURATION_MIN);
+  }
+  if (tradeCreateBtn) {
+    tradeCreateBtn.addEventListener("click", () => {
+      if (!canPlayerIssueOrders()) return;
+      const targetId = Math.max(0, Number(tradeNationSelect?.value) | 0);
+      if (!(targetId > OWNER.PLAYER)) {
+        showTradeStatus("Select an allied trade nation.", true);
+        return;
+      }
+      const offerResource = String(tradeOfferGoodsSelect?.value || "food").toLowerCase();
+      const requestResource = String(tradeRequestGoodsSelect?.value || "steel").toLowerCase();
+      const offerRate = clampTradeInt(
+        tradeOfferRateInput?.value,
+        TRADE_DEAL_MIN_RATE_PER_MIN,
+        TRADE_DEAL_MAX_RATE_PER_MIN,
+        TRADE_DEAL_MIN_RATE_PER_MIN
+      );
+      const requestRate = clampTradeInt(
+        tradeRequestRateInput?.value,
+        TRADE_DEAL_MIN_RATE_PER_MIN,
+        TRADE_DEAL_MAX_RATE_PER_MIN,
+        TRADE_DEAL_MIN_RATE_PER_MIN
+      );
+      const duration = clampTradeInt(
+        tradeDurationInput?.value,
+        TRADE_DEAL_MIN_DURATION_MIN,
+        TRADE_DEAL_MAX_DURATION_MIN,
+        TRADE_DEAL_MIN_DURATION_MIN
+      );
+      if (offerResource === requestResource) {
+        showTradeStatus("Choose different resources to barter.", true);
+        return;
+      }
+      if (tradeOfferRateInput) tradeOfferRateInput.value = String(offerRate);
+      if (tradeRequestRateInput) tradeRequestRateInput.value = String(requestRate);
+      if (tradeDurationInput) tradeDurationInput.value = String(duration);
+      const res = (typeof world.requestTradeDeal === "function")
+        ? world.requestTradeDeal(
+          OWNER.PLAYER,
+          targetId,
+          offerResource,
+          offerRate,
+          requestResource,
+          requestRate,
+          duration
+        )
+        : { ok: false, reason: "Trade API unavailable." };
+      if (isQueuedActionResult(res)) {
+        showTradeStatus("Trade offer queued.");
+        hud.setOpMessage("Trade offer queued.");
+      } else if (res && res.ok) {
+        showTradeStatus("Trade offer sent.");
+        hud.setOpMessage("Trade offer sent.");
+      } else {
+        const reason = String(res?.reason || "Unable to send trade offer.");
+        showTradeStatus(reason, true);
+        hud.setOpMessage(reason);
+      }
+      refreshAllUI();
+    });
+  }
+
+  if (btnTradesPanel) {
+    btnTradesPanel.addEventListener("click", () => {
+      setTradeOpen(true, tradeTargetNationId);
+    });
+  }
+  if (tradeClose) tradeClose.addEventListener("click", () => setTradeOpen(false));
+  if (tradeBackdrop) tradeBackdrop.addEventListener("click", () => setTradeOpen(false));
 
   const normalizeResearchTab = (tabRaw) => {
     const t = String(tabRaw || "").toLowerCase();
@@ -9799,6 +11975,7 @@ function boot() {
     const shown = !!open;
     researchModal.hidden = !shown;
     if (shown) {
+      setTradeOpen(false);
       hud.hideContextMenu();
       btnResearchPanel?.classList.add("isOpen");
       setResearchTab("military");
@@ -9873,6 +12050,7 @@ function boot() {
   }
   window.addEventListener("resize", () => {
     if (isResearchOpen()) requestAnimationFrame(() => renderResearchTree(researchState.tab, true));
+    if (isTradeOpen()) requestAnimationFrame(() => refreshTradePanel(true));
   });
   for (const btn of researchTabButtons) {
     if (!btn) continue;
@@ -9962,7 +12140,8 @@ function boot() {
 
   hud.onRegenerate(() => {
     seed = (seed + 1337) >>> 0;
-    world.regenerate(seed, { mapMode: activeMapMode, earthData });
+    const politicalEarthMode = String(activeMatchConfig?.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase() === MAP_SOURCE.POLITICAL_EARTH;
+    world.regenerate(seed, { mapMode: activeMapMode, earthData, countryClaimEnabled: politicalEarthMode });
     applyMatchStartModifiers(world, activeMatchConfig, loadMainMenuPlayerName());
     resetPlayerAlertState();
     resetDebugAbmSpawner();
@@ -9973,12 +12152,13 @@ function boot() {
     selectedShipId = null;
     clearNukeLaunchMode();
     clearAirborneLaunchMode();
+    setTradeOpen(false);
     clearSelection();
     input.clear();
     hud.hideContextMenu();
 
     hud.setOpMessage(isSpawnPhaseActiveNow()
-      ? "Map regenerated. Pick your spawn location."
+      ? (isCountrySpawnPhaseNow() ? "Map regenerated. Pick your country." : "Map regenerated. Pick your spawn location.")
       : "Map regenerated.");
     syncSpawnProgressUI();
     refreshAllUI();
@@ -10020,7 +12200,8 @@ function boot() {
 
     const settingsOpen = !!(hud.isSettingsOpen && hud.isSettingsOpen());
     const researchOpen = isResearchOpen();
-    if (!isTextInput && !settingsOpen && !researchOpen && !e.repeat && !e.altKey && !e.ctrlKey && !e.metaKey) {
+    const tradeOpenNow = isTradeOpen();
+    if (!isTextInput && !settingsOpen && !researchOpen && !tradeOpenNow && !e.repeat && !e.altKey && !e.ctrlKey && !e.metaKey) {
       const quickLaunchBtnId = QUICK_LAUNCH_HOTKEY_BUTTON_IDS[String(e.key || "").toLowerCase()];
       if (quickLaunchBtnId) {
         e.preventDefault();
@@ -10039,6 +12220,10 @@ function boot() {
     }
 
     if (e.key === "Escape") {
+      if (tradeOpenNow) {
+        setTradeOpen(false);
+        return;
+      }
       if (researchOpen) {
         setResearchOpen(false);
         return;
@@ -10095,7 +12280,8 @@ function boot() {
         return;
       }
       seed = (seed + 1337) >>> 0;
-      world.regenerate(seed, { mapMode: activeMapMode, earthData });
+      const politicalEarthMode = String(activeMatchConfig?.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase() === MAP_SOURCE.POLITICAL_EARTH;
+      world.regenerate(seed, { mapMode: activeMapMode, earthData, countryClaimEnabled: politicalEarthMode });
       applyMatchStartModifiers(world, activeMatchConfig, loadMainMenuPlayerName());
       resetPlayerAlertState();
       resetDebugAbmSpawner();
@@ -10107,12 +12293,13 @@ function boot() {
       clearNukeLaunchMode();
       clearAirborneLaunchMode();
       clearNavalTransportLaunchMode();
+      setTradeOpen(false);
       clearSelection();
       input.clear();
       hud.hideContextMenu();
 
       hud.setOpMessage(isSpawnPhaseActiveNow()
-        ? "Map regenerated. Pick your spawn location."
+        ? (isCountrySpawnPhaseNow() ? "Map regenerated. Pick your country." : "Map regenerated. Pick your spawn location.")
         : "Map regenerated.");
       syncSpawnProgressUI();
       refreshAllUI();
@@ -10134,7 +12321,25 @@ function boot() {
   let opAcc = 0;
   let perfHudAcc = 0;
   let debugAcc = 0;
+  let perfGovAcc = 0;
   let matchProgressAcc = 0;
+  let activePerformanceTier = 0;
+  let activePerformanceProfile = createPerformanceProfileForWorld(0, world);
+
+  function applyLivePerformanceProfile(profileRaw) {
+    const nextProfile = profileRaw && typeof profileRaw === "object"
+      ? { ...DEFAULT_PERFORMANCE_PROFILE, ...profileRaw }
+      : { ...DEFAULT_PERFORMANCE_PROFILE };
+    activePerformanceProfile = nextProfile;
+    if (world && typeof world.setPerformanceProfile === "function") {
+      world.setPerformanceProfile(nextProfile);
+    }
+    if (renderer && typeof renderer.setPerformanceProfile === "function") {
+      renderer.setPerformanceProfile(nextProfile);
+    }
+  }
+
+  applyLivePerformanceProfile(activePerformanceProfile);
 
   function tryForceTestAllyRequest() {
     // Pick the first alive AI that is neutral (not at war/pending/allied with player).
@@ -10173,8 +12378,14 @@ function boot() {
     const frameDt = Math.min(0.05, (now - last) / 1000);
     last = now;
     drainMultiplayerSnapshotBuffer(false);
+    drainSoloSimulationPackets();
     const multiplayerClockActive = isMultiplayerMatchEnabled();
-    if (paused || multiplayerClockActive) {
+    if (multiplayerClockActive && soloSimulationWorker) {
+      stopSoloSimulationWorker();
+    }
+    const soloSimulationOffloading = !!(soloSimulationWorker && !multiplayerClockActive);
+    const soloSimulationActive = !!(soloSimulationOffloading && soloSimulationReady);
+    if (paused || multiplayerClockActive || soloSimulationOffloading) {
       simTickAcc = 0;
     } else {
       // Cap backlog so one slow frame does not create a long catch-up spiral.
@@ -10188,7 +12399,7 @@ function boot() {
     let simSteps = 0;
     let simMs = 0;
     const maxSimStepsThisFrame = MAX_SIM_STEPS_PER_FRAME;
-    if (!paused && !multiplayerClockActive) {
+    if (!paused && !multiplayerClockActive && !soloSimulationOffloading) {
       const simStart = performance.now();
       while (simTickAcc >= 1 && simSteps < maxSimStepsThisFrame) {
         world.tick();
@@ -10200,8 +12411,10 @@ function boot() {
         // Keep a short pending queue under sustained load to avoid visible time-jumps.
         simTickAcc = Math.min(simTickAcc, 1);
       }
+    } else if (soloSimulationActive) {
+      simMs = Math.max(0, Number(soloSimulationPerf?.simTickMsAvg) || 0);
     }
-    if (!multiplayerClockActive) {
+    if (!multiplayerClockActive && !soloSimulationOffloading) {
       applyLiveMatchModifiers(frameDt);
     }
 
@@ -10227,12 +12440,14 @@ function boot() {
     if (wasSpawnPhaseActive && !spawnPhaseActive) {
       hud.setOpMessage("Spawn selection complete. Match started.");
       clearSelection();
+      scheduleCountryIdentitySync(true);
     }
     wasSpawnPhaseActive = spawnPhaseActive;
+    scheduleCountryIdentitySync(false);
     if (!spawnPhaseActive) {
       updatePlayerAlertState();
       matchProgressAcc += frameDt;
-      if (matchProgressAcc >= 0.25) {
+      if (matchProgressAcc >= (0.25 * Math.max(1, Number(activePerformanceProfile?.uiCadenceMul) || 1))) {
         matchProgressAcc = 0;
         updateMatchProgressTracker();
       }
@@ -10245,8 +12460,10 @@ function boot() {
     hudAcc += frameDt;
     opAcc += frameDt;
     let uiMs = 0;
+    const uiCadenceMul = Math.max(1, Number(activePerformanceProfile?.uiCadenceMul) || 1);
+    const overlayCadenceMul = Math.max(1, Number(activePerformanceProfile?.overlayCadenceMul) || 1);
 
-    if (hudAcc >= 0.10 || resized) {
+    if (hudAcc >= (0.10 * uiCadenceMul) || resized) {
       const hudStart = performance.now();
       hudAcc = 0;
       const player = getPlayer();
@@ -10260,7 +12477,7 @@ function boot() {
       uiMs += performance.now() - hudStart;
     }
 
-    if (opAcc >= 0.12) {
+    if (opAcc >= (0.12 * overlayCadenceMul)) {
       const opStart = performance.now();
       opAcc = 0;
       refreshOpUI(true);
@@ -10275,18 +12492,29 @@ function boot() {
       selectedShipId,
       intentArrows,
       nukePreview,
+      targetMarker: getActiveTargetMarker(),
       nukeFlights: world.nukeFlights,
       airborneMissions: world.airborneMissions
     });
     const renderMs = performance.now() - renderStart;
 
+    perfGovAcc += frameDt;
+    if (perfGovAcc >= 0.25) {
+      perfGovAcc = 0;
+      const nextTier = computePerformanceTier(debugPerf, world, activePerformanceTier);
+      if (nextTier !== activePerformanceTier) {
+        activePerformanceTier = nextTier;
+        applyLivePerformanceProfile(createPerformanceProfileForWorld(activePerformanceTier, world));
+      }
+    }
+
     uiAcc += frameDt;
     lbAcc += frameDt;
-    if (uiAcc >= 0.35) {
+    if (uiAcc >= (0.35 * uiCadenceMul)) {
       const uiStart = performance.now();
       uiAcc = 0;
       const lbVisible = !!(leaderboard && typeof leaderboard.isExpanded === "function" && leaderboard.isExpanded());
-      const lbInterval = lbVisible ? 0.35 : 1.0;
+      const lbInterval = lbVisible ? (0.35 * uiCadenceMul) : (1.0 * uiCadenceMul);
       if (lbAcc >= lbInterval) {
         updateLeaderboard(leaderboard, world);
         lbAcc = 0;
@@ -10294,16 +12522,43 @@ function boot() {
 
       // Update build costs (progressive pricing) without doing it every frame.
       const p = world.nation[OWNER.PLAYER] || {};
+      const playerResources = (typeof world.getNationResources === "function")
+        ? (world.getNationResources(OWNER.PLAYER) || {})
+        : {};
       hud.setBuildCosts({
         city: world.getBuildCost("city", OWNER.PLAYER),
         factory: world.getBuildCost("factory", OWNER.PLAYER),
         barracks: world.getBuildCost("barracks", OWNER.PLAYER),
         defence_post: world.getBuildCost("defence_post", OWNER.PLAYER),
         port: world.getBuildCost("port", OWNER.PLAYER),
+        coastal_rig: world.getBuildCost("coastal_rig", OWNER.PLAYER),
         missile_silo: world.getBuildCost("missile_silo", OWNER.PLAYER),
         abm_launcher: world.getBuildCost("abm_launcher", OWNER.PLAYER),
         airbase: world.getBuildCost("airbase", OWNER.PLAYER),
-        playerGold: p.gold || 0
+        playerGold: p.gold || 0,
+        playerResources,
+        resourceCosts: {
+          city: world.getStructureResourceCost ? world.getStructureResourceCost("city") : null,
+          factory: world.getStructureResourceCost ? world.getStructureResourceCost("factory") : null,
+          barracks: world.getStructureResourceCost ? world.getStructureResourceCost("barracks") : null,
+          defence_post: world.getStructureResourceCost ? world.getStructureResourceCost("defence_post") : null,
+          port: world.getStructureResourceCost ? world.getStructureResourceCost("port") : null,
+          coastal_rig: world.getStructureResourceCost ? world.getStructureResourceCost("coastal_rig") : null,
+          missile_silo: world.getStructureResourceCost ? world.getStructureResourceCost("missile_silo") : null,
+          abm_launcher: world.getStructureResourceCost ? world.getStructureResourceCost("abm_launcher") : null,
+          airbase: world.getStructureResourceCost ? world.getStructureResourceCost("airbase") : null
+        },
+        oilUpkeep: {
+          city: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("city") : 0,
+          factory: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("factory") : 0,
+          barracks: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("barracks") : 0,
+          defence_post: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("defence_post") : 0,
+          port: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("port") : 0,
+          coastal_rig: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("coastal_rig") : 0,
+          missile_silo: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("missile_silo") : 0,
+          abm_launcher: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("abm_launcher") : 0,
+          airbase: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("airbase") : 0
+        }
       });
 
       const eventsScope = (hud.getEventsScope && hud.getEventsScope() === "global") ? "global" : "nationwide";
@@ -10313,10 +12568,14 @@ function boot() {
       hud.renderEvents(eventsSrc, world.time, eventsScope);
       refreshDiplomacyUI();
       refreshIntelUI();
+      if (isTradeOpen()) refreshTradePanel(false);
       uiMs += performance.now() - uiStart;
     }
 
     const frameCpuMs = performance.now() - perfFrameStart;
+    const perfBacklogTicks = soloSimulationActive
+      ? Math.max(0, Number(soloSimulationPerf?.backlogTicks) || 0)
+      : simTickAcc;
     updateDebugPerf(debugPerf, {
       frameDt,
       cpuMs: frameCpuMs,
@@ -10324,13 +12583,13 @@ function boot() {
       renderMs,
       uiMs,
       simSteps,
-      backlogTicks: simTickAcc,
+      backlogTicks: perfBacklogTicks,
       resized,
       nowMs: now
     });
 
     perfHudAcc += frameDt;
-    if (perfHudAcc >= 0.25 || resized) {
+    if (perfHudAcc >= (0.25 * uiCadenceMul) || resized) {
       perfHudAcc = 0;
       if (hud && typeof hud.setPerfReadout === "function") {
         const pingFresh = (
@@ -10347,7 +12606,7 @@ function boot() {
     }
 
     debugAcc += frameDt;
-    if (debugOverlay.isVisible() && (debugAcc >= 0.20 || debugOverlayForceRefresh || resized)) {
+    if (debugOverlay.isVisible() && (debugAcc >= (0.20 * overlayCadenceMul) || debugOverlayForceRefresh || resized)) {
       debugAcc = 0;
       debugOverlayForceRefresh = false;
       debugOverlay.render(buildDebugOverlayText());
@@ -10633,6 +12892,7 @@ function checkForRealMatchOutcome() {
     : `${outcome}|${winnerId}|${Math.round(endedAt * 100)}`;
   if (handledRealOutcomeSig === sig) return;
   handledRealOutcomeSig = sig;
+  void finalizeAccountMatchSessionTracking(outcome, endedAt);
 
   presentMatchSummary(outcome, {
     winnerId,
@@ -11153,6 +13413,7 @@ function buildDebugOverlayText() {
     lines.push(`Sim tick ${dbgNum(simPerf.tickMs, 2)}ms avg ${dbgNum(simPerf.tickMsAvg, 2)} | dip ${dbgNum(simPerf.diplomacyMsAvg, 2)} reb ${dbgNum(simPerf.rebelsMsAvg, 2)} eco ${dbgNum(simPerf.economyMsAvg, 2)} navy ${dbgNum(simPerf.navyMsAvg, 2)} nukes ${dbgNum(simPerf.nukesMsAvg, 2)}`);
     lines.push(`         ops ${dbgNum(simPerf.opsMsAvg, 2)} war ${dbgNum(simPerf.warMsAvg, 2)} speckle ${dbgNum(simPerf.speckleMsAvg, 2)} ai ${dbgNum(simPerf.aiMsAvg, 2)} flush ${dbgNum(simPerf.flushMsAvg, 2)} labels ${dbgNum(simPerf.labelsMsAvg, 2)}`);
   }
+  lines.push(`Profile tier ${dbgInt(activePerformanceTier)} simMul ${dbgNum(activePerformanceProfile?.simCadenceMul, 2)} uiMul ${dbgNum(activePerformanceProfile?.uiCadenceMul, 2)} uploadBins ${dbgInt(activePerformanceProfile?.maxPixelUploadBinsPerFrame || 0)}`);
   lines.push(`World mode ${String(world._mapMode || activeMapMode)} seed ${world.seed >>> 0} size ${world.w}x${world.h} cells ${dbgInt(cellCount)} land ${dbgInt(landCells)} (${dbgNum((landCells / cellCount) * 100, 1)}%) water ${dbgInt(waterCells)} seaLevel ${world._seaLevel | 0}`);
   lines.push(`      nations alive ${aliveNations}/${Math.max(0, world.nation.length - 1)} collapsed ${collapsedNations} | top ${ownerDebugName(topOwnerId)} ${dbgInt(Math.max(0, topOwnerLand))} | player land ${dbgInt(playerLand)} (${dbgNum(playerLandPct, 1)}%)`);
   lines.push(`Player gold ${fmtCompactLocal(player.gold || 0)} (${dbgSigned(player.goldPS || 0, 1)}/s) pop ${fmtCompactLocal(player.population || 0)}/${fmtCompactLocal(player.popCap || 0)} (${dbgSigned(player.popPS || 0, 1)}/s)`);
@@ -11244,14 +13505,20 @@ function bindInput() {
       const res = (typeof world.pickSpawn === "function")
         ? world.pickSpawn(OWNER.PLAYER, cell.x | 0, cell.y | 0)
         : { ok: false, reason: "Spawn selection API unavailable." };
+      const pickedCountryName = String(res?.countryName || "").trim();
+      const pickedLabel = pickedCountryName
+        ? `country ${pickedCountryName}`
+        : `${res?.x | 0}, ${res?.y | 0}`;
       if (res && typeof res === "object" && res.ok && res.predicted) {
+        scheduleCountryIdentitySync(true);
         const snapped = res.snapped ? ` (nearest valid tile: ${res.x}, ${res.y})` : "";
-        hud.setOpMessage(`Spawn set to ${res.x}, ${res.y}${snapped}. Syncing with server...`);
+        hud.setOpMessage(`Spawn set to ${pickedLabel}${snapped}. Syncing with server...`);
       } else if (isQueuedActionResult(res)) {
-        hud.setOpMessage(`Spawn pick queued (${res.x}, ${res.y}).`);
+        hud.setOpMessage(`Spawn pick queued (${pickedLabel}).`);
       } else if (res.ok) {
+        scheduleCountryIdentitySync(true);
         const snapped = res.snapped ? ` (nearest valid tile: ${res.x}, ${res.y})` : "";
-        hud.setOpMessage(`Spawn set to ${res.x}, ${res.y}${snapped}. Click again anytime before timer ends to change.`);
+        hud.setOpMessage(`Spawn set to ${pickedLabel}${snapped}. Click again anytime before timer ends to change.`);
       } else {
         hud.setOpMessage(res.reason || "Unable to lock spawn here.");
       }
@@ -11268,9 +13535,11 @@ function bindInput() {
         ? world.launchMissileWarhead(sid, OWNER.PLAYER, cell.x | 0, cell.y | 0)
         : { ok: false, reason: "Missile launch API unavailable." };
       if (isQueuedActionResult(res)) {
+        setConfirmedTargetMarker(cell);
         hud.setOpMessage(`${warheadLabel(warheadType)} launch queued.`);
         clearNukeLaunchMode();
       } else if (res.ok) {
+        setConfirmedTargetMarker(cell);
         const stabPenalty = Math.max(0, Number(res.launchStabilityPenaltyPct) || 0);
         const stabNote = stabPenalty > 0 ? ` Stability -${stabPenalty.toFixed(1)}%.` : "";
         hud.setOpMessage(`${warheadLabel(warheadType)} launched.${stabNote}`);
@@ -11289,9 +13558,11 @@ function bindInput() {
         ? world.launchAirbaseTransport(aid, OWNER.PLAYER, cell.x | 0, cell.y | 0)
         : { ok: false, reason: "Airbase launch API unavailable." };
       if (isQueuedActionResult(res)) {
+        setConfirmedTargetMarker(cell);
         hud.setOpMessage(`Transport Plane launch queued to (${cell.x | 0}, ${cell.y | 0}).`);
         clearAirborneLaunchMode();
       } else if (res.ok) {
+        setConfirmedTargetMarker(cell);
         const radius = Math.max(1, Math.floor(Number(res.launch?.radiusTiles) || Number(AIRBASE_LAUNCH_RADIUS_TILES) || 1));
         const committed = Math.max(0, Math.floor(Number(res.launch?.committedInfantry) || 0));
         const drops = Math.max(0, Math.floor(Number(res.launch?.dropCount) || 0));
@@ -11320,10 +13591,12 @@ function bindInput() {
         res = world.startWarFocus(OWNER.PLAYER, owner, [idx]);
       }
       if (isQueuedActionResult(res)) {
+        setConfirmedTargetMarker(cell);
         clearNavalTransportLaunchMode();
         clearSelection();
         hud.setOpMessage("Transport launch queued.");
       } else if (res.ok) {
+        setConfirmedTargetMarker(cell);
         clearNavalTransportLaunchMode();
         clearSelection();
         hud.setOpMessage("Transport launched.");
@@ -11533,7 +13806,11 @@ function refreshDiplomacyUI() {
 
   if (hud.setAlliesUI) {
     const alliesUI = allies.map((a) => ({ ...a, selected: a.id === activeAllyId }));
-    hud.setAlliesUI(alliesUI);
+    const alliesSig = alliesUI.map((a) => `${a.id}|${a.selected ? 1 : 0}|${a.remainingSec | 0}`).join(";");
+    if (alliesSig !== lastDiplomacyAlliesSig) {
+      lastDiplomacyAlliesSig = alliesSig;
+      hud.setAlliesUI(alliesUI);
+    }
   }
 
   line += `\nAt war: ${wars.length ? wars.join(", ") : "none"}`;
@@ -11556,21 +13833,34 @@ function refreshDiplomacyUI() {
     const rel = world.getRelation(OWNER.PLAYER, activeAllyId);
     if (rel.allied) {
       const allyName = world.nation[activeAllyId]?.name || `AI ${activeAllyId - 1}`;
-      hud.setDonationUI({
-        allyName,
-        maxGold: Math.floor(getPlayer().gold),
-        maxInfantry: Math.floor(getPlayer().infantry),
-        hint: "Donations transfer instantly. Allied AI may donate back over time."
-      });
+      const donationSig = `${activeAllyId}|${allyName}|${Math.floor(getPlayer().gold)}|${Math.floor(getPlayer().infantry)}`;
+      if (donationSig !== lastDonationUiSig) {
+        lastDonationUiSig = donationSig;
+        hud.setDonationUI({
+          allyName,
+          maxGold: Math.floor(getPlayer().gold),
+          maxInfantry: Math.floor(getPlayer().infantry),
+          hint: "Donations transfer instantly. Allied AI may donate back over time."
+        });
+      }
     } else {
       activeAllyId = 0;
-      hud.setDonationUI({ allyName: null, maxGold: 0, maxInfantry: 0 });
+      if (lastDonationUiSig !== "none") {
+        lastDonationUiSig = "none";
+        hud.setDonationUI({ allyName: null, maxGold: 0, maxInfantry: 0 });
+      }
     }
   } else {
-    hud.setDonationUI({ allyName: null, maxGold: 0, maxInfantry: 0 });
+    if (lastDonationUiSig !== "none") {
+      lastDonationUiSig = "none";
+      hud.setDonationUI({ allyName: null, maxGold: 0, maxInfantry: 0 });
+    }
   }
 
-  hud.setDiplomacyStatus(line);
+  if (line !== lastDiplomacyStatusSig) {
+    lastDiplomacyStatusSig = line;
+    hud.setDiplomacyStatus(line);
+  }
 }
 
 function fmtSec(s) {
@@ -12450,36 +14740,95 @@ function refreshAllUI() {
   refreshOpUI();
   refreshDiplomacyUI();
   refreshIntelUI();
+  if (typeof refreshTradePanelView === "function") refreshTradePanelView();
   syncSpawnProgressUI();
 }
 
 function syncEventsCardHeightWithBuildCard() {
   const eventsCard = document.getElementById("events");
-  if (eventsCard) {
-    if (eventsCard.style.height) eventsCard.style.height = "";
-    if (eventsCard.style.minHeight) eventsCard.style.minHeight = "";
-    if (eventsCard.style.maxHeight) eventsCard.style.maxHeight = "";
-  }
-
   const buildCard = document.getElementById("structureBar");
   const quickLaunchBar = document.getElementById("quickLaunchBar");
+  const tradesLaunchBar = document.getElementById("tradesLaunchBar");
+  const researchLaunchBar = document.getElementById("researchLaunchBar");
   const hudRoot = document.getElementById("hud");
-  if (!buildCard || !quickLaunchBar || !hudRoot) return;
+  if (eventsCard && hudRoot) {
+    const rootStyles = getComputedStyle(hudRoot);
+    const docStyles = getComputedStyle(document.documentElement);
+    const reserveRaw = Number.parseFloat(rootStyles.getPropertyValue("--pf-leaderboard-open-height"));
+    const spawnClearanceRaw = Number.parseFloat(docStyles.getPropertyValue("--spawn-progress-clearance"));
+    const reserve = (Number.isFinite(reserveRaw) && reserveRaw > 0) ? reserveRaw : 260;
+    const spawnClearance = (Number.isFinite(spawnClearanceRaw) && spawnClearanceRaw > 0) ? spawnClearanceRaw : 56;
+    const vh = Math.max(320, Number(window.innerHeight) || 0);
+    const available = Math.max(160, vh - spawnClearance - reserve - 18);
+    const maxHeightPx = Math.max(150, Math.floor(Math.min(560, vh * 0.5, available)));
+
+    eventsCard.style.height = "auto";
+    eventsCard.style.minHeight = "0";
+    eventsCard.style.maxHeight = `${maxHeightPx}px`;
+  }
+
+  if (!buildCard || !hudRoot) return;
 
   const buildRect = buildCard.getBoundingClientRect();
   const hudRect = hudRoot.getBoundingClientRect();
-  const width = Math.max(1, Math.round(Number(buildRect.width) || 0));
-  if (!width) return;
+  const buildWidth = Math.max(1, Math.round(Number(buildRect.width) || 0));
+  if (!buildWidth) return;
 
-  const left = Math.round(buildRect.left - hudRect.left);
+  const buildLeft = Math.round(buildRect.left - hudRect.left);
+  const buildRight = buildLeft + buildWidth;
   const bottom = Math.max(0, Math.round(hudRect.bottom - buildRect.top));
 
-  quickLaunchBar.style.left = `${left}px`;
-  quickLaunchBar.style.right = "auto";
-  quickLaunchBar.style.transform = "none";
-  quickLaunchBar.style.width = `${width}px`;
-  quickLaunchBar.style.maxWidth = `${width}px`;
-  quickLaunchBar.style.bottom = `${bottom}px`;
+  const quickRect = quickLaunchBar?.getBoundingClientRect?.();
+  const quickWidth = Math.max(
+    180,
+    Math.min(
+      buildWidth,
+      Math.round(
+        Number(quickRect?.width) ||
+        Number.parseFloat(getComputedStyle(quickLaunchBar || buildCard).width) ||
+        520
+      )
+    )
+  );
+  const quickLeft = Math.max(buildLeft, buildRight - quickWidth);
+
+  if (quickLaunchBar) {
+    quickLaunchBar.style.left = `${quickLeft}px`;
+    quickLaunchBar.style.right = "auto";
+    quickLaunchBar.style.transform = "none";
+    quickLaunchBar.style.width = `${quickWidth}px`;
+    quickLaunchBar.style.maxWidth = `${quickWidth}px`;
+    quickLaunchBar.style.bottom = `${bottom}px`;
+  }
+
+  const leftDockGap = 4;
+  const layoutLeftDockBar = (bar, anchorLeft) => {
+    if (!bar) return anchorLeft;
+    const cs = getComputedStyle(bar);
+    if (bar.hidden || cs.display === "none") return anchorLeft;
+
+    const rect = bar.getBoundingClientRect();
+    let barWidth = Math.round(Number(rect.width) || 0);
+    if (!(barWidth > 0)) {
+      const parsedWidth = Number.parseFloat(cs.width);
+      if (Number.isFinite(parsedWidth) && parsedWidth > 0) barWidth = Math.round(parsedWidth);
+    }
+    if (!(barWidth > 0)) return anchorLeft;
+
+    const maxLeft = Math.max(0, Math.round(hudRect.width - barWidth));
+    const barLeft = Math.max(0, Math.min(maxLeft, anchorLeft - barWidth - leftDockGap));
+    bar.style.left = `${barLeft}px`;
+    bar.style.right = "auto";
+    bar.style.transform = "none";
+    bar.style.width = `${barWidth}px`;
+    bar.style.maxWidth = `${barWidth}px`;
+    bar.style.bottom = `${bottom}px`;
+    return barLeft;
+  };
+
+  let leftAnchor = quickLeft;
+  leftAnchor = layoutLeftDockBar(tradesLaunchBar, leftAnchor);
+  layoutLeftDockBar(researchLaunchBar, leftAnchor);
 }
 
 function getPlayerAnchorCell() {
@@ -13045,13 +15394,23 @@ function createLeaderboardOverlay() {
 
   let isExpanded = false;
   let isAvailable = true;
+  const LEADERBOARD_RESERVED_HEIGHT_PX = 260;
+  let leaderboardReservedHeightPx = LEADERBOARD_RESERVED_HEIGHT_PX;
 
   function syncDockLayout(showLeaderboard) {
     if (!host || !host.style) return;
     const open = Boolean(showLeaderboard);
-    host.classList.toggle("hasLeaderboardOpen", open);
-    const measuredHeight = open ? Math.max(0, Math.ceil(root.getBoundingClientRect().height)) : 0;
-    host.style.setProperty("--pf-leaderboard-open-height", `${measuredHeight}px`);
+    if (open) {
+      const measuredHeight = Math.max(0, Math.ceil(root.getBoundingClientRect().height));
+      if (measuredHeight > 0) {
+        leaderboardReservedHeightPx = Math.max(LEADERBOARD_RESERVED_HEIGHT_PX, measuredHeight);
+      }
+    }
+    host.classList.add("hasLeaderboardOpen");
+    host.style.setProperty(
+      "--pf-leaderboard-open-height",
+      `${Math.max(LEADERBOARD_RESERVED_HEIGHT_PX, leaderboardReservedHeightPx)}px`
+    );
   }
 
   function syncLeaderboardUI() {
@@ -13167,6 +15526,24 @@ function updateLeaderboard(lb, world) {
     });
     for (let i = 0; i < rows.length; i++) rows[i].rank = i + 1;
   }
+
+  const sigRows = [];
+  let sigShown = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    if ((r.id | 0) === OWNER.PLAYER || sigShown < MAX_VISIBLE_LEADERBOARD_ROWS) {
+      const c = (r.color && typeof r.color === "object")
+        ? `${Math.max(0, Math.min(255, r.color.r | 0))},${Math.max(0, Math.min(255, r.color.g | 0))},${Math.max(0, Math.min(255, r.color.b | 0))}`
+        : "";
+      sigRows.push(`${r.id}|${r.rank}|${r.name}|${r.landPct.toFixed(1)}|${fmtCompactLocal(r.gold)}|${c}`);
+      if ((r.id | 0) !== OWNER.PLAYER) sigShown++;
+    }
+    if (sigShown >= MAX_VISIBLE_LEADERBOARD_ROWS && rows.some((row) => (row?.id | 0) === OWNER.PLAYER)) break;
+  }
+  const nextSig = sigRows.join(";");
+  if (lb && lb._lastRenderSig === nextSig) return;
+  if (lb) lb._lastRenderSig = nextSig;
 
   const makeRow = (r, extraClass = "") => {
     const row = document.createElement("div");
@@ -13440,6 +15817,9 @@ function openContextMenuAt(clientX, clientY, offsetX, offsetY) {
       attackLabel: "Attack",
       showIntel: true,
       intelLabel: "Intel",
+      showTrade: true,
+      tradeEnabled: true,
+      tradeLabel: "Trade",
       showDeclareWar: false,
       showMakePeace: false,
       showRequestAlly: false,
@@ -13452,6 +15832,7 @@ function openContextMenuAt(clientX, clientY, offsetX, offsetY) {
   if (o > 0 && o !== OWNER.PLAYER) {
     const name = world.nation[o]?.name || `AI ${o - 1}`;
     const rel = world.getRelation(OWNER.PLAYER, o);
+    const canTradeWithNation = !!(rel?.allied && !rel?.atWar && !rel?.warActive);
 
     const showDeclareWar = !rel.atWar && !rel.allied;
     const showMakePeace = rel.atWar && !rel.ceasefire;
@@ -13510,6 +15891,9 @@ function openContextMenuAt(clientX, clientY, offsetX, offsetY) {
       attackLabel: "Attack",
       showIntel: true,
       intelLabel: "Intel",
+      showTrade: canTradeWithNation,
+      tradeEnabled: canTradeWithNation,
+      tradeLabel: "Trade",
       showDeclareWar,
       showMakePeace,
       showRequestAlly,

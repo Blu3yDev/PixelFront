@@ -11,6 +11,7 @@ import {
   ENV_LIGHTING,
   ENV_RAIN,
   ENV_TIME,
+  MAP_MODE,
   STRUCTURE_HIDE_ZOOM
 } from "./game/config.js";
 import { mulberry32 } from "./game/utils.js";
@@ -315,8 +316,11 @@ export class Renderer {
     this._labelSpanCacheNextSyncAt = 0;
 
     this.dpr = 1;
-    this.zoomLevels = [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 10, 12];
-    this.zoom = 1.5;
+    const earthPixelMode = String(world?._mapMode || "").toLowerCase() === MAP_MODE.WORLD_MAP;
+    this.zoomLevels = earthPixelMode
+      ? [0.5, 1, 2, 3, 4, 6, 8, 10, 12]
+      : [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 10, 12];
+    this.zoom = earthPixelMode ? 2 : 1.5;
     this.zoomTarget = this.zoom;
     this.zoomSmooth = 14; // higher = snappier smoothing
 
@@ -346,6 +350,15 @@ export class Renderer {
     this._playerFlagCanvas = null;
     this._playerFlagKey = "";
     this._nationFlagCanvasById = new Map();
+    this._playerFlagImageCanvas = null;
+    this._playerFlagImageUrl = "";
+    this._playerFlagImageToken = 0;
+    this._nationFlagImageCanvasById = new Map();
+    this._nationFlagImageUrlById = new Map();
+    this._nationFlagImageLoadTokenById = new Map();
+    this._nationFlagImagePendingUrlById = new Map();
+    this._nationFlagImageToken = 0;
+    this._flagImageCanvasCache = new Map();
 
     // ===== Structure icons (screen-space, constant size) =====
     // Put PNGs in `public/Structures/`:
@@ -359,6 +372,7 @@ export class Renderer {
       barracks: "barracks.png",
       defence_post: "defence_post.png",
       port: "port.png",
+      coastal_rig: "coastal_rig.png",
       missile_silo: "missile_silo.png",
       abm_launcher: "abm_launcher.png",
       airbase: "airbase.png"
@@ -382,6 +396,17 @@ export class Renderer {
     this._airbornePlaneIconSizePx = 28;
     // Plane icon is authored nose-up, so rotate +90deg to align with movement direction.
     this._airbornePlaneHeadingOffsetRad = Math.PI * 0.5;
+    this._oilStatusIcon = null;
+    this._oilStatusIconPaths = Object.freeze([
+      "/UI_Icons/TradeResources/Oil.png",
+      "/UI_Icons/TradeResources/oil.png",
+      "/ui_icons/TradeResources/Oil.png",
+      "/ui_icons/TradeResources/oil.png",
+      "/UI_Icons/traderesources/Oil.png",
+      "/UI_Icons/traderesources/oil.png",
+      "/ui_icons/traderesources/Oil.png",
+      "/ui_icons/traderesources/oil.png"
+    ]);
     this._relationIconCache = new Map();
     this._relationIconFiles = Object.freeze({
       allied: ["allied.png"],
@@ -393,6 +418,24 @@ export class Renderer {
     this._relationIconGapPx = 8;
     this._relationIconSpacingPx = 8;
     this._relationIconLiftPx = 0;
+    this._crownIcon = null;
+    this._crownIconPaths = Object.freeze([
+      "/UI_Icons/Expressions/Crown.png",
+      "/UI_Icons/expressions/Crown.png",
+      "/ui_icons/Expressions/Crown.png",
+      "/ui_icons/expressions/Crown.png",
+      "/UI_Icons/Crown.png",
+      "/ui_icons/Crown.png"
+    ]);
+    this._targetIcon = null;
+    this._targetIconPaths = Object.freeze([
+      "/UI_Icons/Expressions/Target.png",
+      "/UI_Icons/expressions/Target.png",
+      "/ui_icons/Expressions/Target.png",
+      "/ui_icons/expressions/Target.png",
+      "/UI_Icons/Target.png",
+      "/ui_icons/Target.png"
+    ]);
     this._staticAssetWarmupDone = false;
     this._staticAssetWarmupPromise = null;
 
@@ -416,6 +459,19 @@ export class Renderer {
     // Shared owner-delta cache so multiple overlay rebuilds can consume the same world dirty batch once.
     this._ownerDirtyFrameVersion = -1;
     this._ownerDirtyFrameDelta = null;
+    this._performanceProfile = Object.freeze({
+      qualityTier: 0,
+      workerEnabled: false,
+      maxPixelUploadBinsPerFrame: 0,
+      showLabels: true,
+      showShips: true,
+      showAtmosphere: true,
+      overlayCadenceMul: 1,
+      simCadenceMul: 1,
+      uiCadenceMul: 1
+    });
+    this._worldPendingDirtyBins = [];
+    this._worldPendingDirtyMeta = null;
 
     // Transient screen-edge alerts (war declaration, incoming attack, alliance formed).
     this._screenAlerts = [];
@@ -521,6 +577,34 @@ export class Renderer {
     return { ...this._clientSettings };
   }
 
+  setPerformanceProfile(next = null) {
+    const src = (next && typeof next === "object") ? next : {};
+    const prev = this._performanceProfile || {};
+    const numOr = (value, fallback) => {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    };
+    this._performanceProfile = Object.freeze({
+      qualityTier: clamp(numOr(src.qualityTier, prev.qualityTier ?? 0), 0, 3),
+      workerEnabled: Object.prototype.hasOwnProperty.call(src, "workerEnabled")
+        ? Boolean(src.workerEnabled)
+        : Boolean(prev.workerEnabled),
+      maxPixelUploadBinsPerFrame: Math.max(0, Math.floor(numOr(src.maxPixelUploadBinsPerFrame, prev.maxPixelUploadBinsPerFrame ?? 0))),
+      showLabels: Object.prototype.hasOwnProperty.call(src, "showLabels")
+        ? Boolean(src.showLabels)
+        : Boolean(prev.showLabels ?? true),
+      showShips: Object.prototype.hasOwnProperty.call(src, "showShips")
+        ? Boolean(src.showShips)
+        : Boolean(prev.showShips ?? true),
+      showAtmosphere: Object.prototype.hasOwnProperty.call(src, "showAtmosphere")
+        ? Boolean(src.showAtmosphere)
+        : Boolean(prev.showAtmosphere ?? true),
+      overlayCadenceMul: Math.max(1, Math.min(3, numOr(src.overlayCadenceMul, prev.overlayCadenceMul ?? 1))),
+      simCadenceMul: Math.max(1, Math.min(3, numOr(src.simCadenceMul, prev.simCadenceMul ?? 1))),
+      uiCadenceMul: Math.max(1, Math.min(3, numOr(src.uiCadenceMul, prev.uiCadenceMul ?? 1)))
+    });
+  }
+
   setPlayerFlag(flagDef) {
     const safe = sanitizeFlag(flagDef || null);
     const key = JSON.stringify(safe);
@@ -548,6 +632,115 @@ export class Renderer {
       c.height = 48;
       renderFlagToCanvas(c, safe, { smoothing: false });
       this._nationFlagCanvasById.set(id, c);
+    }
+  }
+
+  _loadFlagImageCanvas(imageUrlRaw, maxW = 96, maxH = 64) {
+    const imageUrl = String(imageUrlRaw || "").trim();
+    if (!imageUrl) return Promise.resolve(null);
+    const safeMaxW = Math.max(8, maxW | 0);
+    const safeMaxH = Math.max(8, maxH | 0);
+    const cacheKey = `${imageUrl}|${safeMaxW}x${safeMaxH}`;
+    if (this._flagImageCanvasCache.has(cacheKey)) {
+      return Promise.resolve(this._flagImageCanvasCache.get(cacheKey) || null);
+    }
+
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.decoding = "async";
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        const iw = Math.max(1, img.naturalWidth | 0);
+        const ih = Math.max(1, img.naturalHeight | 0);
+        const scale = Math.min(safeMaxW / iw, safeMaxH / ih, 1);
+        const w = Math.max(1, Math.round(iw * scale));
+        const h = Math.max(1, Math.round(ih * scale));
+        const c = document.createElement("canvas");
+        c.width = w;
+        c.height = h;
+        const cctx = c.getContext("2d", { alpha: true });
+        if (!cctx) {
+          resolve(null);
+          return;
+        }
+        cctx.imageSmoothingEnabled = false;
+        cctx.drawImage(img, 0, 0, w, h);
+        this._flagImageCanvasCache.set(cacheKey, c);
+        resolve(c);
+      };
+      img.onerror = () => resolve(null);
+      img.src = imageUrl;
+    });
+  }
+
+  setPlayerFlagImage(imageUrlRaw) {
+    const imageUrl = String(imageUrlRaw || "").trim();
+    if (imageUrl === this._playerFlagImageUrl && this._playerFlagImageCanvas) return;
+    this._playerFlagImageUrl = imageUrl;
+    const token = (this._playerFlagImageToken = ((this._playerFlagImageToken | 0) + 1) | 0);
+    if (!imageUrl) {
+      this._playerFlagImageCanvas = null;
+      return;
+    }
+    this._loadFlagImageCanvas(imageUrl, 96, 64).then((canvas) => {
+      if ((this._playerFlagImageToken | 0) !== token) return;
+      this._playerFlagImageCanvas = canvas || null;
+    });
+  }
+
+  setNationFlagImages(imagesById) {
+    const src = (imagesById && typeof imagesById === "object") ? imagesById : {};
+    const nextIds = new Set();
+    const keys = Object.keys(src);
+    for (let i = 0; i < keys.length; i++) {
+      const id = Number(keys[i]) | 0;
+      if (!Number.isFinite(id) || id <= 1) continue;
+      const imageUrl = String(src[id] || "").trim();
+      if (!imageUrl) continue;
+      nextIds.add(id);
+
+      const prevUrl = String(this._nationFlagImageUrlById.get(id) || "");
+      const pendingUrl = String(this._nationFlagImagePendingUrlById.get(id) || "");
+      if (prevUrl === imageUrl) {
+        if (this._nationFlagImageCanvasById.has(id)) continue;
+        if (pendingUrl === imageUrl) continue;
+      }
+
+      this._nationFlagImageUrlById.set(id, imageUrl);
+      const token = (((this._nationFlagImageLoadTokenById.get(id) | 0) + 1) | 0);
+      this._nationFlagImageLoadTokenById.set(id, token);
+      this._nationFlagImagePendingUrlById.set(id, imageUrl);
+
+      this._loadFlagImageCanvas(imageUrl, 72, 48).then((canvas) => {
+        const liveToken = this._nationFlagImageLoadTokenById.get(id) | 0;
+        const liveUrl = String(this._nationFlagImageUrlById.get(id) || "");
+        if (liveToken !== token) return;
+        if (liveUrl !== imageUrl) return;
+        this._nationFlagImagePendingUrlById.delete(id);
+        if (!canvas) {
+          this._nationFlagImageCanvasById.delete(id);
+          return;
+        }
+        this._nationFlagImageCanvasById.set(id, canvas);
+      });
+    }
+
+    const staleUrlIds = Array.from(this._nationFlagImageUrlById.keys());
+    for (let i = 0; i < staleUrlIds.length; i++) {
+      const id = staleUrlIds[i] | 0;
+      if (nextIds.has(id)) continue;
+      this._nationFlagImageUrlById.delete(id);
+      this._nationFlagImageLoadTokenById.delete(id);
+      this._nationFlagImagePendingUrlById.delete(id);
+      this._nationFlagImageCanvasById.delete(id);
+    }
+
+    const staleCanvasIds = Array.from(this._nationFlagImageCanvasById.keys());
+    for (let i = 0; i < staleCanvasIds.length; i++) {
+      const id = staleCanvasIds[i] | 0;
+      if (nextIds.has(id)) continue;
+      this._nationFlagImagePendingUrlById.delete(id);
+      this._nationFlagImageCanvasById.delete(id);
     }
   }
 
@@ -1186,6 +1379,25 @@ export class Renderer {
     return img;
   }
 
+  _getOilStatusIcon() {
+    if (this._oilStatusIcon) return this._oilStatusIcon;
+
+    const img = new Image();
+    img.decoding = "async";
+    img.loading = "eager";
+    const paths = Array.isArray(this._oilStatusIconPaths) ? this._oilStatusIconPaths : ["/UI_Icons/TradeResources/Oil.png"];
+    img.__pfOilStatusTry = 0;
+    img.onerror = () => {
+      img.__pfOilStatusTry = (img.__pfOilStatusTry | 0) + 1;
+      const ix = img.__pfOilStatusTry | 0;
+      if (ix >= paths.length) return;
+      img.src = paths[ix];
+    };
+    img.src = paths[0];
+    this._oilStatusIcon = img;
+    return img;
+  }
+
   _getNukeCenterIcon() {
     if (this._nukeCenterIcon) return this._nukeCenterIcon;
 
@@ -1248,6 +1460,50 @@ export class Renderer {
     return img;
   }
 
+  _getCrownIcon() {
+    let img = this._crownIcon;
+    if (img) return img;
+
+    const paths = Array.isArray(this._crownIconPaths) ? this._crownIconPaths : ["/UI_Icons/Expressions/Crown.png"];
+    if (paths.length <= 0) return null;
+
+    img = new Image();
+    img.decoding = "async";
+    img.loading = "eager";
+    img.__pfCrownTry = 0;
+    img.onerror = () => {
+      img.__pfCrownTry = (img.__pfCrownTry | 0) + 1;
+      const ix = img.__pfCrownTry | 0;
+      if (ix >= paths.length) return;
+      img.src = paths[ix];
+    };
+    img.src = paths[0];
+    this._crownIcon = img;
+    return img;
+  }
+
+  _getTargetIcon() {
+    let img = this._targetIcon;
+    if (img) return img;
+
+    const paths = Array.isArray(this._targetIconPaths) ? this._targetIconPaths : ["/UI_Icons/Expressions/Target.png"];
+    if (paths.length <= 0) return null;
+
+    img = new Image();
+    img.decoding = "async";
+    img.loading = "eager";
+    img.__pfTargetTry = 0;
+    img.onerror = () => {
+      img.__pfTargetTry = (img.__pfTargetTry | 0) + 1;
+      const ix = img.__pfTargetTry | 0;
+      if (ix >= paths.length) return;
+      img.src = paths[ix];
+    };
+    img.src = paths[0];
+    this._targetIcon = img;
+    return img;
+  }
+
   async warmupStaticAssets(onProgress = null) {
     if (this._staticAssetWarmupDone) {
       if (typeof onProgress === "function") onProgress(1, 1, "Assets");
@@ -1306,6 +1562,8 @@ export class Renderer {
       for (let i = 0; i < relationKeys.length; i++) {
         addTask(this._getRelationIcon(relationKeys[i]));
       }
+      addTask(this._getCrownIcon());
+      addTask(this._getTargetIcon());
 
       this._ensureVictoryIcon();
       addTask(this._victoryIcon);
@@ -1837,8 +2095,12 @@ export class Renderer {
 
     const zoom = this.zoom;
 
-    const dx = canvasW * 0.5 - this.camera.x * zoom;
-    const dy = canvasH * 0.5 - this.camera.y * zoom;
+    let dx = canvasW * 0.5 - this.camera.x * zoom;
+    let dy = canvasH * 0.5 - this.camera.y * zoom;
+    if (String(this.world?._mapMode || "").toLowerCase() === MAP_MODE.WORLD_MAP) {
+      dx = Math.round(dx);
+      dy = Math.round(dy);
+    }
 
     const worldToScreen = (wx, wy) => ({ x: dx + wx * zoom, y: dy + wy * zoom });
     const screenToWorld = (sx, sy) => ({ x: (sx - dx) / zoom, y: (sy - dy) / zoom });
@@ -3031,14 +3293,17 @@ export class Renderer {
       const tileItems = (dirtyTiles && Array.isArray(dirtyTiles.items)) ? dirtyTiles.items : null;
       const tileItemsLen = tileItems ? (tileItems.length | 0) : 0;
       const hasTiles = tileItemsLen > 0;
+      const hasPendingBins = !!(this._worldPendingDirtyMeta && Array.isArray(this._worldPendingDirtyBins) && this._worldPendingDirtyBins.length > 0);
 
-      if (!tileFull && !dirtyRect && !hasTiles && !force && !this.worldDirty && !worldFlagDirty) return;
+      if (!tileFull && !dirtyRect && !hasTiles && !hasPendingBins && !force && !this.worldDirty && !worldFlagDirty) return;
 
       const rectFull = !!(dirtyRect && dirtyRect.full);
       const fullUpload = tileFull || rectFull;
       if (fullUpload) {
         if (!this._worldImageUsesViewPixels) data.set(vp);
         this.worldCtx.putImageData(this.worldImage, 0, 0);
+        this._worldPendingDirtyBins.length = 0;
+        this._worldPendingDirtyMeta = null;
       } else if (hasTiles) {
         // Prefer sparse bin uploads for scattered captures; fall back to rect/full for very large batches.
         const sparseLimit = Math.max(12000, Math.floor((w * h) * 0.06));
@@ -3064,7 +3329,25 @@ export class Renderer {
           }
 
           if (sparseMeta && sparseMeta.dirtyBins.size > 0) {
-            for (const bid0 of sparseMeta.dirtyBins) {
+            const cap = Math.max(0, Number(this._performanceProfile?.maxPixelUploadBinsPerFrame) || 0);
+            const sameMeta = !!(
+              this._worldPendingDirtyMeta &&
+              this._worldPendingDirtyMeta.binsW === sparseMeta.binsW &&
+              this._worldPendingDirtyMeta.binSize === sparseMeta.binSize &&
+              this._worldPendingDirtyMeta.w === w &&
+              this._worldPendingDirtyMeta.h === h
+            );
+            const merged = new Set(sameMeta && Array.isArray(this._worldPendingDirtyBins) ? this._worldPendingDirtyBins : []);
+            for (const bid0 of sparseMeta.dirtyBins) merged.add(bid0 | 0);
+            const mergedBins = Array.from(merged);
+            const drawBins = (cap > 0) ? mergedBins.slice(0, cap) : mergedBins;
+            const spillBins = (cap > 0) ? mergedBins.slice(drawBins.length) : [];
+            this._worldPendingDirtyBins = spillBins;
+            this._worldPendingDirtyMeta = spillBins.length
+              ? { binsW: sparseMeta.binsW, binSize: sparseMeta.binSize, w, h }
+              : null;
+            for (let binIdx = 0; binIdx < drawBins.length; binIdx++) {
+              const bid0 = drawBins[binIdx];
               const bid = bid0 | 0;
               const bx = (bid % sparseMeta.binsW) * sparseMeta.binSize;
               const by = ((bid / sparseMeta.binsW) | 0) * sparseMeta.binSize;
@@ -3090,6 +3373,8 @@ export class Renderer {
             if (!this._worldImageUsesViewPixels) data.set(vp);
             this.worldCtx.putImageData(this.worldImage, 0, 0);
           }
+          this._worldPendingDirtyBins.length = 0;
+          this._worldPendingDirtyMeta = null;
         }
       } else if (dirtyRect) {
         if (!this._worldImageUsesViewPixels) this._copyPixelsRect(vp, data, w, dirtyRect);
@@ -3102,9 +3387,28 @@ export class Renderer {
           dirtyRect.w | 0,
           dirtyRect.h | 0
         );
+        this._worldPendingDirtyBins.length = 0;
+        this._worldPendingDirtyMeta = null;
       } else {
         // No new world pixels; still allow a forced refresh of the offscreen texture.
         if (force) this.worldCtx.putImageData(this.worldImage, 0, 0);
+        else if (this._worldPendingDirtyMeta && Array.isArray(this._worldPendingDirtyBins) && this._worldPendingDirtyBins.length > 0) {
+          const meta = this._worldPendingDirtyMeta;
+          const cap = Math.max(0, Number(this._performanceProfile?.maxPixelUploadBinsPerFrame) || 0);
+          const drawBins = (cap > 0)
+            ? this._worldPendingDirtyBins.splice(0, cap)
+            : this._worldPendingDirtyBins.splice(0, this._worldPendingDirtyBins.length);
+          for (let binIdx = 0; binIdx < drawBins.length; binIdx++) {
+            const bid = drawBins[binIdx] | 0;
+            const bx = (bid % meta.binsW) * meta.binSize;
+            const by = ((bid / meta.binsW) | 0) * meta.binSize;
+            const bw = Math.min(meta.binSize, w - bx);
+            const bh = Math.min(meta.binSize, h - by);
+            if (bw <= 0 || bh <= 0) continue;
+            this.worldCtx.putImageData(this.worldImage, 0, 0, bx, by, bw, bh);
+          }
+          if (this._worldPendingDirtyBins.length === 0) this._worldPendingDirtyMeta = null;
+        }
       }
 
       this.worldDirty = false;
@@ -3342,6 +3646,7 @@ export class Renderer {
     else if (st.type === "barracks") { tr = 110; tg = 220; tb = 140; }
     else if (st.type === "defence_post") { tr = 140; tg = 200; tb = 255; }
     else if (st.type === "port") { tr = 120; tg = 190; tb = 255; }
+    else if (st.type === "coastal_rig") { tr = 240; tg = 196; tb = 104; }
     else if (st.type === "missile_silo") { tr = 255; tg = 172; tb = 88; }
     else if (st.type === "abm_launcher") { tr = 255; tg = 126; tb = 96; }
     else if (st.type === "airbase") { tr = 160; tg = 208; tb = 255; }
@@ -3380,6 +3685,7 @@ export class Renderer {
     const buildRemainingS = Math.max(0, Number(construction?.buildRemainingS) || 0);
     const buildTotalS = Math.max(0, Number(construction?.buildTotalS) || 0);
     const showProgress = pendingCount > 0 && (buildTotalS > 0.00001 || buildRemainingS > 0.00001);
+    let markerTopY = yBox - 4;
     if (showProgress) {
       const progress01 = (buildTotalS > 0.00001 && buildRemainingS > 0.00001)
         ? Math.max(0, Math.min(1, 1 - (buildRemainingS / Math.max(0.1, buildTotalS))))
@@ -3388,6 +3694,7 @@ export class Renderer {
       const barH = Math.max(2, Math.min(6, Math.round(box * 0.44)));
       const barX = xBox;
       const barY = Math.round(yBox - barH - 3);
+      markerTopY = Math.min(markerTopY, barY - 4);
       const fillW = Math.max(1, Math.round(barW * progress01));
 
       ctx.fillStyle = "rgba(0,0,0,0.78)";
@@ -3419,6 +3726,25 @@ export class Renderer {
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(qLabel, qX + (qW * 0.5), qY + (qH * 0.5) + 0.5);
+      }
+    }
+
+    const oilMissingCount = Math.max(0, Number(st?.data?.resourceStatus?.oilMissingCount) | 0);
+    if (oilMissingCount > 0) {
+      const oilIcon = this._getOilStatusIcon();
+      const iconSize = Math.max(16, Math.min(22, Math.round(16 + (zoom * 0.65))));
+      const badgeSize = iconSize + 6;
+      const badgeX = Math.round(sx - (badgeSize * 0.5));
+      const badgeY = Math.round(markerTopY - badgeSize);
+
+      ctx.fillStyle = "rgba(8, 12, 18, 0.88)";
+      ctx.fillRect(badgeX, badgeY, badgeSize, badgeSize);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(181, 153, 110, 0.60)";
+      ctx.strokeRect(badgeX + 0.5, badgeY + 0.5, Math.max(1, badgeSize - 1), Math.max(1, badgeSize - 1));
+
+      if (oilIcon && oilIcon.complete && oilIcon.naturalWidth > 0) {
+        ctx.drawImage(oilIcon, badgeX + 3, badgeY + 3, iconSize, iconSize);
       }
     }
 
@@ -3868,6 +4194,56 @@ export class Renderer {
     const worldW = world.w | 0;
     const worldH = world.h | 0;
     const LABEL_CULL_PAD = 260;
+    const topNationId = (() => {
+      const serverRows = Array.isArray(world?._serverLeaderboard) ? world._serverLeaderboard : null;
+      if (serverRows && serverRows.length > 0) {
+        let bestId = 0;
+        let bestRank = 1e9;
+        let bestLand = -1;
+        let bestGold = -1;
+        for (let i = 0; i < serverRows.length; i++) {
+          const row = serverRows[i];
+          if (!row || typeof row !== "object") continue;
+          const id = Math.max(1, Number(row.id) | 0);
+          const nation = nations[id];
+          if (!nation || !nation.alive) continue;
+          const rank = Math.max(1, Number(row.rank) | 0);
+          const land = Math.max(0, Number(row.land) | 0);
+          const gold = Math.max(0, Number(row.gold) | 0);
+          if (
+            rank < bestRank ||
+            (rank === bestRank && (land > bestLand || (land === bestLand && gold > bestGold)))
+          ) {
+            bestRank = rank;
+            bestLand = land;
+            bestGold = gold;
+            bestId = id;
+          }
+        }
+        if (bestId > 0) return bestId | 0;
+      }
+
+      let bestId = 0;
+      let bestLand = -1;
+      let bestGold = -1;
+      for (let id = 1; id < nations.length; id++) {
+        const n = nations[id];
+        if (!n || !n.alive) continue;
+        const land = Math.max(0, Number(world.landOwnedCount?.[id]) | 0);
+        const gold = Math.max(0, Number(n.gold) || 0);
+        if (
+          land > bestLand ||
+          (land === bestLand && (gold > bestGold || (gold === bestGold && (bestId <= 0 || id < bestId))))
+        ) {
+          bestLand = land;
+          bestGold = gold;
+          bestId = id;
+        }
+      }
+      return bestId | 0;
+    })();
+    const crownIcon = this._getCrownIcon();
+    const hasCrownIcon = !!(crownIcon && crownIcon.complete && crownIcon.naturalWidth > 0 && crownIcon.naturalHeight > 0);
 
     const ownerVersion = world.ownerVersion | 0;
     const nowT = (typeof world.time === "number") ? world.time : 0;
@@ -4078,6 +4454,7 @@ export class Renderer {
       const pop = n.population || 0;
       const popText = estimatePopulationText(world, id, pop);
       const relationIconKinds = this._getPlayerRelationIconKindsForNation(id);
+      const isTopNation = (id | 0) === (topNationId | 0);
 
       // Fit name width to territory so it doesn't spill out.
       const land = (world.landOwnedCount && world.landOwnedCount[id]) ? (world.landOwnedCount[id] | 0) : 0;
@@ -4111,8 +4488,12 @@ export class Renderer {
       const maxWidth = Math.max(1, spanWidthPx > 0 ? Math.min(radiusWidth, spanWidthPx) : radiusWidth);
       const maxHeight = Math.max(1, spanHeightPx > 0 ? Math.min(radiusHeight, spanHeightPx) : radiusHeight);
 
-      const aiFlagCanvas = (cset.showAIFlags !== false) ? (this._nationFlagCanvasById.get(id) || null) : null;
-      const nationFlagCanvas = (id === OWNER.PLAYER) ? this._playerFlagCanvas : aiFlagCanvas;
+      const aiFlagCanvas = (cset.showAIFlags !== false)
+        ? (this._nationFlagImageCanvasById.get(id) || null)
+        : null;
+      const nationFlagCanvas = (id === OWNER.PLAYER)
+        ? (this._playerFlagImageCanvas || null)
+        : aiFlagCanvas;
       const hasNationFlag = !!(nationFlagCanvas && nationFlagCanvas.width > 0 && nationFlagCanvas.height > 0);
       const flagReserve = hasNationFlag ? Math.max(8, 20 * labelScaleFont) : 0;
       const fitWidth = Math.max(1, maxWidth - flagReserve);
@@ -4190,6 +4571,27 @@ export class Renderer {
         };
       }
 
+      let crownDraw = null;
+      if (isTopNation && hasCrownIcon) {
+        const crownAspect = crownIcon.naturalWidth / Math.max(1, crownIcon.naturalHeight);
+        let crownH = Math.max(30, nameH * 4.0);
+        let crownW = Math.max(30, crownH * crownAspect);
+        const crownWidthCap = Math.max(42, maxWidth * 1.8);
+        if (crownW > crownWidthCap) {
+          const scale = crownWidthCap / Math.max(1, crownW);
+          crownW *= scale;
+          crownH *= scale;
+        }
+        const crownGap = Math.max(3, 4 * labelScaleFont);
+        const crownY = (sY + nameOffset) - (nameH * 0.5) - crownGap - crownH;
+        crownDraw = {
+          x: Math.round(sX - (crownW * 0.5)),
+          y: Math.round(crownY),
+          w: Math.max(18, Math.round(crownW)),
+          h: Math.max(18, Math.round(crownH))
+        };
+      }
+
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.lineWidth = Math.max(0.5, 3 * labelScaleFont * heightScale);
@@ -4203,6 +4605,13 @@ export class Renderer {
         const prevSmooth = ctx.imageSmoothingEnabled;
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(nationFlagCanvas, flagDraw.x, flagDraw.y, flagDraw.w, flagDraw.h);
+        ctx.imageSmoothingEnabled = prevSmooth;
+      }
+
+      if (crownDraw && hasCrownIcon) {
+        const prevSmooth = ctx.imageSmoothingEnabled;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(crownIcon, crownDraw.x, crownDraw.y, crownDraw.w, crownDraw.h);
         ctx.imageSmoothingEnabled = prevSmooth;
       }
 
@@ -4539,6 +4948,50 @@ export class Renderer {
     ctx.arc(t0.x, t0.y, 3.5, 0, Math.PI * 2);
     ctx.fillStyle = `rgba(${base.r},${base.g},${base.b},0.90)`;
     ctx.fill();
+
+    ctx.restore();
+  }
+
+  _drawTargetMarkerScreen(ctx, v, marker) {
+    if (!marker) return;
+    const mx = Number(marker.x);
+    const my = Number(marker.y);
+    if (!Number.isFinite(mx) || !Number.isFinite(my)) return;
+
+    const s = v.worldToScreen(mx + 0.5, my + 0.5);
+    const targetIcon = this._getTargetIcon();
+    const now = performance.now() * 0.001;
+    const pulse = 0.5 + (0.5 * Math.sin(now * 4.8));
+    const ringR = 10 + (4 * pulse);
+    const iconSize = 26 + Math.round(4 * pulse);
+
+    ctx.save();
+    ctx.setTransform(v.dpr, 0, 0, v.dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, ringR, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,255,255,0.10)";
+    ctx.fill();
+    ctx.lineWidth = 1.8;
+    ctx.strokeStyle = "rgba(255,255,255,0.52)";
+    ctx.stroke();
+
+    if (targetIcon && targetIcon.complete && targetIcon.naturalWidth > 0) {
+      const half = iconSize * 0.5;
+      ctx.shadowColor = "rgba(0,0,0,0.38)";
+      ctx.shadowBlur = 10;
+      ctx.drawImage(targetIcon, Math.round(s.x - half), Math.round(s.y - half), iconSize, iconSize);
+    } else {
+      ctx.strokeStyle = "rgba(255,255,255,0.92)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(s.x - 8, s.y);
+      ctx.lineTo(s.x + 8, s.y);
+      ctx.moveTo(s.x, s.y - 8);
+      ctx.lineTo(s.x, s.y + 8);
+      ctx.stroke();
+    }
 
     ctx.restore();
   }
@@ -4919,6 +5372,7 @@ export class Renderer {
     const nukePreview = opts.nukePreview || null;
     const nukeFlights = Array.isArray(opts.nukeFlights) ? opts.nukeFlights : null;
     const airborneMissions = Array.isArray(opts.airborneMissions) ? opts.airborneMissions : null;
+    const targetMarker = opts.targetMarker || null;
     const cset = this._clientSettings || {};
     const usePoliticalMap = cset.politicalMapMode === true;
     const nowS = performance.now() * 0.001;
@@ -4985,6 +5439,7 @@ export class Renderer {
     // Keep pre-launch placement guidance always visible; the setting only controls
     // destination/path overlays for already-launched missiles.
     this._drawNukeLaunchPreviewScreen(ctx, v, nukePreview);
+    this._drawTargetMarkerScreen(ctx, v, targetMarker);
     const showNukeDestinationOverlay = cset.nukeDestinationOverlay !== false;
     this._drawNukeFlightsScreen(ctx, v, nukeFlights, showNukeDestinationOverlay);
     this._drawAirborneMissionsScreen(ctx, v, airborneMissions);
@@ -5014,6 +5469,16 @@ Renderer.prototype._updateSmoothZoom = function() {
   const zT = Number(this.zoomTarget) || this.zoom;
   const cT = this.cameraTarget || this.camera;
   const reduceMotion = !!(this._clientSettings && this._clientSettings.reduceMotion);
+  const earthPixelMode = String(this.world?._mapMode || "").toLowerCase() === MAP_MODE.WORLD_MAP;
+
+  if (earthPixelMode) {
+    this.zoom = zT;
+    this.camera.x = cT.x;
+    this.camera.y = cT.y;
+    this._viewport = null;
+    this._clampCameraToWorld();
+    return;
+  }
 
   if (reduceMotion) {
     this.zoom = zT;

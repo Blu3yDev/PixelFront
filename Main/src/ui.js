@@ -6,6 +6,18 @@ export function createHUD() {
   perfReadout.className = "perfReadout";
   perfReadout.textContent = "FPS --";
   hud.appendChild(perfReadout);
+  const actionWarnCard = document.createElement("div");
+  actionWarnCard.className = "actionWarnCard";
+  actionWarnCard.hidden = true;
+  actionWarnCard.setAttribute("aria-hidden", "true");
+  const actionWarnKicker = document.createElement("div");
+  actionWarnKicker.className = "actionWarnKicker";
+  actionWarnKicker.textContent = "Warning";
+  const actionWarnText = document.createElement("div");
+  actionWarnText.className = "actionWarnText";
+  actionWarnCard.appendChild(actionWarnKicker);
+  actionWarnCard.appendChild(actionWarnText);
+  hud.appendChild(actionWarnCard);
 
   // Top HUD
   const gameTimer = must("gameTimer");
@@ -159,6 +171,7 @@ export function createHUD() {
   const ctxExpand = must("ctxExpand");
   const ctxAttack = must("ctxAttack");
   const ctxIntel = must("ctxIntel");
+  const ctxTrade = must("ctxTrade");
   const ctxSendWarship = must("ctxSendWarship");
   const ctxDeclareWar = must("ctxDeclareWar");
   const ctxMakePeace = must("ctxMakePeace");
@@ -183,6 +196,12 @@ export function createHUD() {
   // Stats
   const statGoldVal = must("statGoldVal");
   const statGoldDelta = must("statGoldDelta");
+  const statFoodVal = must("statFoodVal");
+  const statFoodDelta = must("statFoodDelta");
+  const statSteelVal = must("statSteelVal");
+  const statSteelDelta = must("statSteelDelta");
+  const statOilVal = must("statOilVal");
+  const statOilDelta = must("statOilDelta");
 
   const statPopVal = must("statPopVal");
   const statPopCap = must("statPopCap");
@@ -222,6 +241,7 @@ export function createHUD() {
     factory: "Increases Gold/s",
     barracks: "Increases troop cap and training speed",
     defence_post: "Boosts defence in a nearby radius (stacks)",
+    coastal_rig: "Ocean-only oil platform. Supplies Oil for naval and airborne logistics",
     missile_silo: "Builds and launches strategic warheads",
     abm_launcher: "Intercepts incoming missiles in a local radius",
     airbase: "Supports airborne operations and transport plane launches"
@@ -245,6 +265,7 @@ export function createHUD() {
   const btnBarracks = must("btnBarracks");
   const btnDefencePost = must("btnDefencePost");
   const btnPort = must("btnPort");
+  const btnCoastalRig = must("btnCoastalRig");
   const btnMissileSilo = must("btnMissileSilo");
   const btnAbmLauncher = must("btnAbmLauncher");
   const btnAirbase = must("btnAirbase");
@@ -263,6 +284,7 @@ export function createHUD() {
   let cbAttack = null;
   let cbMakePeace = null;
   let cbRequestAlly = null;
+  let cbTrade = null;
   let cbEventAction = null;
   let cbEventsScopeChange = null;
   let cbAllySelect = null;
@@ -289,6 +311,8 @@ export function createHUD() {
   let paused = false;
   let pauseEnabled = true;
   let perfReadoutSig = "";
+  let actionWarnHideTimer = 0;
+  let actionWarnLastText = "";
   let eventsRenderSig = "";
   let opListRenderSig = "";
   let dockOpsRenderSig = "";
@@ -600,6 +624,100 @@ export function createHUD() {
     donateBtn.disabled = !donateEnabled || (g <= 0 && t <= 0);
   }
 
+  function isActionWarningMessage(textRaw) {
+    const text = String(textRaw || "").trim();
+    if (!text) return false;
+    const lower = text.toLowerCase();
+    const positiveHints = [
+      "started.",
+      "started ",
+      "launched.",
+      "launched ",
+      "queued.",
+      "queued ",
+      "sent.",
+      "accepted",
+      "rejected",
+      "completed.",
+      "build mode:",
+      "resumed.",
+      "paused.",
+      "viewing ",
+      "tracking operation",
+      "selection cleared.",
+      "settings updated.",
+      "spawn set to",
+      "trade offer sent.",
+      "trade offer queued.",
+      "decision sent.",
+      "decision queued.",
+      "cancelled operation.",
+      "cancelled 1 active operation.",
+      "cancelled ",
+      "multiplayer match linked.",
+      "victory.",
+      "defeat."
+    ];
+    for (let i = 0; i < positiveHints.length; i++) {
+      if (lower.includes(positiveHints[i])) return false;
+    }
+    const warningHints = [
+      "not enough",
+      "need ",
+      "cannot",
+      "can't",
+      "unavailable",
+      "failed",
+      "unable",
+      "waiting",
+      "disconnected",
+      "must ",
+      "build a ",
+      "no ",
+      "out of range",
+      "invalid",
+      "disabled",
+      "under construction",
+      "still under construction",
+      "has no oil supply",
+      "selection too",
+      "target must",
+      "could not",
+      "reconnecting",
+      "you are eliminated",
+      "match already ended",
+      "spectating"
+    ];
+    for (let i = 0; i < warningHints.length; i++) {
+      if (lower.includes(warningHints[i])) return true;
+    }
+    return false;
+  }
+
+  function showActionWarning(textRaw) {
+    const text = String(textRaw || "").trim();
+    if (!text) return;
+    actionWarnLastText = text;
+    actionWarnText.textContent = text;
+    if (actionWarnHideTimer) {
+      clearTimeout(actionWarnHideTimer);
+      actionWarnHideTimer = 0;
+    }
+    actionWarnCard.hidden = false;
+    actionWarnCard.setAttribute("aria-hidden", "false");
+    actionWarnCard.classList.remove("isVisible");
+    void actionWarnCard.offsetWidth;
+    actionWarnCard.classList.add("isVisible");
+    actionWarnHideTimer = window.setTimeout(() => {
+      actionWarnCard.classList.remove("isVisible");
+      actionWarnCard.setAttribute("aria-hidden", "true");
+      actionWarnHideTimer = window.setTimeout(() => {
+        actionWarnCard.hidden = true;
+        actionWarnHideTimer = 0;
+      }, 220);
+    }, 2800);
+  }
+
   donGold.addEventListener("input", updateDonateVals);
   donTroops.addEventListener("input", updateDonateVals);
   for (const slider of hudRangeInputs) {
@@ -622,10 +740,45 @@ export function createHUD() {
     barracks: { el: btnBarracks, name: "Barracks", costEl: null },
     defence_post: { el: btnDefencePost, name: "Defence Post", costEl: null },
     port: { el: btnPort, name: "Port", costEl: null },
+    coastal_rig: { el: btnCoastalRig, name: "Coastal Rig", costEl: null },
     missile_silo: { el: btnMissileSilo, name: "Missile Silo", costEl: null },
     abm_launcher: { el: btnAbmLauncher, name: "ABM Launcher", costEl: null },
     airbase: { el: btnAirbase, name: "Airbase", costEl: null }
   };
+
+  const buildHoverPanel = document.createElement("div");
+  buildHoverPanel.className = "buildHoverPanel";
+  buildHoverPanel.hidden = true;
+  buildHoverPanel.setAttribute("aria-hidden", "true");
+  const buildHoverTitle = document.createElement("div");
+  buildHoverTitle.className = "buildHoverPanelTitle";
+  const buildHoverSub = document.createElement("div");
+  buildHoverSub.className = "buildHoverPanelSub";
+  buildHoverSub.textContent = "Construction requirements";
+  const buildHoverRows = document.createElement("div");
+  buildHoverRows.className = "buildHoverPanelRows";
+  const buildHoverLabelEls = {};
+  const buildHoverValueEls = {};
+  for (const resource of ["gold", "food", "steel", "oil"]) {
+    const row = document.createElement("div");
+    row.className = "buildHoverPanelRow";
+    const labelEl = document.createElement("span");
+    labelEl.className = "buildHoverPanelLabel";
+    labelEl.textContent = resource === "gold" ? "Gold" : resource === "oil" ? "Oil/tick" : title(resource);
+    const valueEl = document.createElement("span");
+    valueEl.className = "buildHoverPanelValue";
+    valueEl.textContent = "0";
+    row.appendChild(labelEl);
+    row.appendChild(valueEl);
+    buildHoverRows.appendChild(row);
+    buildHoverLabelEls[resource] = labelEl;
+    buildHoverValueEls[resource] = valueEl;
+  }
+  buildHoverPanel.appendChild(buildHoverTitle);
+  buildHoverPanel.appendChild(buildHoverSub);
+  buildHoverPanel.appendChild(buildHoverRows);
+  hud.appendChild(buildHoverPanel);
+  let activeBuildTooltipType = "";
 
   for (const k of Object.keys(buildBtnMeta)) {
     const m = buildBtnMeta[k];
@@ -647,6 +800,7 @@ export function createHUD() {
     { el: btnBarracks, type: "barracks" },
     { el: btnDefencePost, type: "defence_post" },
     { el: btnPort, type: "port" },
+    { el: btnCoastalRig, type: "coastal_rig" },
     { el: btnMissileSilo, type: "missile_silo" },
     { el: btnAbmLauncher, type: "abm_launcher" },
     { el: btnAirbase, type: "airbase" }
@@ -657,11 +811,128 @@ export function createHUD() {
       setBuildMode(buildMode === b.type ? null : b.type);
       if (cbBuildMode) cbBuildMode(buildMode);
     });
+    b.el.addEventListener("mouseenter", () => showBuildTooltip(b.type));
+    b.el.addEventListener("mouseleave", () => hideBuildTooltip(b.type));
+    b.el.addEventListener("focus", () => showBuildTooltip(b.type));
+    b.el.addEventListener("blur", () => hideBuildTooltip(b.type));
   }
 
   // Keep the latest costs in UI to show in the build-mode label.
-  const lastBuildCosts = { city: 0, factory: 0, barracks: 0, defence_post: 0, port: 0, missile_silo: 0, abm_launcher: 0, airbase: 0 };
+  const lastBuildCosts = { city: 0, factory: 0, barracks: 0, defence_post: 0, port: 0, coastal_rig: 0, missile_silo: 0, abm_launcher: 0, airbase: 0 };
   let lastPlayerGold = 0;
+  const lastBuildResourceCosts = {
+    city: { food: 0, steel: 0, oil: 0 },
+    factory: { food: 0, steel: 0, oil: 0 },
+    barracks: { food: 0, steel: 0, oil: 0 },
+    defence_post: { food: 0, steel: 0, oil: 0 },
+    port: { food: 0, steel: 0, oil: 0 },
+    coastal_rig: { food: 0, steel: 0, oil: 0 },
+    missile_silo: { food: 0, steel: 0, oil: 0 },
+    abm_launcher: { food: 0, steel: 0, oil: 0 },
+    airbase: { food: 0, steel: 0, oil: 0 }
+  };
+  const lastBuildOilUpkeep = { city: 0, factory: 0, barracks: 0, defence_post: 0, port: 0, coastal_rig: 0, missile_silo: 0, abm_launcher: 0, airbase: 0 };
+  let lastPlayerResources = { food: 0, steel: 0, oil: 0 };
+
+  function normalizeResourceBundle(bundleRaw) {
+    const bundle = (bundleRaw && typeof bundleRaw === "object") ? bundleRaw : {};
+    return {
+      food: Math.max(0, Math.floor(Number(bundle.food) || 0)),
+      steel: Math.max(0, Math.floor(Number(bundle.steel) || 0)),
+      oil: Math.max(0, Math.floor(Number(bundle.oil) || 0))
+    };
+  }
+
+  function canAffordBuildType(type) {
+    const goldCost = Math.max(0, Number(lastBuildCosts[type]) || 0);
+    if (lastPlayerGold < goldCost) return false;
+    const bundle = normalizeResourceBundle(lastBuildResourceCosts[type]);
+    return (
+      lastPlayerResources.food >= bundle.food &&
+      lastPlayerResources.steel >= bundle.steel &&
+      lastPlayerResources.oil >= bundle.oil
+    );
+  }
+
+  function getBuildAffordState(type) {
+    const goldCost = Math.max(0, Number(lastBuildCosts[type]) || 0);
+    const bundle = normalizeResourceBundle(lastBuildResourceCosts[type]);
+    return {
+      gold: lastPlayerGold >= goldCost,
+      food: lastPlayerResources.food >= bundle.food,
+      steel: lastPlayerResources.steel >= bundle.steel,
+      oil: lastPlayerResources.oil >= bundle.oil
+    };
+  }
+
+  function fmtTooltipOilUpkeep(valueRaw) {
+    const value = Math.max(0, Number(valueRaw) || 0);
+    if (!(value > 0)) return "0";
+    if (value >= 1) return value.toFixed(2).replace(/\.?0+$/, "");
+    return value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  }
+
+  function renderBuildTooltip(type) {
+    const meta = buildBtnMeta[type];
+    if (!meta) return;
+    const bundle = normalizeResourceBundle(lastBuildResourceCosts[type]);
+    const afford = getBuildAffordState(type);
+    const oilUpkeep = Math.max(0, Number(lastBuildOilUpkeep[type]) || 0);
+    buildHoverTitle.textContent = meta.name || title(type) || "Structure";
+    const values = {
+      gold: Math.max(0, Number(lastBuildCosts[type]) || 0),
+      food: bundle.food,
+      steel: bundle.steel,
+      oil: oilUpkeep
+    };
+    for (const resource of ["gold", "food", "steel", "oil"]) {
+      const labelEl = buildHoverLabelEls[resource];
+      const valueEl = buildHoverValueEls[resource];
+      if (!valueEl) continue;
+      if (labelEl) labelEl.textContent = resource === "oil" ? "Oil/tick" : resource === "gold" ? "Gold" : title(resource);
+      valueEl.textContent = resource === "oil" ? fmtTooltipOilUpkeep(values[resource]) : fmtCompact(values[resource]);
+      const missing = resource === "oil"
+        ? (oilUpkeep > 0 && lastPlayerResources.oil + 0.00001 < oilUpkeep)
+        : !afford[resource];
+      valueEl.classList.toggle("isMissing", missing);
+    }
+  }
+
+  function positionBuildTooltip(type) {
+    const meta = buildBtnMeta[type];
+    if (!meta?.el || buildHoverPanel.hidden) return;
+    const rect = meta.el.getBoundingClientRect();
+    const panelRect = buildHoverPanel.getBoundingClientRect();
+    const left = Math.max(12, Math.min(window.innerWidth - panelRect.width - 12, rect.left + (rect.width * 0.5) - (panelRect.width * 0.5)));
+    const top = Math.max(12, rect.top - panelRect.height - 6);
+    buildHoverPanel.style.left = `${Math.round(left)}px`;
+    buildHoverPanel.style.top = `${Math.round(top)}px`;
+  }
+
+  function showBuildTooltip(type) {
+    activeBuildTooltipType = String(type || "");
+    if (!buildBtnMeta[activeBuildTooltipType]) return;
+    renderBuildTooltip(activeBuildTooltipType);
+    buildHoverPanel.hidden = false;
+    buildHoverPanel.classList.add("isVisible");
+    buildHoverPanel.setAttribute("aria-hidden", "false");
+    positionBuildTooltip(activeBuildTooltipType);
+  }
+
+  function hideBuildTooltip(type) {
+    if (type && String(type) !== activeBuildTooltipType) return;
+    activeBuildTooltipType = "";
+    buildHoverPanel.classList.remove("isVisible");
+    buildHoverPanel.hidden = true;
+    buildHoverPanel.setAttribute("aria-hidden", "true");
+  }
+
+  window.addEventListener("resize", () => {
+    if (activeBuildTooltipType) positionBuildTooltip(activeBuildTooltipType);
+  });
+  window.addEventListener("scroll", () => {
+    if (activeBuildTooltipType) positionBuildTooltip(activeBuildTooltipType);
+  }, true);
 
   function refreshBuildModeLabel() {
     if (!buildMode) {
@@ -671,10 +942,16 @@ export function createHUD() {
 
     const c = lastBuildCosts[buildMode] | 0;
     const costStr = c > 0 ? `${fmtCompact(c)}g` : "?";
-    const afford = lastPlayerGold >= c;
+    const afford = canAffordBuildType(buildMode);
+    if (buildMode === "coastal_rig") {
+      buildModeLabel.textContent = afford
+        ? `Build mode: ${title(buildMode)} - Cost: ${costStr} (click clear ocean)`
+        : `Build mode: ${title(buildMode)} - Cost: ${costStr} (need more resources)`;
+      return;
+    }
     buildModeLabel.textContent = afford
-      ? `Build mode: ${title(buildMode)} • Cost: ${costStr} (click your land)`
-      : `Build mode: ${title(buildMode)} • Cost: ${costStr} (need more gold)`;
+      ? `Build mode: ${title(buildMode)} - Cost: ${costStr} (click your land)`
+      : `Build mode: ${title(buildMode)} - Cost: ${costStr} (need more resources)`;
   }
 
   function setBuildMode(mode) {
@@ -1095,6 +1372,9 @@ export function createHUD() {
     attackLabel,
     showIntel,
     intelLabel,
+    showTrade,
+    tradeEnabled,
+    tradeLabel,
     showDeclareWar,
     showMakePeace,
     showRequestAlly,
@@ -1105,6 +1385,7 @@ export function createHUD() {
     onExpand,
     onAttack,
     onIntel,
+    onTrade,
     onSendWarship,
     onDeclareWar,
     onMakePeace,
@@ -1123,6 +1404,10 @@ export function createHUD() {
     ctxIntel.hidden = !showIntel;
     ctxIntel.textContent = String(intelLabel || "Intel");
 
+    ctxTrade.hidden = !showTrade;
+    ctxTrade.textContent = String(tradeLabel || "Trade");
+    ctxTrade.disabled = (showTrade && tradeEnabled === false);
+
     ctxSendWarship.hidden = !showSendWarship;
     ctxSendWarship.textContent = String(sendWarshipLabel || "Send Warship");
     ctxSendWarship.disabled = (showSendWarship && sendWarshipEnabled === false);
@@ -1136,6 +1421,7 @@ export function createHUD() {
     ctxExpand.onclick = () => { hideCtx(); onExpand && onExpand(); };
     ctxAttack.onclick = () => { hideCtx(); if (!ctxAttack.disabled) onAttack && onAttack(); };
     ctxIntel.onclick = () => { hideCtx(); onIntel && onIntel(); };
+    ctxTrade.onclick = () => { hideCtx(); if (!ctxTrade.disabled) onTrade && onTrade(); };
     ctxSendWarship.onclick = () => { hideCtx(); if (!ctxSendWarship.disabled) onSendWarship && onSendWarship(); };
     ctxDeclareWar.onclick = () => { hideCtx(); onDeclareWar && onDeclareWar(); };
     ctxMakePeace.onclick = () => { hideCtx(); onMakePeace && onMakePeace(); };
@@ -1476,6 +1762,15 @@ export function createHUD() {
 
       statGoldVal.textContent = fmtCompact(p.gold || 0);
       statGoldDelta.textContent = fmtDelta(p.goldPS || 0);
+      statFoodVal.textContent = fmtCompact(p.food || 0);
+      statFoodDelta.textContent = fmtDelta((Number(p.foodPS) || 0) - (Number(p.foodDemandPS) || 0));
+      statSteelVal.textContent = fmtCompact(p.steel || 0);
+      statSteelDelta.textContent = fmtDelta(p.steelPS || 0);
+      statOilVal.textContent = fmtCompact(p.oil || 0);
+      statOilDelta.textContent = fmtDelta((Number(p.oilPS) || 0) - (Number(p.oilDemandPS) || 0));
+      statFoodDelta.classList.toggle("isNegative", ((Number(p.foodPS) || 0) - (Number(p.foodDemandPS) || 0)) < 0);
+      statSteelDelta.classList.toggle("isNegative", (Number(p.steelPS) || 0) < 0);
+      statOilDelta.classList.toggle("isNegative", ((Number(p.oilPS) || 0) - (Number(p.oilDemandPS) || 0)) < 0);
 
       statPopVal.textContent = fmtCompact(p.population || 0);
       statPopCap.textContent = fmtCompact(p.popCap || 0);
@@ -1526,18 +1821,28 @@ export function createHUD() {
     clearBuildMode: () => setBuildMode(null),
 
     // Update build costs displayed on the build buttons and in the build-mode label.
-    // Expects: { city, factory, barracks, defence_post, port, missile_silo, abm_launcher, airbase, playerGold }
+    // Expects: { city, factory, barracks, defence_post, port, coastal_rig, missile_silo, abm_launcher, airbase, playerGold, playerResources, resourceCosts, oilUpkeep }
     setBuildCosts: (m) => {
       const obj = m || {};
       lastPlayerGold = Math.max(0, Math.floor(Number(obj.playerGold) || 0));
+      lastPlayerResources = normalizeResourceBundle(obj.playerResources);
 
       for (const k of Object.keys(buildBtnMeta)) {
         const cost = Math.max(0, Math.floor(Number(obj[k]) || 0));
         lastBuildCosts[k] = cost;
+        lastBuildResourceCosts[k] = normalizeResourceBundle(obj.resourceCosts?.[k]);
+        lastBuildOilUpkeep[k] = Math.max(0, Number(obj.oilUpkeep?.[k]) || 0);
 
         const meta = buildBtnMeta[k];
         if (meta && meta.costEl) meta.costEl.textContent = cost > 0 ? `${fmtCompact(cost)}g` : "";
-        if (meta && meta.el) meta.el.classList.toggle("isUnaffordable", cost > lastPlayerGold);
+        if (meta && meta.el) {
+          meta.el.classList.toggle("isUnaffordable", !canAffordBuildType(k));
+        }
+      }
+
+      if (activeBuildTooltipType) {
+        renderBuildTooltip(activeBuildTooltipType);
+        positionBuildTooltip(activeBuildTooltipType);
       }
 
       refreshBuildModeLabel();
@@ -1599,7 +1904,11 @@ export function createHUD() {
       }
     },
 
-    setOpMessage: (s) => (opMsg.textContent = String(s || "")),
+    setOpMessage: (s) => {
+      const text = String(s || "");
+      opMsg.textContent = text;
+      if (isActionWarningMessage(text)) showActionWarning(text);
+    },
     setOpStartEnabled: (v) => (opStart.disabled = !Boolean(v)),
     setOpStartLabel: (s) => (opStart.textContent = String(s || "Expand")),
     onStart: (cb) => (cbStart = cb),
@@ -1873,6 +2182,7 @@ export function createHUD() {
     onAttack: (cb) => (cbAttack = cb),
     onMakePeace: (cb) => (cbMakePeace = cb),
     onRequestAlly: (cb) => (cbRequestAlly = cb),
+    onTrade: (cb) => (cbTrade = cb),
     onEventsScopeChange: (cb) => (cbEventsScopeChange = cb),
     getEventsScope: () => eventsScope,
     setEventsScope: (scope) => setEventsScope(scope),
@@ -1899,6 +2209,9 @@ export function createHUD() {
       attackLabel,
       showIntel,
       intelLabel,
+      showTrade,
+      tradeEnabled,
+      tradeLabel,
       showSendWarship,
       sendWarshipEnabled,
       sendWarshipLabel,
@@ -1919,6 +2232,9 @@ export function createHUD() {
         attackLabel,
         showIntel,
         intelLabel,
+        showTrade,
+        tradeEnabled,
+        tradeLabel,
         showSendWarship,
         sendWarshipEnabled,
         sendWarshipLabel,
@@ -1929,6 +2245,7 @@ export function createHUD() {
         onExpand: () => { if (cbBurstExpand) cbBurstExpand(cellAction || null); },
         onAttack: () => cbAttack && cbAttack(cellAction || null),
         onIntel: () => cbIntel && cbIntel(targetId),
+        onTrade: () => cbTrade && cbTrade(targetId),
         onSendWarship: () => cbSendWarship && cbSendWarship(cellAction || null),
         onDeclareWar: () => cbDeclareWar && cbDeclareWar(targetId),
         onMakePeace: () => cbMakePeace && cbMakePeace(targetId),

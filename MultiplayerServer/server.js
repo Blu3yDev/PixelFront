@@ -112,7 +112,7 @@ const MAP_MODE_GENERATOR = "generator";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-02-21-authoritative-runtime-v26");
+const SERVER_BUILD_ID = String(process.env.PF_SERVER_BUILD_ID || "2026-03-07-multiplayer-revamp-v27");
 const SERVER_INSTANCE_ID = randomUUID().slice(0, 8);
 
 const SERVER_WORLD_SIZE_PRESETS = Object.freeze({
@@ -136,6 +136,11 @@ const COMMAND_METHOD = Object.freeze({
   start_war_focus: "startWarFocus",
   cancel_all_operations: "cancelAllOperations",
   cancel_operation: "cancelOperation",
+  create_trade_deal: "requestTradeDeal",
+  request_trade_deal: "requestTradeDeal",
+  respond_trade_request: "respondTradeRequest",
+  cancel_trade_request: "cancelTradeRequest",
+  cancel_trade_deal: "cancelTradeDeal",
   donate: "donate",
   declare_war: "declareWar",
   send_warship: "sendWarship",
@@ -160,6 +165,11 @@ const COMMAND_NATION_ARGS = Object.freeze({
   start_neutral: [1],
   start_war_focus: [0, 1],
   cancel_all_operations: [0],
+  create_trade_deal: [0, 1],
+  request_trade_deal: [0, 1],
+  respond_trade_request: [1],
+  cancel_trade_request: [1],
+  cancel_trade_deal: [1],
   donate: [0, 1],
   declare_war: [0, 1],
   send_warship: [0],
@@ -184,6 +194,11 @@ const COMMAND_ACTOR_ARG = Object.freeze({
   start_neutral: 1,
   start_war_focus: 0,
   cancel_all_operations: 0,
+  create_trade_deal: 0,
+  request_trade_deal: 0,
+  respond_trade_request: 1,
+  cancel_trade_request: 1,
+  cancel_trade_deal: 1,
   donate: 0,
   declare_war: 0,
   send_warship: 0,
@@ -326,19 +341,20 @@ function candidateMainSrcDirs() {
 
   const roots = uniquePaths([
     ...envRoots,
-    THIS_DIR,
     process.cwd(),
+    path.resolve(process.cwd(), ".."),
     path.resolve(THIS_DIR, ".."),
-    path.resolve(process.cwd(), "..")
+    THIS_DIR
   ]);
 
-  const dirs = [...envMainSrc];
+  const preferred = [...envMainSrc];
+  const fallback = [];
   for (let i = 0; i < roots.length; i++) {
     const root = roots[i];
-    dirs.push(path.join(root, "Main", "src"));
-    dirs.push(path.join(root, "src"));
+    preferred.push(path.join(root, "Main", "src"));
+    fallback.push(path.join(root, "src"));
   }
-  return uniquePaths(dirs);
+  return uniquePaths([...preferred, ...fallback]);
 }
 
 function resolveRuntimeModulePaths() {
@@ -1846,6 +1862,8 @@ function serializeEntitiesDelta(world, runtime, forceFull = false) {
   const includeOperations = forceFull || ((now - (Number(runtime?.lastOperationsSnapshotAtMs) || 0)) >= operationsIntervalMs);
   if (includeOperations) {
     out.operations = cloneWire(Array.isArray(world?.operations) ? world.operations : []) || [];
+    out.tradeDeals = cloneWire(Array.isArray(world?.tradeDeals) ? world.tradeDeals : []) || [];
+    out.tradeRequests = cloneWire(Array.isArray(world?.tradeRequests) ? world.tradeRequests : []) || [];
     if (runtime && typeof runtime === "object") runtime.lastOperationsSnapshotAtMs = now;
     included = true;
   }
@@ -1864,6 +1882,8 @@ function serializeEntitiesDelta(world, runtime, forceFull = false) {
     if ((now - lastAt) < dynamicEntityIntervalMs) return undefined;
     // Safety valve: send operations cadence if the world is quiet for too long.
     out.operations = cloneWire(Array.isArray(world?.operations) ? world.operations : []) || [];
+    out.tradeDeals = cloneWire(Array.isArray(world?.tradeDeals) ? world.tradeDeals : []) || [];
+    out.tradeRequests = cloneWire(Array.isArray(world?.tradeRequests) ? world.tradeRequests : []) || [];
     if (runtime && typeof runtime === "object") runtime.lastOperationsSnapshotAtMs = now;
     included = true;
   }
@@ -2025,6 +2045,8 @@ function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
     mapRows(packet.changedEntities.nukeFlights, REMAP_NUKE_KEYS);
     mapRows(packet.changedEntities.airborneMissions, REMAP_OWNER_ONLY_KEYS);
     mapRows(packet.changedEntities.operations, REMAP_OP_KEYS);
+    mapRows(packet.changedEntities.tradeDeals, REMAP_ID_KEYS);
+    mapRows(packet.changedEntities.tradeRequests, REMAP_ID_KEYS);
   }
 
   if (Array.isArray(packet.nationStats)) {
@@ -2203,6 +2225,33 @@ function computeStateHashForWorld(world, tickRaw, assignedNationIdRaw) {
   mixEntity("nf", world.nukeFlights, ["owner", "launchTargetOwner"]);
   mixEntity("am", world.airborneMissions, ["owner"]);
   mixEntity("op", world.operations, ["attacker", "defender"]);
+  const mixTradeRows = (prefix, list) => {
+    const rows = Array.isArray(list) ? list : [];
+    h = hashMixString(h, prefix);
+    h = hashMixNumber(h, rows.length);
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      h = hashMixNumber(h, Number(row.id) | 0);
+      h = hashMixNumber(h, toLocal(Number(row.from) | 0));
+      h = hashMixNumber(h, toLocal(Number(row.to) | 0));
+      h = hashMixString(h, String(row.offerResource || ""));
+      h = hashMixNumber(h, Math.round((Number(row.offerRatePerMinute) || 0) * 100));
+      h = hashMixString(h, String(row.requestResource || ""));
+      h = hashMixNumber(h, Math.round((Number(row.requestRatePerMinute) || 0) * 100));
+      h = hashMixNumber(h, Math.round((Number(row.durationS) || 0) * 10));
+      h = hashMixNumber(h, Math.round((Number(row.createdAt) || 0) * 10));
+      h = hashMixNumber(h, Math.round((Number(row.decideAt) || 0) * 10));
+      h = hashMixNumber(h, Math.round((Number(row.expiresAt) || 0) * 10));
+      h = hashMixNumber(h, Math.round((Number(row.startAt) || 0) * 10));
+      h = hashMixNumber(h, Math.round((Number(row.endAt) || 0) * 10));
+      h = hashMixNumber(h, Math.round((Number(row.remainingS) || 0) * 10));
+      h = hashMixNumber(h, Math.round((Number(row.transferredFrom) || 0) * 100));
+      h = hashMixNumber(h, Math.round((Number(row.transferredTo) || 0) * 100));
+    }
+  };
+
+  mixTradeRows("td", world.tradeDeals);
+  mixTradeRows("tr", world.tradeRequests);
 
   return (h >>> 0).toString(16).padStart(8, "0");
 }
@@ -2798,6 +2847,15 @@ function mapInputArgsToCanonical(cmdRaw, argsRaw, assignedNationIdRaw) {
 
   if (cmd === "cancel_all_operations" && args.length <= 0) {
     args.push(assigned);
+  }
+
+  if (cmd === "create_trade_deal" && args.length <= 0) {
+    args.push(assigned);
+  }
+
+  if (cmd === "cancel_trade_deal") {
+    if (args.length < 2) args[1] = assigned;
+    else args[1] = mapLocalToCanonicalNationId(Number(args[1]) | 0, assigned);
   }
 
   return args;

@@ -1,3 +1,12 @@
 .vercel
 Main/node_modules/
 Main/dist/
+.tmp_openfront/
+Main/dist-ext/
+Main/dist-logfix-check/
+Main/dist-perf-check/
+Main/dist-solo-worker-check/
+Main/src-tauri/target/
+MultiplayerServer/node_modules/
+
+.vercel

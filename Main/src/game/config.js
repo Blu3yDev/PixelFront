@@ -25,6 +25,7 @@ export const BUILD_COST = Object.freeze({
   factory: 150000,
   barracks: 150000,
   port: 175000,
+  coastal_rig: 220000,
   defence_post: 75000,
   missile_silo: 1200000,
   abm_launcher: 750000,
@@ -36,6 +37,7 @@ export const STRUCT_BUILD_TIME_S = Object.freeze({
   factory: 9,
   barracks: 8,
   port: 10,
+  coastal_rig: 8,
   defence_post: 5,
   missile_silo: 14,
   abm_launcher: 12,
@@ -50,6 +52,7 @@ export const STRUCT_COST_GROWTH = Object.freeze({
   factory: 1.36,
   barracks: 1.33,
   port: 1.38,
+  coastal_rig: 1.35,
   defence_post: 1.33,
   missile_silo: 1.42,
   abm_launcher: 1.39,
@@ -126,6 +129,71 @@ export const AIRBORNE_EXPAND_DURATION_S = 22;
 export const AIRBORNE_TILE_COST_NEUTRAL = 0.95;
 export const AIRBORNE_TILE_COST_ENEMY = 1.85;
 
+// ===== Strategic resources (Food / Steel / Oil) =====
+export const RESOURCE_STOCK_START = Object.freeze({
+  food: 26000,
+  steel: 2200,
+  oil: 1800
+});
+
+export const RESOURCE_STOCK_CAP = Object.freeze({
+  food: 300000,
+  steel: 180000,
+  oil: 140000
+});
+
+export const RESOURCE_PRODUCTION_PER_STRUCTURE_S = Object.freeze({
+  foodPerCity: 16,
+  steelPerFactory: 2.5,
+  oilPerCoastalRig: 3.2
+});
+
+export const RESOURCE_FOOD_CONSUMPTION_PER_POP_S = 0.0003;
+export const RESOURCE_FOOD_GROWTH_MIN_MUL = 0.40;
+export const RESOURCE_FOOD_GROWTH_MAX_MUL = 1.22;
+export const RESOURCE_FOOD_REINFORCE_MIN_MUL = 0.45;
+export const RESOURCE_FOOD_REINFORCE_MAX_MUL = 1.18;
+
+export const RESOURCE_COST_BY_STRUCTURE = Object.freeze({
+  city: Object.freeze({ food: 0, steel: 25, oil: 0 }),
+  factory: Object.freeze({ food: 0, steel: 60, oil: 0 }),
+  barracks: Object.freeze({ food: 0, steel: 45, oil: 0 }),
+  port: Object.freeze({ food: 0, steel: 70, oil: 0 }),
+  coastal_rig: Object.freeze({ food: 0, steel: 90, oil: 0 }),
+  defence_post: Object.freeze({ food: 0, steel: 35, oil: 0 }),
+  missile_silo: Object.freeze({ food: 0, steel: 240, oil: 0 }),
+  abm_launcher: Object.freeze({ food: 0, steel: 180, oil: 0 }),
+  airbase: Object.freeze({ food: 0, steel: 340, oil: 0 })
+});
+
+export const RESOURCE_STEEL_COST_BY_STRUCTURE = Object.freeze({
+  city: 25,
+  factory: 60,
+  barracks: 45,
+  port: 70,
+  coastal_rig: 90,
+  defence_post: 35,
+  missile_silo: 240,
+  abm_launcher: 180,
+  airbase: 340
+});
+
+export const RESOURCE_OIL_UPKEEP_PER_TICK_BY_STRUCTURE = Object.freeze({
+  port: 0.007,
+  missile_silo: 0.015,
+  abm_launcher: 0.012,
+  airbase: 0.024
+});
+
+export const RESOURCE_OIL_COST_WARSHIP = 160;
+export const RESOURCE_OIL_COST_TRANSPORT_SHIP = 120;
+export const RESOURCE_OIL_COST_TRANSPORT_PLANE = 150;
+
+export const TRADE_DEAL_MIN_RATE_PER_MIN = 1;
+export const TRADE_DEAL_MAX_RATE_PER_MIN = 5000;
+export const TRADE_DEAL_MIN_DURATION_MIN = 1;
+export const TRADE_DEAL_MAX_DURATION_MIN = 60;
+
 // Hide structure sprites when zoomed far out to declutter macro view.
 export const STRUCTURE_HIDE_ZOOM = 1.0;
 
@@ -145,7 +213,7 @@ export const CEASEFIRE_DURATION_S = 60.0;
 export const CEASEFIRE_DECISION_S = 15.0;
 export const CEASEFIRE_AI_COOLDOWN_S = 90.0;
 // Delay before AI starts active offensives after a fresh war declaration.
-export const AI_WAR_DECLARED_ATTACK_DELAY_S = 12.0;
+export const AI_WAR_DECLARED_ATTACK_DELAY_S = 18.0;
 
 // ===== NAVY (Section 2: Sea Economy - Trade Ships) =====
 export const TRADE_SHIP_MAX_OUTGOING = 7;
@@ -730,7 +798,7 @@ export const WIND_BANDS = Object.freeze([
 export const WORLDGEN = Object.freeze({
   // Map source mode:
   // - MAP_MODE.GENERATOR: existing generated world
-  // - MAP_MODE.WORLD_MAP: use EarthMap assets (earth_mask3.bmp + Koeppen-Geiger-ASCII.txt)
+  // - MAP_MODE.WORLD_MAP: use EarthMap assets (world-map-countries.geojson + Koeppen-Geiger-ASCII.txt)
   // Switch this one value to choose your map source.
   mapMode: MAP_MODE.WORLD_MAP,
 

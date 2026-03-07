@@ -7,12 +7,10 @@ import {
   GOLD_FACTORY_DIM_EXP,
   GOLD_PER_CITY_S,
   GOLD_PER_FACTORY_S,
-  GOLD_PER_LAND_S,
   GOLD_PER_WORKER_S,
   POPCAP_BASE,
   POPCAP_CAPITAL_BONUS,
   POPCAP_PER_CITY,
-  POPCAP_PER_LAND,
   POP_GROWTH_CATCHUP_EXP,
   POP_GROWTH_CATCHUP_MAX,
   POP_GROWTH_RECOVERY_K,
@@ -35,7 +33,6 @@ function growthZoneFromRatio(ratio) {
 }
 
 const COLLAPSE_POP_BASE = 1800;
-const COLLAPSE_POP_LAND_MUL = 0.55;
 const COLLAPSE_POP_CITY_MUL = 0.30;
 const COLLAPSE_POP_DECAY_K = 0.42;
 const COLLAPSE_TROOP_KEEP_FRAC = 0.18;
@@ -45,6 +42,26 @@ const COLLAPSE_GROWTH_MUL = 0.22;
 const COLLAPSE_RECOVERY_GOLD_MUL = 1.28;
 const COLLAPSE_RECOVERY_GROWTH_MUL = 1.45;
 const COLLAPSE_RECOVERY_REGEN_MUL = 1.35;
+const LAND_ECON_SOFTCAP = 2200;
+const LAND_ECON_OVEREXTEND_START = 5200;
+const LAND_ECON_OVEREXTEND_MAX = 0.22;
+const LAND_ECON_OVEREXTEND_K = 1 / 12000;
+
+function effectiveLandForEconomy(landRaw) {
+  const land = Math.max(0, Number(landRaw) || 0);
+  if (land <= LAND_ECON_SOFTCAP) return land;
+  const extra = land - LAND_ECON_SOFTCAP;
+  // Large empires still gain value from land, but at reduced marginal efficiency.
+  return LAND_ECON_SOFTCAP + Math.sqrt(extra * LAND_ECON_SOFTCAP * 0.90);
+}
+
+function landOverextensionPenalty(landRaw) {
+  const land = Math.max(0, Number(landRaw) || 0);
+  if (land <= LAND_ECON_OVEREXTEND_START) return 1;
+  const over = land - LAND_ECON_OVEREXTEND_START;
+  const loss = LAND_ECON_OVEREXTEND_MAX * (1 - Math.exp(-over * LAND_ECON_OVEREXTEND_K));
+  return Math.max(1 - LAND_ECON_OVEREXTEND_MAX, 1 - loss);
+}
 
 export function installEconomy(World) {
   World.prototype._recomputeNationEconomySnapshot = function(ownerId, opts = null) {
@@ -83,9 +100,13 @@ export function installEconomy(World) {
       }
 
       const land = Math.max(0, this.landOwnedCount[id] | 0);
+      const econLand = effectiveLandForEconomy(land);
+      const overextensionPenalty = landOverextensionPenalty(land);
       const capBonus = hasCapital ? POPCAP_CAPITAL_BONUS : 0;
-      const popCap = Math.max(0, POPCAP_BASE + capBonus + POPCAP_PER_CITY * cities + POPCAP_PER_LAND * land);
+      const popCap = Math.max(0, POPCAP_BASE + capBonus + POPCAP_PER_CITY * cities);
       n.popCap = popCap;
+      n.effectiveLand = econLand;
+      n.overextensionPenalty = overextensionPenalty;
       if (!hasCapital) n.capital = null;
 
       const extra = opts && typeof opts === "object" ? opts : null;
@@ -97,7 +118,6 @@ export function installEconomy(World) {
         const collapseCap = Math.max(
           0,
           COLLAPSE_POP_BASE +
-          (POPCAP_PER_LAND * land * COLLAPSE_POP_LAND_MUL) +
           (POPCAP_PER_CITY * cities * COLLAPSE_POP_CITY_MUL)
         );
         if (pop > collapseCap) pop = collapseCap;
@@ -141,6 +161,8 @@ export function installEconomy(World) {
 
       return {
         land,
+        econLand,
+        overextensionPenalty,
         cities,
         factories: fac,
         barracks: barr,
@@ -215,14 +237,18 @@ export function installEconomy(World) {
         }
         const recoveryUntil = Math.max(0, Number(n.collapseRecoveryUntil) || 0);
         const recoveryActive = (!collapseActive) && (recoveryUntil > this.time);
+        const foodGrowthMul = Math.max(0.15, Number(n.foodGrowthMul) || 1);
 
         const land = Math.max(0, this.landOwnedCount[id] | 0);
+        const econLand = effectiveLandForEconomy(land);
+        const overextensionPenalty = landOverextensionPenalty(land);
         const cities = this._cityCount[id] | 0;
         const fac = this._factoryCount[id] | 0;
-
         const capBonus = n.capital ? POPCAP_CAPITAL_BONUS : 0;
-        const popCap = Math.max(0, POPCAP_BASE + capBonus + POPCAP_PER_CITY * cities + POPCAP_PER_LAND * land);
+        const popCap = Math.max(0, POPCAP_BASE + capBonus + POPCAP_PER_CITY * cities);
         n.popCap = popCap;
+        n.effectiveLand = econLand;
+        n.overextensionPenalty = overextensionPenalty;
 
         const oldPop = n.population;
         const popGap = Math.max(0, popCap - oldPop);
@@ -234,7 +260,6 @@ export function installEconomy(World) {
           const collapseCap = Math.max(
             0,
             COLLAPSE_POP_BASE +
-            (POPCAP_PER_LAND * land * COLLAPSE_POP_LAND_MUL) +
             (POPCAP_PER_CITY * cities * COLLAPSE_POP_CITY_MUL)
           );
           const targetPop = Math.min(popCap, collapseCap);
@@ -243,11 +268,12 @@ export function installEconomy(World) {
             newPop = oldPop + (targetPop - oldPop) * decayMix;
           } else {
             // Keep a weak but non-zero demographic recovery while collapsed.
-            newPop = oldPop + desiredPopPS * dt * COLLAPSE_GROWTH_MUL;
+            newPop = oldPop + desiredPopPS * dt * COLLAPSE_GROWTH_MUL * foodGrowthMul;
           }
         } else {
           const growthMul = recoveryActive ? COLLAPSE_RECOVERY_GROWTH_MUL : 1.0;
-          newPop = oldPop + desiredPopPS * dt * growthMul;
+          const overextensionGrowthMul = Math.max(0.72, 0.58 + (0.42 * overextensionPenalty));
+          newPop = oldPop + desiredPopPS * dt * growthMul * overextensionGrowthMul * foodGrowthMul;
         }
         if (newPop > popCap) newPop = popCap;
         if (newPop < 0) newPop = 0;
@@ -272,13 +298,12 @@ export function installEconomy(World) {
           : 0;
         const goldBase =
           GOLD_BASE_S +
-          (GOLD_PER_LAND_S * land) +
           (GOLD_PER_WORKER_S * workers) +
           factoryIncome +
           (GOLD_PER_CITY_S * cities);
         const collapseMul = collapseActive ? COLLAPSE_GOLD_MUL : 1.0;
         const recoveryMul = recoveryActive ? COLLAPSE_RECOVERY_GOLD_MUL : 1.0;
-        const goldPS = goldBase * mobilizationMul * collapseMul * recoveryMul;
+        const goldPS = goldBase * mobilizationMul * overextensionPenalty * collapseMul * recoveryMul;
         n.gold += goldPS * dt;
         n.goldPS = goldPS;
 
@@ -340,8 +365,9 @@ export function installEconomy(World) {
         const mob = clamp01(n.mobilization ?? 0.45);
         const mobTrainMul = 0.70 + 1.10 * mob;
         const recoveryMul = recoveryActive ? COLLAPSE_RECOVERY_REGEN_MUL : 1.0;
+        const foodReinforceMul = Math.max(0.15, Number(n.foodReinforceMul) || 1);
         // Simple refill rule: base training speed + additive barracks bonus.
-        const k = Math.max(0, (TROOP_REGEN_K + (TROOP_REGEN_BONUS_PER_BARRACK * barr)) * mobTrainMul * recoveryMul);
+        const k = Math.max(0, (TROOP_REGEN_K + (TROOP_REGEN_BONUS_PER_BARRACK * barr)) * mobTrainMul * recoveryMul * foodReinforceMul);
 
         const diff = cap - n.infantry;
         const gain = diff > 0 ? (diff * k * dt) : 0;

@@ -462,6 +462,9 @@ export function installEvents(World) {
         if (this._warPairLastSolveAt) this._warPairLastSolveAt.set(key, this.time || 0);
         this._warsByNation[A] = (this._warsByNation[A] | 0) + 1;
         this._warsByNation[B] = (this._warsByNation[B] | 0) + 1;
+        if (typeof this._cancelTradeDealsForWar === "function") {
+          this._cancelTradeDealsForWar(A, B);
+        }
       } else {
         this._activeWarPairs.delete(key);
         if (this._warPairLastSolveAt) this._warPairLastSolveAt.delete(key);

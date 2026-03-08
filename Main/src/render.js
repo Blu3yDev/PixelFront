@@ -262,6 +262,8 @@ export class Renderer {
     this.selectionImage = this.selectionCtx.createImageData(world.w, world.h);
     this.selectionDirty = true;
     this._selectionHasPixels = false;
+    this._selectionDirtyRect = null;
+    this._selectionNeedsFullUpload = true;
 
     // Selection outline overlay (offscreen)
     // Drawn on top of selection fill so the planned claim area reads clearly.
@@ -271,6 +273,9 @@ export class Renderer {
     this.selectionOutlineCtx = this.selectionOutlineCanvas.getContext("2d", { alpha: true });
     this.selectionOutlineImage = this.selectionOutlineCtx.createImageData(world.w, world.h);
     this.selectionOutlineDirty = true;
+    this._selectionOutlineDirtyRect = null;
+    this._selectionOutlineNeedsFullRebuild = true;
+    this._selectionOutlineNeedsFullUpload = true;
 
     // Hover overlay (offscreen)
     this.hoverCanvas = document.createElement("canvas");
@@ -281,6 +286,8 @@ export class Renderer {
     this.hoverDirty = true;
     this._hoverOwner = 0;
     this._hoverRGBA = { r: 255, g: 255, b: 255, a: 60 };
+    this._hoverDirtyRect = null;
+    this._hoverNeedsFullUpload = true;
 
     // Hatch overlay (offscreen): lazily allocated when the overlay is active.
     this.hatchCanvas = null;
@@ -314,6 +321,12 @@ export class Renderer {
     this._labelSpanCache = new Map();
     this._labelSpanCacheVersion = -1;
     this._labelSpanCacheNextSyncAt = 0;
+    this._labelSnapCache = new Map();
+    this._labelSnapCacheVersion = -1;
+    this._labelSnapCacheNextSyncAt = 0;
+    this._relationLayoutCache = new Map();
+    this._relationLayoutCacheVersion = -1;
+    this._relationLayoutCacheLastPruneAt = 0;
 
     this.dpr = 1;
     const earthPixelMode = String(world?._mapMode || "").toLowerCase() === MAP_MODE.WORLD_MAP;
@@ -373,6 +386,7 @@ export class Renderer {
       defence_post: "defence_post.png",
       port: "port.png",
       coastal_rig: "coastal_rig.png",
+      research_lab: "research_lab.png",
       missile_silo: "missile_silo.png",
       abm_launcher: "abm_launcher.png",
       airbase: "airbase.png"
@@ -2365,6 +2379,78 @@ export class Renderer {
     return v.worldToScreen(cx + 0.5, cy + 0.5);
   }
 
+  _mergeDirtyRect(rect, x0, y0, x1, y1) {
+    const w = this.world.w | 0;
+    const h = this.world.h | 0;
+    const nx0 = Math.max(0, Math.min(w - 1, x0 | 0));
+    const ny0 = Math.max(0, Math.min(h - 1, y0 | 0));
+    const nx1 = Math.max(nx0, Math.min(w - 1, x1 | 0));
+    const ny1 = Math.max(ny0, Math.min(h - 1, y1 | 0));
+    if (!rect) return { x0: nx0, y0: ny0, x1: nx1, y1: ny1 };
+    if (nx0 < rect.x0) rect.x0 = nx0;
+    if (ny0 < rect.y0) rect.y0 = ny0;
+    if (nx1 > rect.x1) rect.x1 = nx1;
+    if (ny1 > rect.y1) rect.y1 = ny1;
+    return rect;
+  }
+
+  _clearImageRect(image, rect) {
+    if (!image || !rect) return;
+    const w = this.world.w | 0;
+    const data = image.data;
+    const x0 = rect.x0 | 0;
+    const y0 = rect.y0 | 0;
+    const x1 = rect.x1 | 0;
+    const y1 = rect.y1 | 0;
+    const rowBytes = ((x1 - x0 + 1) << 2) | 0;
+    for (let y = y0; y <= y1; y++) {
+      const off = ((y * w + x0) << 2) | 0;
+      data.fill(0, off, off + rowBytes);
+    }
+  }
+
+  _forEachOwnerTile(ownerId, visit) {
+    const id = ownerId | 0;
+    if (!id || id === OWNER.NONE || typeof visit !== "function") return false;
+
+    const ownerTiles = (typeof this.world._getOwnerTiles === "function") ? this.world._getOwnerTiles(id) : null;
+    if (ownerTiles && ownerTiles.length) {
+      for (let i = 0; i < ownerTiles.length; i++) visit(ownerTiles[i] | 0);
+      return true;
+    }
+
+    const ownerArr = this.world.owner || this.world.owners || null;
+    if (!ownerArr || ownerArr.length !== ((this.world.w | 0) * (this.world.h | 0))) return false;
+    for (let i = 0; i < ownerArr.length; i++) {
+      if ((ownerArr[i] | 0) !== id) continue;
+      visit(i);
+    }
+    return true;
+  }
+
+  _paintHoverOwner(ownerId, rgba) {
+    const id = ownerId | 0;
+    if (!id || id === OWNER.NONE) return true;
+    const color = rgba || { r: 0, g: 0, b: 0, a: 0 };
+    const data = this.hoverImage.data;
+    let rect = null;
+
+    const ok = this._forEachOwnerTile(id, (idx) => {
+      const cell = idx | 0;
+      const x = cell % (this.world.w | 0);
+      const y = (cell / (this.world.w | 0)) | 0;
+      rect = this._mergeDirtyRect(rect, x, y, x, y);
+      const p = cell << 2;
+      data[p + 0] = color.r | 0;
+      data[p + 1] = color.g | 0;
+      data[p + 2] = color.b | 0;
+      data[p + 3] = color.a | 0;
+    });
+
+    if (rect) this._hoverDirtyRect = this._mergeDirtyRect(this._hoverDirtyRect, rect.x0, rect.y0, rect.x1, rect.y1);
+    return ok;
+  }
+
   // ===== Selection API used by main.js =====
   paintSelectionIndex(idx, rgba) {
     const i = (idx | 0) << 2;
@@ -2375,11 +2461,24 @@ export class Renderer {
     const b = (rgba?.b ?? rgba?.[2] ?? 0) | 0;
     const a = (rgba?.a ?? rgba?.[3] ?? 255) | 0;
 
+    if (
+      (d[i + 0] | 0) === r &&
+      (d[i + 1] | 0) === g &&
+      (d[i + 2] | 0) === b &&
+      (d[i + 3] | 0) === a
+    ) return;
+
     d[i + 0] = r;
     d[i + 1] = g;
     d[i + 2] = b;
     d[i + 3] = a;
     if (a > 0) this._selectionHasPixels = true;
+    const cell = idx | 0;
+    const x = cell % (this.world.w | 0);
+    const y = (cell / (this.world.w | 0)) | 0;
+    this._selectionDirtyRect = this._mergeDirtyRect(this._selectionDirtyRect, x, y, x, y);
+    this._selectionOutlineDirtyRect = this._mergeDirtyRect(this._selectionOutlineDirtyRect, x - 1, y - 1, x + 1, y + 1);
+    this._selectionNeedsFullUpload = false;
     this.selectionDirty = true;
   }
 
@@ -2401,25 +2500,62 @@ export class Renderer {
   clearSelection() {
     this.selectionImage.data.fill(0);
     this.selectionDirty = true;
+    this._selectionDirtyRect = null;
+    this._selectionNeedsFullUpload = true;
     this.selectionOutlineImage.data.fill(0);
     this.selectionOutlineDirty = true;
+    this._selectionOutlineDirtyRect = null;
+    this._selectionOutlineNeedsFullRebuild = false;
+    this._selectionOutlineNeedsFullUpload = true;
     this._selectionHasPixels = false;
   }
   presentSelection() {
     if (!this.selectionDirty && !this.selectionOutlineDirty) return;
 
     if (this.selectionDirty) {
-      this.selectionCtx.putImageData(this.selectionImage, 0, 0);
+      const rect = this._selectionDirtyRect;
+      if (this._selectionNeedsFullUpload || !rect) {
+        this.selectionCtx.putImageData(this.selectionImage, 0, 0);
+      } else {
+        this.selectionCtx.putImageData(
+          this.selectionImage,
+          0,
+          0,
+          rect.x0 | 0,
+          rect.y0 | 0,
+          (rect.x1 - rect.x0 + 1) | 0,
+          (rect.y1 - rect.y0 + 1) | 0
+        );
+      }
       this.selectionDirty = false;
+      this._selectionDirtyRect = null;
+      this._selectionNeedsFullUpload = false;
 
       // Outline depends on the latest selection pixels
-      this._rebuildSelectionOutline();
-      this.selectionOutlineDirty = true;
+      if (this._selectionOutlineNeedsFullRebuild || this._selectionOutlineDirtyRect) {
+        this._rebuildSelectionOutline();
+        this.selectionOutlineDirty = true;
+      }
     }
 
     if (this.selectionOutlineDirty) {
-      this.selectionOutlineCtx.putImageData(this.selectionOutlineImage, 0, 0);
+      const rect = this._selectionOutlineDirtyRect;
+      if (this._selectionOutlineNeedsFullUpload || !rect) {
+        this.selectionOutlineCtx.putImageData(this.selectionOutlineImage, 0, 0);
+      } else {
+        this.selectionOutlineCtx.putImageData(
+          this.selectionOutlineImage,
+          0,
+          0,
+          rect.x0 | 0,
+          rect.y0 | 0,
+          (rect.x1 - rect.x0 + 1) | 0,
+          (rect.y1 - rect.y0 + 1) | 0
+        );
+      }
       this.selectionOutlineDirty = false;
+      this._selectionOutlineDirtyRect = null;
+      this._selectionOutlineNeedsFullUpload = false;
     }
   }
 
@@ -2429,13 +2565,19 @@ export class Renderer {
 
     const src = this.selectionImage.data;
     const out = this.selectionOutlineImage.data;
-    out.fill(0);
+    const rect = this._selectionOutlineNeedsFullRebuild || !this._selectionOutlineDirtyRect
+      ? { x0: 0, y0: 0, x1: w - 1, y1: h - 1 }
+      : this._selectionOutlineDirtyRect;
+    this._clearImageRect(this.selectionOutlineImage, rect);
+    this._selectionOutlineDirtyRect = rect;
+    this._selectionOutlineNeedsFullUpload = this._selectionOutlineNeedsFullRebuild;
+    this._selectionOutlineNeedsFullRebuild = false;
 
     // Tinted outline, constant 1px in world-space.
     // A pixel is part of the outline if it is selected and at least one 4-neighbor is not selected.
-    for (let y = 0; y < h; y++) {
+    for (let y = rect.y0 | 0; y <= (rect.y1 | 0); y++) {
       const row = y * w;
-      for (let x = 0; x < w; x++) {
+      for (let x = rect.x0 | 0; x <= (rect.x1 | 0); x++) {
         const idx = row + x;
         const pSrc = idx << 2;
         const a = src[pSrc + 3] | 0;
@@ -2465,6 +2607,7 @@ export class Renderer {
   // ===== Hover API used by main.js =====
   setHoverOwner(ownerId, rgba) {
     const id = ownerId | 0;
+    const prevId = this._hoverOwner | 0;
 
     const nr = (rgba?.r ?? 255) | 0;
     const ng = (rgba?.g ?? 255) | 0;
@@ -2479,14 +2622,29 @@ export class Renderer {
 
     this._hoverOwner = id;
     this._hoverRGBA = { r: nr, g: ng, b: nb, a: na };
+    if (prevId !== id) {
+      const cleared = prevId > 0 ? this._paintHoverOwner(prevId, { r: 0, g: 0, b: 0, a: 0 }) : true;
+      const painted = id > 0 ? this._paintHoverOwner(id, this._hoverRGBA) : true;
+      if (cleared && painted) {
+        this.hoverDirty = true;
+        this._hoverNeedsFullUpload = false;
+        return;
+      }
+    } else if (id > 0) {
+      const repainted = this._paintHoverOwner(id, this._hoverRGBA);
+      if (repainted) {
+        this.hoverDirty = true;
+        this._hoverNeedsFullUpload = false;
+        return;
+      }
+    }
     this._rebuildHoverOverlay();
   }
 
   _rebuildHoverOverlay() {
-    const w = this.world.w | 0;
-    const h = this.world.h | 0;
-    const data = this.hoverImage.data;
-    data.fill(0);
+    this.hoverImage.data.fill(0);
+    this._hoverDirtyRect = null;
+    this._hoverNeedsFullUpload = true;
 
     const id = this._hoverOwner | 0;
     if (!id || id === OWNER.NONE) {
@@ -2498,43 +2656,32 @@ export class Renderer {
     const g = this._hoverRGBA.g | 0;
     const b = this._hoverRGBA.b | 0;
     const a = this._hoverRGBA.a | 0;
-
-    const ownerTiles = (typeof this.world._getOwnerTiles === "function") ? this.world._getOwnerTiles(id) : null;
-    if (ownerTiles && ownerTiles.length) {
-      for (let i = 0; i < ownerTiles.length; i++) {
-        const idx = ownerTiles[i] | 0;
-        const p = idx << 2;
-        data[p + 0] = r;
-        data[p + 1] = g;
-        data[p + 2] = b;
-        data[p + 3] = a;
-      }
+    if (!this._paintHoverOwner(id, { r, g, b, a })) {
       this.hoverDirty = true;
       return;
     }
-
-    const ownerArr = this.world.owner || this.world.owners || null;
-    if (!ownerArr || ownerArr.length !== w * h) {
-      this.hoverDirty = true;
-      return;
-    }
-
-    for (let i = 0; i < ownerArr.length; i++) {
-      if ((ownerArr[i] | 0) !== id) continue;
-      const p = i << 2;
-      data[p + 0] = r;
-      data[p + 1] = g;
-      data[p + 2] = b;
-      data[p + 3] = a;
-    }
-
     this.hoverDirty = true;
   }
 
   presentHover() {
     if (!this.hoverDirty) return;
-    this.hoverCtx.putImageData(this.hoverImage, 0, 0);
+    const rect = this._hoverDirtyRect;
+    if (this._hoverNeedsFullUpload || !rect) {
+      this.hoverCtx.putImageData(this.hoverImage, 0, 0);
+    } else {
+      this.hoverCtx.putImageData(
+        this.hoverImage,
+        0,
+        0,
+        rect.x0 | 0,
+        rect.y0 | 0,
+        (rect.x1 - rect.x0 + 1) | 0,
+        (rect.y1 - rect.y0 + 1) | 0
+      );
+    }
     this.hoverDirty = false;
+    this._hoverDirtyRect = null;
+    this._hoverNeedsFullUpload = false;
   }
 
   // ===== Tile pressure heatmap overlay =====
@@ -3602,16 +3749,14 @@ export class Renderer {
 
   ctx.save();
   ctx.setTransform(v.dpr, 0, 0, v.dpr, 0, 0);
-  ctx.imageSmoothingEnabled = false;
+  ctx.imageSmoothingEnabled = true;
 
-  // Render structures as a 3x3 *world-pixel footprint* (matches the placement
-  // footprint). On-screen size therefore scales with zoom: sizePx = 3 * zoom.
-  // Slightly overscale the icon but clip it to the logical 3x3 box so it fills
-  // the square cleanly without bleeding outside the footprint.
-  const box = Math.max(3, (3 * (zoom | 0)) | 0);       // logical footprint box (for badge/highlight)
-  const size = Math.max(box, Math.round(box * 1.35));    // draw larger, then clip to box
-  const halfBox = box * 0.5;
-  const half = size * 0.5;
+  // Draw structure sprites in screen space so the authored PNG detail stays
+  // readable instead of being crushed into the 3x3 tile footprint.
+  const iconSize = Math.max(9, Math.min(28, this.structureIconMaxPx | 0, Math.round(6 + (zoom * 3.25))));
+  const halfIcon = iconSize * 0.5;
+  const badgeBox = Math.max(10, Math.round(iconSize * 0.72));
+  const halfBadgeBox = badgeBox * 0.5;
 
   // Small badge for stacked structures.
   const badgeR = 6;
@@ -3624,26 +3769,24 @@ export class Renderer {
     const sx = dx + wx * zoom;
     const sy = dy + wy * zoom;
 
-    // Logical 3x3 box (for selection highlight + badge anchor)
-    const xBox = Math.round(sx - halfBox);
-    const yBox = Math.round(sy - halfBox);
+    const xBox = Math.round(sx - halfBadgeBox);
+    const yBox = Math.round(sy - halfBadgeBox);
 
     // Cull off-screen structures early (large maps can have many structures).
-    if (xBox + box < -32 || yBox + box < -32 || xBox > v.canvasW + 32 || yBox > v.canvasH + 32) {
+    if (xBox + badgeBox < -48 || yBox + badgeBox < -48 || xBox > v.canvasW + 48 || yBox > v.canvasH + 48) {
       continue;
     }
 
-    // Drawn icon (slightly larger than the logical box)
-    const x0 = Math.round(sx - half);
-    const y0 = Math.round(sy - half);
+    const x0 = Math.round(sx - halfIcon);
+    const y0 = Math.round(sy - halfIcon);
 
     // Selection highlight
     if (selectedStructureId && (st.id | 0) === (selectedStructureId | 0)) {
       ctx.lineWidth = 2;
       ctx.strokeStyle = "rgba(255, 220, 80, 0.90)";
-      ctx.strokeRect(xBox - 3, yBox - 3, box + 6, box + 6);
+      ctx.strokeRect(x0 - 3, y0 - 3, iconSize + 6, iconSize + 6);
       ctx.fillStyle = "rgba(255, 220, 80, 0.18)";
-      ctx.fillRect(xBox - 3, yBox - 3, box + 6, box + 6);
+      ctx.fillRect(x0 - 3, y0 - 3, iconSize + 6, iconSize + 6);
     }
 
     // Type-tinted pixel palette mixed with owner tint so nations remain visually distinct.
@@ -3656,6 +3799,7 @@ export class Renderer {
     else if (st.type === "defence_post") { tr = 140; tg = 200; tb = 255; }
     else if (st.type === "port") { tr = 120; tg = 190; tb = 255; }
     else if (st.type === "coastal_rig") { tr = 240; tg = 196; tb = 104; }
+    else if (st.type === "research_lab") { tr = 216; tg = 186; tb = 255; }
     else if (st.type === "missile_silo") { tr = 255; tg = 172; tb = 88; }
     else if (st.type === "abm_launcher") { tr = 255; tg = 126; tb = 96; }
     else if (st.type === "airbase") { tr = 160; tg = 208; tb = 255; }
@@ -3665,44 +3809,39 @@ export class Renderer {
     const g = ((tg * 0.55) + (tint.g * 0.45)) | 0;
     const b = ((tb * 0.55) + (tint.b * 0.45)) | 0;
 
-    // Draw the 3x3 icon. Prefer your PNG assets in /Structures (or /structures).
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(xBox, yBox, box, box);
-    ctx.clip();
-
+    // Draw the icon at a readable screen-space size. Prefer PNG assets in
+    // /Structures (or /structures).
     const icon = this._getStructureIcon(st.type);
     if (icon && icon.complete && icon.naturalWidth > 0) {
-      ctx.drawImage(icon, x0, y0, size, size);
+      ctx.drawImage(icon, x0, y0, iconSize, iconSize);
     } else {
-      // Fallback: fill the entire 3x3 so it reads as "3x3" (not 1px).
+      // Fallback: keep a readable solid marker if the sprite is unavailable.
       ctx.fillStyle = `rgba(${r},${g},${b},0.98)`;
-      ctx.fillRect(x0, y0, size, size);
+      ctx.fillRect(x0, y0, iconSize, iconSize);
 
-      // Tiny 1px mark for readability without shrinking the perceived size.
+      // Tiny mark for readability without overwhelming the fallback tile.
+      const markerSize = Math.max(1, Math.round(iconSize * 0.14));
       ctx.fillStyle = "rgba(0,0,0,0.35)";
-      if (st.type === "factory") ctx.fillRect(x0 + 2, y0 + 0, 1, 1);
-      else if (st.type === "barracks") ctx.fillRect(x0 + 0, y0 + 0, 1, 1);
-      else if (st.type === "capital") ctx.fillRect(x0 + 1, y0 + 1, 1, 1);
-      else ctx.fillRect(x0 + 1, y0 + 0, 1, 1);
+      if (st.type === "factory") ctx.fillRect(x0 + markerSize, y0, markerSize, markerSize);
+      else if (st.type === "barracks") ctx.fillRect(x0, y0, markerSize, markerSize);
+      else if (st.type === "capital") ctx.fillRect(x0 + markerSize, y0 + markerSize, markerSize, markerSize);
+      else ctx.fillRect(x0 + markerSize, y0, markerSize, markerSize);
     }
-
-    ctx.restore();
 
     const construction = st?.data?.construction;
     const pendingCount = Math.max(0, Number(construction?.pendingCount) | 0);
     const buildRemainingS = Math.max(0, Number(construction?.buildRemainingS) || 0);
     const buildTotalS = Math.max(0, Number(construction?.buildTotalS) || 0);
     const showProgress = pendingCount > 0 && (buildTotalS > 0.00001 || buildRemainingS > 0.00001);
-    let markerTopY = yBox - 4;
+    let markerTopY = y0 - 4;
     if (showProgress) {
       const progress01 = (buildTotalS > 0.00001 && buildRemainingS > 0.00001)
         ? Math.max(0, Math.min(1, 1 - (buildRemainingS / Math.max(0.1, buildTotalS))))
         : 0;
-      const barW = Math.max(1, box);
-      const barH = Math.max(2, Math.min(6, Math.round(box * 0.44)));
-      const barX = xBox;
-      const barY = Math.round(yBox - barH - 3);
+      const barW = Math.max(10, Math.round(iconSize * 0.78));
+      const barH = Math.max(2, Math.min(6, Math.round(iconSize * 0.16)));
+      const barX = Math.round(sx - (barW * 0.5));
+      const barY = Math.round(y0 - barH - 3);
       markerTopY = Math.min(markerTopY, barY - 4);
       const fillW = Math.max(1, Math.round(barW * progress01));
 
@@ -3718,7 +3857,7 @@ export class Renderer {
 
       if (pendingCount > 1) {
         const qLabel = `x${Math.min(99, pendingCount)}`;
-        const qFontPx = Math.max(8, Math.min(11, Math.round(box * 0.68)));
+        const qFontPx = Math.max(8, Math.min(11, Math.round(iconSize * 0.28)));
         ctx.font = `700 ${qFontPx}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto`;
         const qTextW = Math.ceil(ctx.measureText(qLabel).width);
         const qW = Math.max(12, qTextW + 6);
@@ -3762,8 +3901,8 @@ export class Renderer {
     // Hide stack badges when zoomed out (cleaner at macro view).
     const showBadge = ((v.zoom | 0) >= 3);
     if (showBadge && count > 1) {
-      const bx = xBox + box + badgeR - 1;
-      const by = yBox - 1 + badgeR - 1;
+      const bx = x0 + iconSize - badgeR + 1;
+      const by = y0 + badgeR - 1;
 
       ctx.beginPath();
       ctx.arc(bx, by, badgeR, 0, Math.PI * 2);
@@ -4279,6 +4418,29 @@ export class Renderer {
       this._labelSizeCacheLastPruneAt = nowT;
     }
 
+    const snapCacheVer = this._labelSnapCacheVersion | 0;
+    if (ownerVersion < snapCacheVer) {
+      this._labelSnapCacheVersion = ownerVersion;
+      this._labelSnapCache.clear();
+      this._labelSnapCacheNextSyncAt = nowT + 1.5;
+    } else if ((ownerVersion - snapCacheVer) >= 24000 && nowT >= this._labelSnapCacheNextSyncAt) {
+      this._labelSnapCacheVersion = ownerVersion;
+      this._labelSnapCache.clear();
+      this._labelSnapCacheNextSyncAt = nowT + 2.0;
+    }
+
+    const relationCacheVer = this._relationLayoutCacheVersion | 0;
+    if (ownerVersion < relationCacheVer) {
+      this._relationLayoutCacheVersion = ownerVersion;
+      this._relationLayoutCache.clear();
+      this._relationLayoutCacheLastPruneAt = nowT;
+    } else if (ownerVersion > relationCacheVer) {
+      this._relationLayoutCacheVersion = ownerVersion;
+    } else if (this._relationLayoutCache.size > 2048 && (nowT - this._relationLayoutCacheLastPruneAt) >= 0.4) {
+      this._relationLayoutCache.clear();
+      this._relationLayoutCacheLastPruneAt = nowT;
+    }
+
     const fitFontPx = (text, weight, maxPx, minPx, maxWidth) => {
       let size = Math.max(minPx, maxPx);
       if (!(maxWidth > 0)) return size;
@@ -4406,43 +4568,6 @@ export class Renderer {
       return null;
     };
 
-    const screenPointInOwner = (sx, sy, ownerId) => {
-      if (!landArr || !ownerArr || !(zoom > 0)) return false;
-      const wx = ((sx - dx) / zoom) - 0.5;
-      const wy = ((sy - dy) / zoom) - 0.5;
-      const x = Math.floor(wx);
-      const y = Math.floor(wy);
-      if (x < 0 || y < 0 || x >= worldW || y >= worldH) return false;
-      const idx = y * worldW + x;
-      return !!landArr[idx] && ((ownerArr[idx] | 0) === (ownerId | 0));
-    };
-
-    const iconRectFitsOwner = (x, y, size, ownerId) => {
-      if (!(size > 4)) return false;
-      const inset = Math.min(6, Math.max(1, size * 0.16));
-      const x0 = x + inset;
-      const y0 = y + inset;
-      const x1 = x + size - inset;
-      const y1 = y + size - inset;
-      const cx = x + size * 0.5;
-      const cy = y + size * 0.5;
-      return (
-        screenPointInOwner(cx, cy, ownerId) &&
-        screenPointInOwner(x0, y0, ownerId) &&
-        screenPointInOwner(x1, y0, ownerId) &&
-        screenPointInOwner(x0, y1, ownerId) &&
-        screenPointInOwner(x1, y1, ownerId)
-      );
-    };
-
-    const iconGroupFitsOwner = (xStart, y, size, spacing, ownerId, count) => {
-      for (let i = 0; i < count; i++) {
-        const x = xStart + i * (size + spacing);
-        if (!iconRectFitsOwner(x, y, size, ownerId)) return false;
-      }
-      return true;
-    };
-
     for (let id = 1; id < nations.length; id++) {
       const n = nations[id];
       if (!n || !n.alive) continue;
@@ -4450,7 +4575,18 @@ export class Renderer {
       const pos = world.getNationLabelPos ? world.getNationLabelPos(id) : null;
       if (!pos) continue;
 
-      const snappedLabel = snapLabelToOwnerTile(pos.x | 0, pos.y | 0, id, 28);
+      const posX = pos.x | 0;
+      const posY = pos.y | 0;
+      let snappedLabel = this._labelSnapCache.get(id | 0) || null;
+      if (!snappedLabel || (snappedLabel.srcX | 0) !== posX || (snappedLabel.srcY | 0) !== posY) {
+        const snap = snapLabelToOwnerTile(posX, posY, id, 28);
+        if (!snap) {
+          this._labelSnapCache.delete(id | 0);
+          continue;
+        }
+        snappedLabel = { srcX: posX, srcY: posY, x: snap.x | 0, y: snap.y | 0 };
+        this._labelSnapCache.set(id | 0, snappedLabel);
+      }
       if (!snappedLabel) continue;
       const labelX = snappedLabel.x | 0;
       const labelY = snappedLabel.y | 0;
@@ -4645,59 +4781,98 @@ export class Renderer {
           const baseSpacing = Math.max(1, Math.round(Number(this._relationIconSpacingPx) || 8));
           const iconLift = Math.max(0, Math.round(Number(this._relationIconLiftPx) || 0));
           const boundsPad = 1;
-          const leftBound = sX - (maxWidth * 0.5) + boundsPad;
-          const rightBound = sX + (maxWidth * 0.5) - boundsPad;
-          const topBound = sY - (maxHeight * 0.5) + boundsPad;
-          const bottomBound = sY + (maxHeight * 0.5) - boundsPad;
+          const leftBound = -(maxWidth * 0.5) + boundsPad;
+          const rightBound = (maxWidth * 0.5) - boundsPad;
+          const topBound = -(maxHeight * 0.5) + boundsPad;
+          const bottomBound = (maxHeight * 0.5) - boundsPad;
           if ((rightBound - leftBound) < 6 || (bottomBound - topBound) < 6) continue;
 
-          const nameCenterY = sY + nameOffset;
+          const nameCenterY = nameOffset;
           const nameTopY = nameCenterY - (nameH * 0.5);
           const count = drawList.length;
+          const iconRectFitsOwnerRelative = (x, y, size, ownerId) => {
+            if (!(size > 4) || !(zoom > 0)) return false;
+            const inset = Math.min(6, Math.max(1, size * 0.16));
+            const samples = [
+              [x + size * 0.5, y + size * 0.5],
+              [x + inset, y + inset],
+              [x + size - inset, y + inset],
+              [x + inset, y + size - inset],
+              [x + size - inset, y + size - inset]
+            ];
+            for (let i = 0; i < samples.length; i++) {
+              const wx = labelX + (samples[i][0] / zoom);
+              const wy = labelY + (samples[i][1] / zoom);
+              const tx = Math.floor(wx);
+              const ty = Math.floor(wy);
+              if (tx < 0 || ty < 0 || tx >= worldW || ty >= worldH) return false;
+              const idx = ty * worldW + tx;
+              if (!landArr[idx] || (ownerArr[idx] | 0) !== (ownerId | 0)) return false;
+            }
+            return true;
+          };
 
-          let iconSize = baseSize;
-          let iconSpacing = Math.max(1, Math.min(baseSpacing, Math.round(iconSize * 0.24)));
-          let iconX = 0;
-          let iconY = 0;
-          let totalW = 0;
-          let fitted = false;
+          const iconGroupFitsOwnerRelative = (xStart, y, size, spacing, ownerId, iconCount) => {
+            for (let i = 0; i < iconCount; i++) {
+              const x = xStart + i * (size + spacing);
+              if (!iconRectFitsOwnerRelative(x, y, size, ownerId)) return false;
+            }
+            return true;
+          };
 
-          for (let pass = 0; pass < 7; pass++) {
-            iconSpacing = Math.max(1, Math.min(baseSpacing, Math.round(iconSize * 0.24)));
+          const relationLayoutKey = `${id}|${labelX}|${labelY}|${count}|${Math.round(maxWidth)}|${Math.round(maxHeight)}|${Math.round(nameH * 10)}|${Math.round(nameOffset * 10)}|${Math.round(labelScaleFont * 1000)}|${Math.round(zoom * 1000)}|${baseSize}|${baseGap}|${baseSpacing}|${iconLift}`;
+          let relationLayout = this._relationLayoutCache.get(relationLayoutKey) || null;
+          if (!relationLayout) {
+            let iconSize = baseSize;
+            let iconSpacing = Math.max(1, Math.min(baseSpacing, Math.round(iconSize * 0.24)));
+            let iconX = 0;
+            let iconY = 0;
+            let totalW = 0;
+            let fitted = false;
 
-            const widthCap = (maxWidth - ((count - 1) * iconSpacing) - 2) / count;
-            const heightCap = nameTopY - topBound - baseGap - iconLift;
-            const cappedSize = Math.min(iconSize, widthCap, heightCap);
-            iconSize = Math.floor(cappedSize);
-            if (!(iconSize > 4)) break;
+            for (let pass = 0; pass < 7; pass++) {
+              iconSpacing = Math.max(1, Math.min(baseSpacing, Math.round(iconSize * 0.24)));
 
-            iconSpacing = Math.max(1, Math.min(baseSpacing, Math.round(iconSize * 0.24)));
-            totalW = count * iconSize + (count - 1) * iconSpacing;
-            iconX = Math.round(sX - totalW * 0.5);
-            iconY = Math.round(nameTopY - baseGap - iconSize - iconLift);
+              const widthCap = (maxWidth - ((count - 1) * iconSpacing) - 2) / count;
+              const heightCap = nameTopY - topBound - baseGap - iconLift;
+              const cappedSize = Math.min(iconSize, widthCap, heightCap);
+              iconSize = Math.floor(cappedSize);
+              if (!(iconSize > 4)) break;
 
-            if (iconX < leftBound) iconX = Math.round(leftBound);
-            if ((iconX + totalW) > rightBound) iconX = Math.round(rightBound - totalW);
-            if (iconY < topBound) iconY = Math.round(topBound);
-            if ((iconY + iconSize) > bottomBound) iconY = Math.round(bottomBound - iconSize);
+              iconSpacing = Math.max(1, Math.min(baseSpacing, Math.round(iconSize * 0.24)));
+              totalW = count * iconSize + (count - 1) * iconSpacing;
+              iconX = Math.round(-totalW * 0.5);
+              iconY = Math.round(nameTopY - baseGap - iconSize - iconLift);
 
-            if (iconGroupFitsOwner(iconX, iconY, iconSize, iconSpacing, id, count)) {
-              fitted = true;
-              break;
+              if (iconX < leftBound) iconX = Math.round(leftBound);
+              if ((iconX + totalW) > rightBound) iconX = Math.round(rightBound - totalW);
+              if (iconY < topBound) iconY = Math.round(topBound);
+              if ((iconY + iconSize) > bottomBound) iconY = Math.round(bottomBound - iconSize);
+
+              if (iconGroupFitsOwnerRelative(iconX, iconY, iconSize, iconSpacing, id, count)) {
+                fitted = true;
+                break;
+              }
+
+              iconSize = Math.floor(iconSize * 0.84);
             }
 
-            iconSize = Math.floor(iconSize * 0.84);
+            relationLayout = fitted && (iconSize > 4)
+              ? { fitted: true, x: iconX, y: iconY, size: iconSize, spacing: iconSpacing }
+              : { fitted: false };
+            this._relationLayoutCache.set(relationLayoutKey, relationLayout);
           }
 
-          if (!fitted || !(iconSize > 4)) continue;
+          if (!relationLayout.fitted || !(relationLayout.size > 4)) continue;
 
           const prevSmooth = ctx.imageSmoothingEnabled;
           ctx.imageSmoothingEnabled = false;
-          let cursorX = iconX;
+          let cursorX = Math.round(sX + relationLayout.x);
+          const iconY = Math.round(sY + relationLayout.y);
 
           for (let i = 0; i < drawList.length; i++) {
-            ctx.drawImage(drawList[i], cursorX, iconY, iconSize, iconSize);
-            cursorX += iconSize + iconSpacing;
+            ctx.drawImage(drawList[i], cursorX, iconY, relationLayout.size, relationLayout.size);
+            cursorX += relationLayout.size + relationLayout.spacing;
           }
           ctx.imageSmoothingEnabled = prevSmooth;
         }

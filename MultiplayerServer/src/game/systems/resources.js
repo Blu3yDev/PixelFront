@@ -125,11 +125,14 @@ export function installResources(World) {
     if (!n) return null;
 
     const counts = this._resourceStructureCounts(id);
+    const researchBonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(id) : null;
+    const foodMul = 1 + Math.max(0, Number(researchBonuses?.foodMul) || 0);
+    const steelMul = 1 + Math.max(0, Number(researchBonuses?.factorySteelMul) || 0);
     n.resourceCityCount = counts.cities | 0;
     n.resourceFactoryCount = counts.factories | 0;
     n.resourceCoastalRigCount = counts.coastalRigs | 0;
-    const foodPS = Math.max(0, counts.cities * (Number(RESOURCE_PRODUCTION_PER_STRUCTURE_S.foodPerCity) || 0));
-    const steelPS = Math.max(0, counts.factories * (Number(RESOURCE_PRODUCTION_PER_STRUCTURE_S.steelPerFactory) || 0));
+    const foodPS = Math.max(0, counts.cities * (Number(RESOURCE_PRODUCTION_PER_STRUCTURE_S.foodPerCity) || 0) * foodMul);
+    const steelPS = Math.max(0, counts.factories * (Number(RESOURCE_PRODUCTION_PER_STRUCTURE_S.steelPerFactory) || 0) * steelMul);
     const oilPS = Math.max(0, counts.coastalRigs * (Number(RESOURCE_PRODUCTION_PER_STRUCTURE_S.oilPerCoastalRig) || 0));
 
     n.foodPS = foodPS;

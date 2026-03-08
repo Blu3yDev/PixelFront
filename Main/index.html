@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="pf-multiplayer-api-url" content="%VITE_MULTIPLAYER_API_URL%" />
     <meta name="pf-supabase-url" content="%VITE_SUPABASE_URL%" />
     <meta name="pf-supabase-anon-key" content="%VITE_SUPABASE_ANON_KEY%" />
@@ -128,11 +128,13 @@
                   </div>
 
                   <div class="mainMenuToggleGrid isCompact">
+                    <label class="mainMenuToggleRow" for="mmCfgInfiniteResources"><span>Infinite Resources</span><input id="mmCfgInfiniteResources" type="checkbox" /></label>
                     <label class="mainMenuToggleRow" for="mmCfgInfiniteGold"><span>Infinite Gold</span><input id="mmCfgInfiniteGold" type="checkbox" /></label>
                     <label class="mainMenuToggleRow" for="mmCfgInfiniteTroops"><span>Infinite Troops</span><input id="mmCfgInfiniteTroops" type="checkbox" /></label>
                     <label class="mainMenuToggleRow" for="mmCfgDisableMissileSilo"><span>Disable Missile Silos</span><input id="mmCfgDisableMissileSilo" type="checkbox" /></label>
                     <label class="mainMenuToggleRow" for="mmCfgDisableAbmLauncher"><span>Disable ABM Launchers</span><input id="mmCfgDisableAbmLauncher" type="checkbox" /></label>
                     <label class="mainMenuToggleRow" for="mmCfgDisableDefencePost"><span>Disable Defence Posts</span><input id="mmCfgDisableDefencePost" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmCfgDisableAirbase"><span>Remove Airbase</span><input id="mmCfgDisableAirbase" type="checkbox" /></label>
                   </div>
 
                   <p id="mmConfigSummary" class="mainMenuConfigSummary"></p>
@@ -312,6 +314,27 @@
                   <div id="mmUpdatesTimeline" class="mainMenuUpdateTimeline" aria-label="Update log entries"></div>
                 </div>
               </section>
+
+              <section class="mainMenuPanel mainMenuPanelGuide" aria-label="Main menu guide">
+                <div class="mainMenuCard mainMenuGuideCard">
+                  <header class="mainMenuCardHeader">
+                    <div>
+                      <div id="mmGuideEyebrow" class="mainMenuGuideEyebrow">Field Manual</div>
+                      <h2 id="mmGuideTitle" class="mainMenuCardTitle">Game Guide</h2>
+                    </div>
+                    <button id="mmGuideBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+
+                  <section class="mainMenuGuideHero" aria-label="Guide overview">
+                    <span id="mmGuideHeroBadge" class="mainMenuGuideBadge">Start Here</span>
+                    <h3 id="mmGuideHeroTitle" class="mainMenuGuideHeroTitle">How PixelFront Works</h3>
+                    <p id="mmGuideHeroCopy" class="mainMenuGuideHeroCopy">Open any section below and read only what you need.</p>
+                    <div id="mmGuideHighlights" class="mainMenuGuideHighlights" aria-label="Guide highlights"></div>
+                  </section>
+
+                  <div id="mmGuideSections" class="mainMenuGuideSections" aria-label="Game guide sections"></div>
+                </div>
+              </section>
             </div>
           </div>
         </section>
@@ -335,9 +358,8 @@
             <button id="mmFlagBtn" class="mainMenuQuickBtn" type="button" aria-label="Country Color">
               <img class="mainMenuQuickBtnIcon" src="/UI_Icons/Main-Menu/CountryColor.png" alt="" aria-hidden="true" draggable="false" />
             </button>
-            <button id="mmUpdateLogBtn" class="mainMenuQuickBtn isUpdateLog" type="button" aria-label="Update Log">
-              <span id="mmUpdateLogBtnLabel" class="mainMenuQuickBtnLabel">Update Log</span>
-              <span id="mmUpdateLogBtnSub" class="mainMenuQuickBtnSub">v1.7</span>
+            <button id="mmUpdateLogBtn" class="mainMenuQuickBtn" type="button" aria-label="Update Log">
+              <img class="mainMenuQuickBtnIcon" src="/UI_Icons/Main-Menu/UpdateLog.png" alt="" aria-hidden="true" draggable="false" />
             </button>
             <button id="mmBookBtn" class="mainMenuQuickBtn" type="button" aria-label="Guide">
               <img class="mainMenuQuickBtnIcon" src="/UI_Icons/Main-Menu/GuideBook.png" alt="" aria-hidden="true" draggable="false" />
@@ -841,48 +863,133 @@
           <div id="researchBackdrop" class="researchBackdrop"></div>
           <section id="researchPanel" class="panel researchPanel" role="dialog" aria-modal="true" aria-labelledby="researchTitle">
             <div class="researchTopBar">
-              <div id="researchTitle" class="researchTitle">Research Tree</div>
+              <div class="researchTitleBlock">
+                <div class="researchEyebrow">Strategic Development</div>
+                <div id="researchTitle" class="researchTitle">Research Command</div>
+                <div class="researchSubtitle">Direct national research, manage branch queues, and invest Research Points into long-horizon upgrades.</div>
+              </div>
               <button id="researchClose" class="btn subtle" type="button" aria-label="Close research panel">Close</button>
             </div>
 
-            <div class="researchTabs" role="tablist" aria-label="Research categories">
-              <button id="researchTabMilitary" class="btn subtle researchTabBtn isTabSelected" type="button" role="tab" aria-selected="true" data-research-tab="military">
-                Military
-              </button>
-              <button id="researchTabEconomy" class="btn subtle researchTabBtn" type="button" role="tab" aria-selected="false" data-research-tab="economy">
+            <div class="researchHeroBar">
+              <div class="researchMetricStrip" aria-label="Research point summary">
+                <article class="researchMetricCard isPrimary">
+                  <span class="researchMetricLabel">Research Points</span>
+                  <strong id="researchPointsValue" class="researchMetricValue">0 RP</strong>
+                  <span class="researchMetricMeta">Available budget</span>
+                </article>
+                <article class="researchMetricCard">
+                  <span class="researchMetricLabel">RP Per Day</span>
+                  <strong id="researchIncomeValue" class="researchMetricValue">+0 / day</strong>
+                  <span class="researchMetricMeta">Labs and cities</span>
+                </article>
+                <article class="researchMetricCard">
+                  <span class="researchMetricLabel">Research Labs</span>
+                  <strong id="researchLabsValue" class="researchMetricValue">0</strong>
+                  <span class="researchMetricMeta">Main RP source</span>
+                </article>
+                <article class="researchMetricCard">
+                  <span class="researchMetricLabel">City Contribution</span>
+                  <strong id="researchCitiesValue" class="researchMetricValue">+0 / day</strong>
+                  <span class="researchMetricMeta">Passive trickle</span>
+                </article>
+              </div>
+
+              <aside class="researchLabCallout" aria-label="Research lab overview">
+                <div class="researchLabTag">Research Lab</div>
+                <div class="researchLabHeadline">Core research structure</div>
+                <div class="researchLabCopy">Build Research Labs for <strong>750k Gold</strong> and <strong>350 Steel</strong>. Cities add a smaller RP stream so every developed empire still contributes.</div>
+              </aside>
+            </div>
+
+            <div class="researchTabs" role="tablist" aria-label="Research branches">
+              <button id="researchTabEconomy" class="btn subtle researchTabBtn isTabSelected" type="button" role="tab" aria-selected="true" data-research-tab="economy">
                 Economy
               </button>
-              <button id="researchTabIntel" class="btn subtle researchTabBtn" type="button" role="tab" aria-selected="false" data-research-tab="intel">
-                Intelligence
+              <button id="researchTabMilitary" class="btn subtle researchTabBtn" type="button" role="tab" aria-selected="false" data-research-tab="military">
+                Military
+              </button>
+              <button id="researchTabInfrastructure" class="btn subtle researchTabBtn" type="button" role="tab" aria-selected="false" data-research-tab="infrastructure">
+                Infrastructure
               </button>
             </div>
 
-            <div class="researchCanvasShell">
-              <div id="researchTreeViewport" class="researchTreeViewport" aria-label="Research tree canvas">
-                <div id="researchTreeCanvas" class="researchTreeCanvas">
-                  <svg id="researchTreeLinks" class="researchTreeLinks" aria-hidden="true"></svg>
-                  <div id="researchTreeNodes" class="researchTreeNodesLayer"></div>
+            <div class="researchWorkspace">
+              <section class="researchTreePanel" aria-label="Research tree">
+                <div class="researchTreePanelHead">
+                  <div class="researchTreeCopy">
+                    <div id="researchBranchName" class="researchTreeTitle">Economy Branch</div>
+                    <div id="researchBranchDesc" class="researchTreeCaption">Scale gold flow, production, logistics, and long-range national efficiency.</div>
+                  </div>
+
+                  <div class="researchLegend" aria-label="Research status legend">
+                    <span class="researchLegendItem">
+                      <i class="researchLegendSwatch isAvailable" aria-hidden="true"></i>
+                      Available
+                    </span>
+                    <span class="researchLegendItem">
+                      <i class="researchLegendSwatch isResearching" aria-hidden="true"></i>
+                      Researching
+                    </span>
+                    <span class="researchLegendItem">
+                      <i class="researchLegendSwatch isCompleted" aria-hidden="true"></i>
+                      Completed
+                    </span>
+                    <span class="researchLegendItem">
+                      <i class="researchLegendSwatch isLocked" aria-hidden="true"></i>
+                      Locked
+                    </span>
+                  </div>
                 </div>
-              </div>
-              <aside id="researchInfoCard" class="researchInfoCard" aria-label="Research details">
-                <div class="researchInfoTag">Selected Research</div>
-                <div class="researchInfoMain">
+
+                <div id="researchTreeViewport" class="researchTreeViewport" aria-label="Research canvas">
+                  <div id="researchTreeGrid" class="researchTreeGrid"></div>
+                </div>
+              </section>
+
+              <aside class="researchDetailPanel" aria-label="Research details">
+                <section class="researchDetailCard researchSelectionCard">
+                  <div class="researchInfoTag">Selected Node</div>
+
                   <div class="researchInfoHeader">
-                    <img id="researchInfoIcon" class="researchInfoIcon" src="/UI_Icons/Expressions/war.png" alt="" aria-hidden="true" />
-                    <div>
+                    <div class="researchInfoIconShell" aria-hidden="true">
+                      <img id="researchInfoIconImg" class="researchInfoIconImg" alt="" hidden />
+                      <span id="researchInfoIconFallback" class="researchInfoIconFallback">RP</span>
+                      <span id="researchInfoTier" class="researchInfoTier">I</span>
+                    </div>
+                    <div class="researchInfoHeading">
+                      <div id="researchInfoBranch" class="researchInfoBranch">Economy Branch</div>
                       <div id="researchInfoName" class="researchInfoName">Select Research</div>
-                      <div id="researchInfoStatus" class="researchInfoStatus muted">Choose an icon in the tree</div>
+                      <div id="researchInfoStatus" class="researchInfoStatus muted">Choose a node to inspect its requirements and effect.</div>
                     </div>
                   </div>
-                  <button id="researchActionBtn" class="btn researchActionBtn" type="button">Research</button>
-                </div>
-                <div id="researchInfoDesc" class="researchInfoDesc muted">
-                  Research details will appear here.
-                </div>
-                <div class="researchInfoMeta">
-                  <span id="researchInfoPrice" class="researchStat">Price: -</span>
-                  <span id="researchInfoTime" class="researchStat">Time: -</span>
-                </div>
+
+                  <div id="researchInfoDesc" class="researchInfoDesc muted">
+                    Research details will appear here.
+                  </div>
+
+                  <div class="researchInfoMeta">
+                    <div class="researchStat">
+                      <span class="researchStatLabel">Cost</span>
+                      <strong id="researchInfoPrice" class="researchStatValue">-</strong>
+                    </div>
+                    <div class="researchStat">
+                      <span class="researchStatLabel">Time</span>
+                      <strong id="researchInfoTime" class="researchStatValue">-</strong>
+                    </div>
+                    <div class="researchStat">
+                      <span class="researchStatLabel">Effect</span>
+                      <strong id="researchInfoEffect" class="researchStatValue">-</strong>
+                    </div>
+                    <div class="researchStat">
+                      <span class="researchStatLabel">Requirement</span>
+                      <strong id="researchInfoRequirement" class="researchStatValue">-</strong>
+                    </div>
+                  </div>
+
+                  <div id="researchActionHint" class="researchActionHint muted">One node can research at a time in each branch.</div>
+                  <button id="researchActionBtn" class="btn researchActionBtn" type="button">Start Research</button>
+                </section>
               </aside>
             </div>
           </section>
@@ -899,114 +1006,146 @@
               <button id="tradeClose" class="btn subtle" type="button" aria-label="Close trade panel">Close</button>
             </div>
 
-            <div class="tradeGrid">
-              <div class="tradeSidebar">
-                <section class="tradeSection tradeResourceSection">
-                  <div class="tradeSectionHead">
-                    <div class="tradeSectionTitle">Your Resources</div>
-                    <div class="tradeSectionCaption">Current stockpiles and live production available for contracts.</div>
-                  </div>
-                  <div id="tradeMyResources" class="tradeResourceGrid"></div>
-                </section>
-
-                <section class="tradeSection tradeComposerSection">
-                  <div class="tradeSectionHead">
-                    <div class="tradeSectionTitle">Send Offer</div>
-                    <div class="tradeSectionCaption">Trade only with allied nations outside active war. Propose what you send and what you want back.</div>
-                  </div>
-                  <label class="tradeField" for="tradeNationSelect">
-                    <span>Nation</span>
-                    <select id="tradeNationSelect" class="tradeInput"></select>
-                  </label>
-                  <div class="tradeExchangeGrid">
-                    <div class="tradeFieldSet">
-                      <div class="tradeSubTitle">You Send</div>
-                      <div class="tradeFieldRow">
-                        <label class="tradeField" for="tradeOfferGoodsSelect">
-                          <span>Resource</span>
-                          <select id="tradeOfferGoodsSelect" class="tradeInput">
-                            <option value="food">Food</option>
-                            <option value="steel">Steel</option>
-                            <option value="oil">Oil</option>
-                          </select>
-                        </label>
-                        <label class="tradeField" for="tradeOfferRateInput">
-                          <span>Rate / minute</span>
-                          <input id="tradeOfferRateInput" class="tradeInput" type="number" min="1" max="5000" value="30" step="1" />
-                        </label>
-                      </div>
-                    </div>
-                    <div class="tradeFieldSet">
-                      <div class="tradeSubTitle">You Receive</div>
-                      <div class="tradeFieldRow">
-                        <label class="tradeField" for="tradeRequestGoodsSelect">
-                          <span>Resource</span>
-                          <select id="tradeRequestGoodsSelect" class="tradeInput">
-                            <option value="food">Food</option>
-                            <option value="steel">Steel</option>
-                            <option value="oil">Oil</option>
-                          </select>
-                        </label>
-                        <label class="tradeField" for="tradeRequestRateInput">
-                          <span>Rate / minute</span>
-                          <input id="tradeRequestRateInput" class="tradeInput" type="number" min="1" max="5000" value="30" step="1" />
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-                  <label class="tradeField" for="tradeDurationInput">
-                    <span>Duration (minutes)</span>
-                    <input id="tradeDurationInput" class="tradeInput" type="number" min="1" max="60" value="5" step="1" />
-                  </label>
-                  <button id="tradeCreateBtn" class="btn tradeCreateBtn" type="button">Send Trade Offer</button>
-                </section>
+            <section class="tradeResourceStripSection" aria-labelledby="tradeResourceStripTitle">
+              <div class="tradeSectionHead tradeSectionHeadInline">
+                <div>
+                  <div id="tradeResourceStripTitle" class="tradeSectionTitle">Your Resources</div>
+                  <div class="tradeSectionCaption">Clean stockpile and production readout before you make a deal.</div>
+                </div>
               </div>
+              <div id="tradeMyResources" class="tradeResourceGrid tradeResourceStrip"></div>
+            </section>
 
-              <section class="tradeSection tradeDealsSection">
-                <div class="tradeSectionHead">
-                  <div class="tradeSectionTitle">Trade Board</div>
-                  <div class="tradeSectionCaption">Review allied offers, respond to incoming requests, and track active barter agreements.</div>
+            <div class="tradeTabs" role="tablist" aria-label="Trade panel sections">
+              <button
+                id="tradeTabBoard"
+                class="btn subtle tradeTabBtn isTabSelected"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="tradeViewBoard"
+                data-trade-tab="board"
+              >
+                <span class="tradeTabLabel">Trade Board</span>
+                <span id="tradeCountActive" class="tradeTabCount" aria-label="Number of active agreements">0</span>
+              </button>
+              <button
+                id="tradeTabOffers"
+                class="btn subtle tradeTabBtn"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="tradeViewOffers"
+                data-trade-tab="offers"
+              >
+                <span class="tradeTabLabel">Offers</span>
+                <span id="tradeCountOutgoing" class="tradeTabCount" aria-label="Number of outgoing offers">0</span>
+              </button>
+              <button
+                id="tradeTabRequests"
+                class="btn subtle tradeTabBtn"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="tradeViewRequests"
+                data-trade-tab="requests"
+              >
+                <span class="tradeTabLabel">Requests</span>
+                <span id="tradeCountIncoming" class="tradeTabCount" aria-label="Number of incoming requests">0</span>
+              </button>
+            </div>
+
+            <div class="tradeViews">
+              <section id="tradeViewBoard" class="tradeView isActive" role="tabpanel" aria-labelledby="tradeTabBoard" data-trade-view="board">
+                <div class="tradeBoardLayout">
+                  <section class="tradeSurfaceCard tradeComposerCard">
+                    <div class="tradeSectionHead">
+                      <div class="tradeSectionTitle">Create Offer</div>
+                      <div class="tradeSectionCaption">Pick an allied nation and set the barter terms.</div>
+                    </div>
+
+                    <div class="tradeSendStack">
+                      <label class="tradeField" for="tradeNationSelect">
+                        <span>Nation</span>
+                        <select id="tradeNationSelect" class="tradeInput"></select>
+                      </label>
+
+                      <div class="tradeExchangeGrid">
+                        <div class="tradeFieldSet">
+                          <div class="tradeSubTitle">You Send</div>
+                          <div class="tradeFieldRow">
+                            <label class="tradeField" for="tradeOfferGoodsSelect">
+                              <span>Resource</span>
+                              <select id="tradeOfferGoodsSelect" class="tradeInput">
+                                <option value="food">Food</option>
+                                <option value="steel">Steel</option>
+                                <option value="oil">Oil</option>
+                              </select>
+                            </label>
+                            <label class="tradeField" for="tradeOfferRateInput">
+                              <span>Rate / day</span>
+                              <input id="tradeOfferRateInput" class="tradeInput" type="number" min="1" max="5000" value="30" step="1" />
+                            </label>
+                          </div>
+                        </div>
+                        <div class="tradeFieldSet">
+                          <div class="tradeSubTitle">You Receive</div>
+                          <div class="tradeFieldRow">
+                            <label class="tradeField" for="tradeRequestGoodsSelect">
+                              <span>Resource</span>
+                              <select id="tradeRequestGoodsSelect" class="tradeInput">
+                                <option value="food">Food</option>
+                                <option value="steel">Steel</option>
+                                <option value="oil">Oil</option>
+                              </select>
+                            </label>
+                            <label class="tradeField" for="tradeRequestRateInput">
+                              <span>Rate / day</span>
+                              <input id="tradeRequestRateInput" class="tradeInput" type="number" min="1" max="5000" value="30" step="1" />
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+
+                      <label class="tradeField" for="tradeDurationInput">
+                        <span>Duration (minutes)</span>
+                        <input id="tradeDurationInput" class="tradeInput" type="number" min="1" max="60" value="5" step="1" />
+                      </label>
+
+                      <button id="tradeCreateBtn" class="btn tradeCreateBtn" type="button">Send Trade Offer</button>
+                    </div>
+                  </section>
+
+                  <section class="tradeSurfaceCard tradeBoardFeed">
+                    <div class="tradeSectionHead">
+                      <div class="tradeSectionTitle">Active Agreements</div>
+                      <div class="tradeSectionCaption">Live barter corridors currently moving resources.</div>
+                    </div>
+                    <div id="tradeDealsActive" class="tradeDealsList tradeDealsListActive"></div>
+                  </section>
                 </div>
-                <div class="tradeBoardShell">
-                  <div class="tradeBoardPrimary">
-                    <div class="tradeLane tradeLaneWide">
-                      <div class="tradeLaneHead">
-                        <div class="tradeLaneCopy">
-                          <div class="tradeSubTitle">Active Agreements</div>
-                          <div class="tradeLaneCaption">Live barter corridors already shipping resources.</div>
-                        </div>
-                        <div id="tradeCountActive" class="tradeLaneCount" aria-label="Number of active agreements">0</div>
-                      </div>
-                      <div id="tradeDealsActive" class="tradeDealsList tradeDealsListActive"></div>
-                    </div>
-                  </div>
-                  <div class="tradeBoardSecondary">
-                    <div class="tradeLane">
-                      <div class="tradeLaneHead">
-                        <div class="tradeLaneCopy">
-                          <div class="tradeSubTitle">Incoming Requests</div>
-                          <div class="tradeLaneCaption">Offers waiting on your response.</div>
-                        </div>
-                        <div id="tradeCountIncoming" class="tradeLaneCount" aria-label="Number of incoming requests">0</div>
-                      </div>
-                      <div id="tradeRequestsIncoming" class="tradeDealsList"></div>
-                    </div>
-                    <div class="tradeLane">
-                      <div class="tradeLaneHead">
-                        <div class="tradeLaneCopy">
-                          <div class="tradeSubTitle">Outgoing Requests</div>
-                          <div class="tradeLaneCaption">Offers you already sent to allies.</div>
-                        </div>
-                        <div id="tradeCountOutgoing" class="tradeLaneCount" aria-label="Number of outgoing requests">0</div>
-                      </div>
-                      <div id="tradeRequestsOutgoing" class="tradeDealsList"></div>
-                    </div>
-                  </div>
+              </section>
+
+              <section id="tradeViewOffers" class="tradeView" role="tabpanel" aria-labelledby="tradeTabOffers" data-trade-view="offers" hidden>
+                <div class="tradeViewHeader">
+                  <div class="tradeSectionTitle">Offers</div>
+                  <div class="tradeSectionCaption">Pending offers you already sent to allied nations.</div>
                 </div>
+                <div id="tradeRequestsOutgoing" class="tradeDealsList tradeDealsListStandalone"></div>
+              </section>
+
+              <section id="tradeViewRequests" class="tradeView" role="tabpanel" aria-labelledby="tradeTabRequests" data-trade-view="requests" hidden>
+                <div class="tradeViewHeader">
+                  <div class="tradeSectionTitle">Requests</div>
+                  <div class="tradeSectionCaption">Incoming offers that are waiting for your decision.</div>
+                </div>
+                <div id="tradeRequestsIncoming" class="tradeDealsList tradeDealsListStandalone"></div>
               </section>
             </div>
 
-            <div id="tradeStatus" class="hint muted tradeStatus"></div>
+            <div class="tradeFooter">
+              <div id="tradeStatus" class="hint muted tradeStatus"></div>
+            </div>
           </section>
         </div>
 
@@ -1059,6 +1198,14 @@
                 <dd>
                   <div class="statMain"><span id="statGoldVal">0</span></div>
                   <div class="statSub"><span class="delta" id="statGoldDelta">+0/s</span></div>
+                </dd>
+              </div>
+
+              <div class="statRow">
+                <dt><img class="statIcon" src="/UI_Icons/ResearchPoints.png" alt="" aria-hidden="true" /><span>Research Points</span></dt>
+                <dd>
+                  <div class="statMain"><span id="statResearchVal">0</span></div>
+                  <div class="statSub"><span class="delta" id="statResearchDelta">+0 RP/day</span></div>
                 </dd>
               </div>
 
@@ -1203,12 +1350,12 @@
           </div>
         </nav>
 
-        <nav id="researchLaunchBar" class="ui-interactive" aria-label="Research quick launch" hidden aria-hidden="true">
+        <nav id="researchLaunchBar" class="ui-interactive" aria-label="Research quick launch">
           <div class="barLeft">
             <div class="barTitle">Research</div>
           </div>
           <div class="barButtons" role="group" aria-label="Research controls">
-            <button class="btn structureBtn quickLaunchBtn" id="btnResearchPanel" type="button" title="Open Research Panel">
+            <button class="btn structureBtn quickLaunchBtn" id="btnResearchPanel" type="button" title="Open Research Command">
               Research
             </button>
           </div>
@@ -1238,6 +1385,9 @@
             </button>
             <button class="btn structureBtn" data-structure="coastal_rig" id="btnCoastalRig" type="button">
               Coastal Rig
+            </button>
+            <button class="btn structureBtn" data-structure="research_lab" id="btnResearchLab" type="button">
+              Research Lab
             </button>
             <button class="btn structureBtn" data-structure="missile_silo" id="btnMissileSilo" type="button">
               Missile Silo

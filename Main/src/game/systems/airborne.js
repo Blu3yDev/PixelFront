@@ -345,7 +345,7 @@ export function installAirborne(World) {
     let cost = curOwner <= OWNER.NONE
       ? Math.max(0.2, Number(AIRBORNE_TILE_COST_NEUTRAL) || 0.2)
       : Math.max(0.4, Number(AIRBORNE_TILE_COST_ENEMY) || 0.4);
-    if (landingCapture) cost *= 0.86;
+    if (landingCapture) cost *= 1.0;
     if (curOwner > OWNER.NONE && typeof this._defenceBonusAt === "function") {
       const defenceBonus = clamp01(Number(this._defenceBonusAt(curOwner, idx)) || 0);
       cost *= (1 + defenceBonus * 0.90);
@@ -373,9 +373,9 @@ export function installAirborne(World) {
     if (!mission) return;
     const cx = clampInt(Math.floor(Number(landX) || 0), 0, this.w - 1);
     const cy = clampInt(Math.floor(Number(landY) || 0), 0, this.h - 1);
-    for (let yy = cy - 1; yy <= cy + 2; yy++) {
+    for (let yy = cy - 1; yy <= cy + 1; yy++) {
       if (yy < 0 || yy >= this.h) continue;
-      for (let xx = cx - 1; xx <= cx + 2; xx++) {
+      for (let xx = cx - 1; xx <= cx + 1; xx++) {
         if (xx < 0 || xx >= this.w) continue;
         const idx = yy * this.w + xx;
         this._airborneTryCaptureTile(mission, idx, true);
@@ -632,7 +632,7 @@ export function installAirborne(World) {
 
       if (String(m.phase || "") !== "done") continue;
 
-      const refundable = Math.max(0, Math.floor((Number(m.troopPool) || 0) * 0.35));
+      const refundable = Math.max(0, Math.floor((Number(m.troopPool) || 0) * 0.10));
       if (refundable > 0 && nat && nat.alive) {
         nat.infantry = Math.max(0, (Number(nat.infantry) || 0) + refundable);
       }

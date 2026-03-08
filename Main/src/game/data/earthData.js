@@ -24,6 +24,16 @@ const clampInt = (value, min, max) => {
   return n;
 };
 
+function yieldToMainThread() {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => resolve());
+      return;
+    }
+    setTimeout(resolve, 0);
+  });
+}
+
 function hexToRgb(hex) {
   const clean = String(hex || "").replace("#", "").trim();
   const full = clean.length === 3
@@ -264,7 +274,41 @@ function drawProjectedRing(ctx, ring, shiftX) {
   return true;
 }
 
-function rasterizeCountriesToGrid(geojson) {
+function expandProjectedBounds(bounds, ring, shiftX) {
+  if (!ring || ring.length < 3) return bounds;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const pt = ring[i];
+    const x = Number(pt?.[0]) + shiftX;
+    const y = Number(pt?.[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return bounds;
+  if (maxX < 0 || minX >= GRID_W || maxY < 0 || minY >= GRID_H) return bounds;
+
+  const x0 = clampInt(Math.floor(minX), 0, GRID_W - 1);
+  const y0 = clampInt(Math.floor(minY), 0, GRID_H - 1);
+  const x1 = clampInt(Math.ceil(maxX), 0, GRID_W - 1);
+  const y1 = clampInt(Math.ceil(maxY), 0, GRID_H - 1);
+  if (!bounds) return { x0, y0, x1, y1 };
+
+  if (x0 < bounds.x0) bounds.x0 = x0;
+  if (y0 < bounds.y0) bounds.y0 = y0;
+  if (x1 > bounds.x1) bounds.x1 = x1;
+  if (y1 > bounds.y1) bounds.y1 = y1;
+  return bounds;
+}
+
+async function rasterizeCountriesToGrid(geojson) {
   const cellCount = GRID_W * GRID_H;
   const landGrid = new Uint8Array(cellCount);
   const countryIdGrid = new Uint16Array(cellCount);
@@ -307,7 +351,8 @@ function rasterizeCountriesToGrid(geojson) {
   const countryIdByKey = new Map();
   let drawnFeatures = 0;
 
-  for (const feature of features) {
+  for (let featureIdx = 0; featureIdx < features.length; featureIdx++) {
+    const feature = features[featureIdx];
     if (!feature || !feature.geometry) continue;
 
     const geometry = feature.geometry;
@@ -346,6 +391,7 @@ function rasterizeCountriesToGrid(geojson) {
 
     ctx.clearRect(0, 0, GRID_W, GRID_H);
     ctx.fillStyle = "#ffffff";
+    let featureBounds = null;
 
     for (const poly of projectedPolygons) {
       for (let shift = -1; shift <= 1; shift++) {
@@ -353,20 +399,33 @@ function rasterizeCountriesToGrid(geojson) {
         ctx.beginPath();
         let hasPath = false;
         for (const ring of poly) {
-          if (drawProjectedRing(ctx, ring, shiftX)) hasPath = true;
+          if (drawProjectedRing(ctx, ring, shiftX)) {
+            hasPath = true;
+            featureBounds = expandProjectedBounds(featureBounds, ring, shiftX);
+          }
         }
         if (hasPath) ctx.fill("evenodd");
       }
     }
 
-    const data = ctx.getImageData(0, 0, GRID_W, GRID_H).data;
-    for (let i = 0, p = 3; i < cellCount; i++, p += 4) {
-      if (data[p] < ALPHA_THRESHOLD) continue;
-      landGrid[i] = 1;
-      countryIdGrid[i] = countryId;
+    if (!featureBounds) continue;
+
+    const width = (featureBounds.x1 - featureBounds.x0 + 1) | 0;
+    const height = (featureBounds.y1 - featureBounds.y0 + 1) | 0;
+    const data = ctx.getImageData(featureBounds.x0, featureBounds.y0, width, height).data;
+    for (let y = 0; y < height; y++) {
+      const srcRow = (y * width) << 2;
+      const dstRow = ((featureBounds.y0 + y) * GRID_W + featureBounds.x0) | 0;
+      for (let x = 0, p = srcRow + 3; x < width; x++, p += 4) {
+        if (data[p] < ALPHA_THRESHOLD) continue;
+        const idx = dstRow + x;
+        landGrid[idx] = 1;
+        countryIdGrid[idx] = countryId;
+      }
     }
 
     drawnFeatures++;
+    if ((featureIdx & 15) === 15) await yieldToMainThread();
   }
 
   const countryColorById = new Uint8Array(countryRgbRows.length * 3);
@@ -479,10 +538,15 @@ async function decodeTiffToGridRgb(arrayBuffer, targetW, targetH) {
     });
 
     const scale = buildSampleScaler(rgb, bits);
+    let nextYield = 196608;
     for (let src = 0, dst = 0; src < rgb.length; src += 3, dst += 3) {
       rgbGrid[dst] = scale(rgb[src]);
       rgbGrid[dst + 1] = scale(rgb[src + 1]);
       rgbGrid[dst + 2] = scale(rgb[src + 2]);
+      if (dst >= nextYield) {
+        nextYield += 196608;
+        await yieldToMainThread();
+      }
     }
   } else {
     const gray = await bestImage.readRasters({
@@ -494,11 +558,16 @@ async function decodeTiffToGridRgb(arrayBuffer, targetW, targetH) {
     });
 
     const scale = buildSampleScaler(gray, bits);
+    let nextYield = 196608;
     for (let src = 0, dst = 0; src < gray.length; src += 1, dst += 3) {
       const v = scale(gray[src]);
       rgbGrid[dst] = v;
       rgbGrid[dst + 1] = v;
       rgbGrid[dst + 2] = v;
+      if (dst >= nextYield) {
+        nextYield += 196608;
+        await yieldToMainThread();
+      }
     }
   }
 
@@ -565,7 +634,7 @@ export async function loadEarthData() {
     let landGrid = null;
 
     if (countriesResult.status === "fulfilled") {
-      raster = rasterizeCountriesToGrid(countriesResult.value);
+      raster = await rasterizeCountriesToGrid(countriesResult.value);
       // Keep world-map land ownership strictly aligned to the country overlay.
       // This avoids "land without country" seams when Koppen and polygon coastlines differ.
       landGrid = raster.landGrid;

@@ -232,6 +232,7 @@ const COMMAND_METHOD = Object.freeze({
   start_burst_expand: "startBurstExpand",
   start_burst_attack: "startBurstAttack",
   pick_spawn: "pickSpawn",
+  start_research: "startResearch",
   regenerate_match: "regenerate",
   launch_missile_warhead: "launchMissileWarhead",
   launch_airbase_transport: "launchAirbaseTransport",
@@ -262,6 +263,7 @@ const COMMAND_NATION_ARGS = Object.freeze({
   start_burst_expand: [0],
   start_burst_attack: [0, 1],
   pick_spawn: [0],
+  start_research: [0],
   regenerate_match: [],
   launch_missile_warhead: [1],
   launch_airbase_transport: [1],
@@ -292,6 +294,7 @@ const COMMAND_ACTOR_ARG = Object.freeze({
   start_burst_expand: 0,
   start_burst_attack: 0,
   pick_spawn: 0,
+  start_research: 0,
   launch_missile_warhead: 1,
   launch_airbase_transport: 1,
   place_structure: 1
@@ -3216,6 +3219,7 @@ function shouldPushPostCommandFullSync(cmdRaw) {
     cmd === "start_war_focus" ||
     cmd === "start_burst_expand" ||
     cmd === "start_burst_attack" ||
+    cmd === "start_research" ||
     cmd === "place_structure" ||
     cmd === "send_warship" ||
     cmd === "launch_missile_warhead" ||

@@ -27,6 +27,7 @@ export const BUILD_COST = Object.freeze({
   port: 175000,
   coastal_rig: 220000,
   defence_post: 75000,
+  research_lab: 750000,
   missile_silo: 1200000,
   abm_launcher: 750000,
   airbase: 1500000
@@ -39,6 +40,7 @@ export const STRUCT_BUILD_TIME_S = Object.freeze({
   port: 10,
   coastal_rig: 8,
   defence_post: 5,
+  research_lab: 12,
   missile_silo: 14,
   abm_launcher: 12,
   airbase: 16
@@ -54,6 +56,7 @@ export const STRUCT_COST_GROWTH = Object.freeze({
   port: 1.38,
   coastal_rig: 1.35,
   defence_post: 1.33,
+  research_lab: 1.34,
   missile_silo: 1.42,
   abm_launcher: 1.39,
   airbase: 1.45
@@ -83,8 +86,8 @@ export const NUKE_WARHEAD = Object.freeze({
     label: "Atomic Bomb",
     buildGoldCost: 1250000,
     buildTimeS: 28,
-    blastRadiusTiles: 14,
-    neutralizeTileCap: 620,
+    blastRadiusTiles: 24,
+    neutralizeTileCap: 1800,
     // 0 = unlimited (destroy all structures inside blast radius)
     structureDestroyCap: 0,
     launchStabilityPenaltyPct: 1.6,
@@ -96,8 +99,8 @@ export const NUKE_WARHEAD = Object.freeze({
     label: "Hydrogen Bomb",
     buildGoldCost: 6250000,
     buildTimeS: 55,
-    blastRadiusTiles: 30,
-    neutralizeTileCap: 2600,
+    blastRadiusTiles: 50,
+    neutralizeTileCap: 7600,
     // 0 = unlimited (destroy all structures inside blast radius)
     structureDestroyCap: 0,
     launchStabilityPenaltyPct: 4.2,
@@ -108,26 +111,26 @@ export const NUKE_WARHEAD = Object.freeze({
 
 // ===== ABM (Anti-Ballistic Missile) launcher =====
 export const ABM_RADIUS_TILES = 30;
-export const ABM_RELOAD_S = 30;
-export const ABM_INTERCEPT_BASE_CHANCE = 0.65;
-export const ABM_INTERCEPT_HYDROGEN_PENALTY = 0.0;
+export const ABM_RELOAD_S = 36;
+export const ABM_INTERCEPT_BASE_CHANCE = 0.60;
+export const ABM_INTERCEPT_HYDROGEN_PENALTY = 0.18;
 export const ABM_MISSILE_SPEED_TILES_PER_S = 150;
 export const ABM_MISSILE_BASE_TIME_S = 0.85;
 
 // ===== Airbase / Airborne transport =====
-export const AIRBASE_TRANSPORT_BUILD_GOLD_COST = 3500000;
-export const AIRBASE_TRANSPORT_BUILD_TIME_S = 75;
-export const AIRBASE_LAUNCH_RADIUS_TILES = 240;
+export const AIRBASE_TRANSPORT_BUILD_GOLD_COST = 4500000;
+export const AIRBASE_TRANSPORT_BUILD_TIME_S = 90;
+export const AIRBASE_LAUNCH_RADIUS_TILES = 480;
 export const AIRBORNE_PLANE_SPEED_TILES_PER_S = 8.5;
 export const AIRBORNE_COMMIT_MIN_INFANTRY = 320;
-export const AIRBORNE_COMMIT_MAX_INFANTRY = 1800;
-export const AIRBORNE_COMMIT_FRAC = 0.075;
+export const AIRBORNE_COMMIT_MAX_INFANTRY = 900;
+export const AIRBORNE_COMMIT_FRAC = 0.05;
 export const AIRBORNE_DROP_PIXELS_MIN = 24;
-export const AIRBORNE_DROP_PIXELS_MAX = 72;
-export const AIRBORNE_DROP_SPREAD_TILES = 20;
-export const AIRBORNE_EXPAND_DURATION_S = 22;
-export const AIRBORNE_TILE_COST_NEUTRAL = 0.95;
-export const AIRBORNE_TILE_COST_ENEMY = 1.85;
+export const AIRBORNE_DROP_PIXELS_MAX = 48;
+export const AIRBORNE_DROP_SPREAD_TILES = 14;
+export const AIRBORNE_EXPAND_DURATION_S = 16;
+export const AIRBORNE_TILE_COST_NEUTRAL = 2.2;
+export const AIRBORNE_TILE_COST_ENEMY = 4.8;
 
 // ===== Strategic resources (Food / Steel / Oil) =====
 export const RESOURCE_STOCK_START = Object.freeze({
@@ -161,6 +164,7 @@ export const RESOURCE_COST_BY_STRUCTURE = Object.freeze({
   port: Object.freeze({ food: 0, steel: 70, oil: 0 }),
   coastal_rig: Object.freeze({ food: 0, steel: 90, oil: 0 }),
   defence_post: Object.freeze({ food: 0, steel: 35, oil: 0 }),
+  research_lab: Object.freeze({ food: 0, steel: 350, oil: 0 }),
   missile_silo: Object.freeze({ food: 0, steel: 240, oil: 0 }),
   abm_launcher: Object.freeze({ food: 0, steel: 180, oil: 0 }),
   airbase: Object.freeze({ food: 0, steel: 340, oil: 0 })
@@ -173,6 +177,7 @@ export const RESOURCE_STEEL_COST_BY_STRUCTURE = Object.freeze({
   port: 70,
   coastal_rig: 90,
   defence_post: 35,
+  research_lab: 350,
   missile_silo: 240,
   abm_launcher: 180,
   airbase: 340
@@ -217,7 +222,7 @@ export const AI_WAR_DECLARED_ATTACK_DELAY_S = 18.0;
 
 // ===== NAVY (Section 2: Sea Economy - Trade Ships) =====
 export const TRADE_SHIP_MAX_OUTGOING = 7;
-export const TRADE_SHIP_REWARD_GOLD = 32000;
+export const TRADE_SHIP_REWARD_GOLD = 22000;
 // Trade ships are durable enough that warships don’t insta-delete them.
 export const TRADE_SHIP_HP = 90;
 // Movement in water-cells per second (grid-walk; keeps ships on water tiles).

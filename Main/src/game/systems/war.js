@@ -147,6 +147,131 @@ function frontlineWidthMul(frontlineCount, baseline = 8) {
   return Math.max(0.72, Math.min(2.45, m));
 }
 
+function collectFrontlineNeighborhood(world, attacker, defender, idx) {
+  const i = idx | 0;
+  if (!world?.land?.[i]) return null;
+
+  const A = attacker | 0;
+  const D = defender | 0;
+  const w = world.w | 0;
+  const h = world.h | 0;
+  const x = i % w;
+  const y = (i / w) | 0;
+  const owner = world.owner;
+  const land = world.land;
+
+  let atk4 = 0;
+  let def4 = 0;
+  let open4 = 0;
+  let other4 = 0;
+  let atk8 = 0;
+  let def8 = 0;
+  let neutral8 = 0;
+  let other8 = 0;
+  let land8 = 0;
+  let atkL = 0;
+  let atkR = 0;
+  let atkU = 0;
+  let atkD = 0;
+
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const xx = x + dx;
+      const yy = y + dy;
+      const cardinal = (dx === 0 || dy === 0);
+
+      if (xx < 0 || yy < 0 || xx >= w || yy >= h) {
+        if (cardinal) open4++;
+        continue;
+      }
+
+      const ni = yy * w + xx;
+      if (!land[ni]) {
+        if (cardinal) open4++;
+        continue;
+      }
+
+      land8++;
+      const o = owner[ni] | 0;
+      if (o === A) {
+        atk8++;
+        if (cardinal) {
+          atk4++;
+          if (dx < 0) atkL = 1;
+          else if (dx > 0) atkR = 1;
+          else if (dy < 0) atkU = 1;
+          else if (dy > 0) atkD = 1;
+        }
+      } else if (o === D) {
+        def8++;
+        if (cardinal) def4++;
+      } else if (o === OWNER.NONE) {
+        neutral8++;
+        if (cardinal) open4++;
+      } else {
+        other8++;
+        if (cardinal) other4++;
+      }
+    }
+  }
+
+  return {
+    atk4,
+    def4,
+    open4,
+    other4,
+    atk8,
+    def8,
+    neutral8,
+    other8,
+    land8,
+    atkL,
+    atkR,
+    atkU,
+    atkD
+  };
+}
+
+function attackSupportScoreFromStats(stats) {
+  if (!stats) return 0;
+  const { atk4, def4, atk8, def8, neutral8, other8, land8, atkL, atkR, atkU, atkD } = stats;
+
+  let score = 0;
+  if (atk4 >= 2) score += 0.46 + Math.max(0, atk4 - 2) * 0.14;
+  else if (atk4 === 1) score += 0.20;
+  score += Math.min(0.30, atk8 * 0.05);
+  score += Math.max(0, 3 - def4) * 0.04;
+  score -= Math.min(0.26, def8 * 0.03);
+  score -= Math.min(0.12, (neutral8 + other8) * 0.03);
+
+  if (atk4 <= 1 && atk8 <= 2) score *= 0.40;
+  else if (atk4 <= 1) score *= 0.58;
+  if (def4 >= 3 && atk4 <= 1) score *= 0.82;
+  if (land8 >= 6 && def8 >= 6 && atk8 <= 2) score *= 0.72;
+  const corridor = ((atkL && atkR) || (atkU && atkD)) && atk4 === 2;
+  if (corridor && def4 >= 2) score *= 0.38;
+  else if (corridor) score *= 0.52;
+
+  return clamp01(score);
+}
+
+function encirclementScoreFromStats(stats) {
+  if (!stats) return 0;
+  const { atk4, def4, open4, other4 } = stats;
+
+  let score = 0;
+  if (atk4 >= 2) score += (atk4 - 1) * 0.24;
+  if (atk4 === 4) score += 0.08;
+  if (def4 <= 1) score += 0.22;
+  if (open4 === 0) score += 0.18;
+  if (open4 <= 1 && atk4 >= 3) score += 0.06;
+  if (other4 === 0 && open4 === 0 && atk4 >= 3) score += 0.12;
+  score -= def4 * 0.06;
+
+  return clamp01(score);
+}
+
 export function installWar(World) {
   World.prototype._capitalSiegeReady = function(attackerId, defenderId, capIdx, overrun = 0) {
     const A = attackerId | 0;
@@ -235,14 +360,29 @@ export function installWar(World) {
     const i = idx | 0;
     const costMul = Math.max(0.01, Number(EXPAND_TILE_COST_GLOBAL_MUL) || 1);
     const biomeArr = this.biome;
-    if (biomeArr && i >= 0 && i < biomeArr.length) {
-      const b = biomeArr[i] | 0;
-      if (b >= 0 && b < EXPAND_TILE_COST_BY_BIOME.length) {
-        const c = Number(EXPAND_TILE_COST_BY_BIOME[b]);
-        if (Number.isFinite(c) && c > 0) return c * costMul;
+    if (!biomeArr || i < 0 || i >= biomeArr.length) return 1 * costMul;
+
+    let cache = this._expandTileCostCache;
+    if (!(cache instanceof Float32Array) || cache.length !== biomeArr.length || this._expandTileCostCacheMul !== costMul) {
+      cache = new Float32Array(biomeArr.length);
+      this._expandTileCostCache = cache;
+      this._expandTileCostCacheMul = costMul;
+    }
+    let cached = cache[i];
+    if (cached > 0) return cached;
+
+    const b = biomeArr[i] | 0;
+    if (b >= 0 && b < EXPAND_TILE_COST_BY_BIOME.length) {
+      const c = Number(EXPAND_TILE_COST_BY_BIOME[b]);
+      if (Number.isFinite(c) && c > 0) {
+        cached = c * costMul;
+        cache[i] = cached;
+        return cached;
       }
     }
-    return 1 * costMul;
+    cached = 1 * costMul;
+    cache[i] = cached;
+    return cached;
   };
 
   World.prototype._expandMinTileCost = function() {
@@ -1148,7 +1288,9 @@ export function installWar(World) {
           if (over > 0 && gainBase > 0) {
             const ramp = Math.min(1, over / rampS);
             const frontMul = 1 + Math.max(0, fronts - 1) * multiWarGainBonus;
-            const gain = gainBase * (0.35 + 0.65 * ramp) * frontMul;
+            const researchBonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(id) : null;
+            const exhaustionMul = Math.max(0, Number(researchBonuses?.warExhaustionGainMul) || 1);
+            const gain = gainBase * (0.35 + 0.65 * ramp) * frontMul * exhaustionMul;
             x = Math.min(1, x + step * gain);
           }
         } else {
@@ -1473,164 +1615,17 @@ export function installWar(World) {
   // Attack support score (0..1): high when attacker has a broad local base.
   // Thin salients/snakes deep in enemy territory should score very low.
   World.prototype._attackSupportScore = function(attacker, defender, idx) {
-    const A = attacker | 0;
-    const D = defender | 0;
-    const i = idx | 0;
-    if (!this.land[i]) return 0;
-
-    const w = this.w | 0;
-    const h = this.h | 0;
-    const x = i % w;
-    const y = (i / w) | 0;
-
-    let atk4 = 0;
-    let def4 = 0;
-    let atk8 = 0;
-    let def8 = 0;
-    let neutral8 = 0;
-    let other8 = 0;
-    let land8 = 0;
-    let atkL = 0;
-    let atkR = 0;
-    let atkU = 0;
-    let atkD = 0;
-
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        if (dx === 0 && dy === 0) continue;
-        const xx = x + dx;
-        const yy = y + dy;
-        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
-        const ni = yy * w + xx;
-        if (!this.land[ni]) continue;
-        land8++;
-
-        const o = this.owner[ni] | 0;
-        if (o === A) {
-          atk8++;
-          if (dx === 0 || dy === 0) {
-            atk4++;
-            if (dx < 0) atkL = 1;
-            else if (dx > 0) atkR = 1;
-            else if (dy < 0) atkU = 1;
-            else if (dy > 0) atkD = 1;
-          }
-        } else if (o === D) {
-          def8++;
-          if (dx === 0 || dy === 0) def4++;
-        } else if (o === OWNER.NONE) {
-          neutral8++;
-        } else {
-          other8++;
-        }
-      }
-    }
-
-    let score = 0;
-    if (atk4 >= 2) score += 0.46 + Math.max(0, atk4 - 2) * 0.14;
-    else if (atk4 === 1) score += 0.20;
-    score += Math.min(0.30, atk8 * 0.05);
-    score += Math.max(0, 3 - def4) * 0.04;
-    score -= Math.min(0.26, def8 * 0.03);
-    score -= Math.min(0.12, (neutral8 + other8) * 0.03);
-
-    if (atk4 <= 1 && atk8 <= 2) score *= 0.40;
-    else if (atk4 <= 1) score *= 0.58;
-    if (def4 >= 3 && atk4 <= 1) score *= 0.82;
-    if (land8 >= 6 && def8 >= 6 && atk8 <= 2) score *= 0.72;
-    const corridor = ((atkL && atkR) || (atkU && atkD)) && atk4 === 2;
-    if (corridor && def4 >= 2) score *= 0.38;
-    else if (corridor) score *= 0.52;
-
-    return clamp01(score);
+    const stats = collectFrontlineNeighborhood(this, attacker, defender, idx);
+    return attackSupportScoreFromStats(stats);
   };
 
   // Encirclement score (0..1): higher when attacker controls most adjacent ground
   // and defender has fewer direct escape/support neighbors.
   World.prototype._encirclementScore = function(attacker, defender, idx) {
-    const A = attacker | 0;
-    const D = defender | 0;
     const i = idx | 0;
-    if (!this.land[i]) return 0;
-    if ((this.owner[i] | 0) !== D) return 0;
-
-    const w = this.w | 0;
-    const h = this.h | 0;
-    const x = i % w;
-    const y = (i / w) | 0;
-
-    let atk4 = 0;
-    let def4 = 0;
-    let open4 = 0;
-    let other4 = 0;
-    const owner = this.owner;
-    const land = this.land;
-    let ni = 0;
-    let o = 0;
-
-    if (x <= 0) open4++;
-    else {
-      ni = i - 1;
-      if (!land[ni]) open4++;
-      else {
-        o = owner[ni] | 0;
-        if (o === A) atk4++;
-        else if (o === D) def4++;
-        else if (o === OWNER.NONE) open4++;
-        else other4++;
-      }
-    }
-
-    if (x + 1 >= w) open4++;
-    else {
-      ni = i + 1;
-      if (!land[ni]) open4++;
-      else {
-        o = owner[ni] | 0;
-        if (o === A) atk4++;
-        else if (o === D) def4++;
-        else if (o === OWNER.NONE) open4++;
-        else other4++;
-      }
-    }
-
-    if (y <= 0) open4++;
-    else {
-      ni = i - w;
-      if (!land[ni]) open4++;
-      else {
-        o = owner[ni] | 0;
-        if (o === A) atk4++;
-        else if (o === D) def4++;
-        else if (o === OWNER.NONE) open4++;
-        else other4++;
-      }
-    }
-
-    if (y + 1 >= h) open4++;
-    else {
-      ni = i + w;
-      if (!land[ni]) open4++;
-      else {
-        o = owner[ni] | 0;
-        if (o === A) atk4++;
-        else if (o === D) def4++;
-        else if (o === OWNER.NONE) open4++;
-        else other4++;
-      }
-    }
-
-    let score = 0;
-    // Buffed: reward true surround + deny "thin corridor" breakthroughs.
-    if (atk4 >= 2) score += (atk4 - 1) * 0.24; // 2->0.24, 3->0.48, 4->0.72
-    if (atk4 === 4) score += 0.08;
-    if (def4 <= 1) score += 0.22;
-    if (open4 === 0) score += 0.18;
-    if (open4 <= 1 && atk4 >= 3) score += 0.06;
-    if (other4 === 0 && open4 === 0 && atk4 >= 3) score += 0.12;
-    score -= def4 * 0.06;
-
-    return clamp01(score);
+    if ((this.owner[i] | 0) !== (defender | 0)) return 0;
+    const stats = collectFrontlineNeighborhood(this, attacker, defender, i);
+    return encirclementScoreFromStats(stats);
   };
 
   World.prototype._enemyTileWeakness = function(attacker, defender, idx) {
@@ -1639,43 +1634,10 @@ export function installWar(World) {
     const i = idx | 0;
     if (!this.land[i]) return 0;
     if ((this.owner[i] | 0) !== D) return 0;
-
-    const w = this.w;
-    const x = i % w;
-    const y = (i / w) | 0;
-
-    let def4 = 0;
-    let def8 = 0;
-    let atk8 = 0;
-    let neutral8 = 0;
-    let other8 = 0;
-    let land8 = 0;
-
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        if (dx === 0 && dy === 0) continue;
-        const xx = x + dx;
-        const yy = y + dy;
-        if (xx < 0 || yy < 0 || xx >= this.w || yy >= this.h) continue;
-        const ni = yy * w + xx;
-        if (!this.land[ni]) continue;
-
-        land8++;
-        const o = this.owner[ni] | 0;
-        if (o === D) {
-          def8++;
-          if (dx === 0 || dy === 0) def4++;
-        } else if (o === A) {
-          atk8++;
-        } else if (o === OWNER.NONE) {
-          neutral8++;
-        } else {
-          other8++;
-        }
-      }
-    }
-
-    const encScore = this._encirclementScore(A, D, i);
+    const stats = collectFrontlineNeighborhood(this, A, D, i);
+    if (!stats) return 0;
+    const { def4, def8, atk8, neutral8, other8, land8 } = stats;
+    const encScore = encirclementScoreFromStats(stats);
 
     // Ignore coast/edge oddities and only target true enclave-like pockets.
     let pocket = 0;
@@ -1686,7 +1648,7 @@ export function installWar(World) {
     }
 
     const baseWeakness = clamp01(Math.max(pocket, encScore * 0.95));
-    const support = this._attackSupportScore(A, D, i);
+    const support = attackSupportScoreFromStats(stats);
     // Thin/deep salients are easier to repel even with large attack stacks.
     const thinPenalty = clamp01((0.62 - support) / 0.45);
     return clamp01(baseWeakness * (1 - 0.80 * thinPenalty));
@@ -1862,6 +1824,10 @@ export function installWar(World) {
 
     nA.infantry = Math.max(0, (nA.infantry || 0) - lossA);
     nB.infantry = Math.max(0, (nB.infantry || 0) - lossB);
+    if (typeof this._recoverResearchCasualties === "function") {
+      this._recoverResearchCasualties(A, lossA);
+      this._recoverResearchCasualties(B, lossB);
+    }
   };
 
   // Capture casualties are in addition to occupation cost.
@@ -1915,6 +1881,10 @@ export function installWar(World) {
       nA.infantry = Math.max(0, (nA.infantry || 0) - aLoss);
     }
     nD.infantry = Math.max(0, (nD.infantry || 0) - dLoss);
+    if (typeof this._recoverResearchCasualties === "function") {
+      this._recoverResearchCasualties(attacker, aLoss);
+      this._recoverResearchCasualties(defender, dLoss);
+    }
   };
 
   // Approximate contact length between A and B from sampled frontline candidates.
@@ -2038,7 +2008,10 @@ export function installWar(World) {
     const maxBonus = clamp01(DEFENCE_POST_MAX_BONUS);
     const k = Math.max(0, Number(DEFENCE_POST_STACK_K) || 0);
     if (maxBonus <= 0 || k <= 0) return 0;
-    return maxBonus * (1 - Math.exp(-k * stacks));
+    const baseBonus = maxBonus * (1 - Math.exp(-k * stacks));
+    const researchBonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(ownerId) : null;
+    const postMul = 1 + Math.max(0, Number(researchBonuses?.defencePostMul) || 0);
+    return clamp01(baseBonus * postMul);
   };
 
   World.prototype._capitalDefenceBonusAt = function(ownerId, idx) {

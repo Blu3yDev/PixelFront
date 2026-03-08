@@ -1148,7 +1148,9 @@ export function installWar(World) {
           if (over > 0 && gainBase > 0) {
             const ramp = Math.min(1, over / rampS);
             const frontMul = 1 + Math.max(0, fronts - 1) * multiWarGainBonus;
-            const gain = gainBase * (0.35 + 0.65 * ramp) * frontMul;
+            const researchBonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(id) : null;
+            const exhaustionMul = Math.max(0, Number(researchBonuses?.warExhaustionGainMul) || 1);
+            const gain = gainBase * (0.35 + 0.65 * ramp) * frontMul * exhaustionMul;
             x = Math.min(1, x + step * gain);
           }
         } else {
@@ -1862,6 +1864,10 @@ export function installWar(World) {
 
     nA.infantry = Math.max(0, (nA.infantry || 0) - lossA);
     nB.infantry = Math.max(0, (nB.infantry || 0) - lossB);
+    if (typeof this._recoverResearchCasualties === "function") {
+      this._recoverResearchCasualties(A, lossA);
+      this._recoverResearchCasualties(B, lossB);
+    }
   };
 
   // Capture casualties are in addition to occupation cost.
@@ -1915,6 +1921,10 @@ export function installWar(World) {
       nA.infantry = Math.max(0, (nA.infantry || 0) - aLoss);
     }
     nD.infantry = Math.max(0, (nD.infantry || 0) - dLoss);
+    if (typeof this._recoverResearchCasualties === "function") {
+      this._recoverResearchCasualties(attacker, aLoss);
+      this._recoverResearchCasualties(defender, dLoss);
+    }
   };
 
   // Approximate contact length between A and B from sampled frontline candidates.
@@ -2038,7 +2048,10 @@ export function installWar(World) {
     const maxBonus = clamp01(DEFENCE_POST_MAX_BONUS);
     const k = Math.max(0, Number(DEFENCE_POST_STACK_K) || 0);
     if (maxBonus <= 0 || k <= 0) return 0;
-    return maxBonus * (1 - Math.exp(-k * stacks));
+    const baseBonus = maxBonus * (1 - Math.exp(-k * stacks));
+    const researchBonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(ownerId) : null;
+    const postMul = 1 + Math.max(0, Number(researchBonuses?.defencePostMul) || 0);
+    return clamp01(baseBonus * postMul);
   };
 
   World.prototype._capitalDefenceBonusAt = function(ownerId, idx) {

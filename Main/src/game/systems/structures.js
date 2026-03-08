@@ -108,6 +108,8 @@ export function installStructures(World) {
     this.structures.push(st);
     this._structureById.set(id, st);
     this._defencePostCacheReady = false;
+    if (typeof this._markStructureCountCacheDirty === "function") this._markStructureCountCacheDirty();
+    if (st.type === "coastal_rig" && Array.isArray(this._coastalRigStructures)) this._coastalRigStructures.push(st);
 
     // Occupy a 3x3 footprint for collision and stack selection.
     this._markStructureFootprint(id, st.x, st.y);

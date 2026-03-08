@@ -9,7 +9,9 @@ import { createClient } from "@supabase/supabase-js";
 import { createMainMenuAuthController } from "./auth/mainMenuAuth.js";
 import { createPlayerStatsService } from "./auth/playerStatsService.js";
 import { createMainMenuLeaderboardController } from "./auth/mainMenuLeaderboard.js";
+import { renderMainMenuGuide } from "./mainMenuGuide.js";
 import { renderMainMenuUpdateLog } from "./mainMenuUpdates.js";
+import { RESEARCH_BRANCH_ORDER, getResearchBranch, getResearchIconCandidates, getResearchIconNode, getResearchNode, getResearchNodesForBranch } from "./game/researchCatalog.js";
 import {
   FLAG_LAYOUT_OPTIONS,
   FLAG_MAX_STROKES,
@@ -35,12 +37,59 @@ document.title = "PixelFront | Pre-Release";
 const canvas = document.getElementById("game");
 if (!canvas) throw new Error("[Boot] Missing canvas #game");
 
+function getViewportSnapshot() {
+  const vv = (typeof window !== "undefined" && window?.visualViewport) ? window.visualViewport : null;
+  const width = Math.max(
+    320,
+    Math.round(
+      Number(vv?.width) ||
+      Number(window.innerWidth) ||
+      Number(document.documentElement?.clientWidth) ||
+      320
+    )
+  );
+  const height = Math.max(
+    320,
+    Math.round(
+      Number(vv?.height) ||
+      Number(window.innerHeight) ||
+      Number(document.documentElement?.clientHeight) ||
+      320
+    )
+  );
+  return {
+    width,
+    height,
+    orientation: height >= width ? "portrait" : "landscape"
+  };
+}
+
+function syncResponsiveViewportState() {
+  const root = document.documentElement;
+  const viewport = getViewportSnapshot();
+  root.style.setProperty("--pf-vw", `${viewport.width}px`);
+  root.style.setProperty("--pf-vh", `${viewport.height}px`);
+  const uiViewport = viewport.width <= 700 ? "phone" : (viewport.width <= 1100 ? "tablet" : "desktop");
+  const uiShort = viewport.height <= 740 && viewport.width <= 900;
+  root.dataset.uiViewport = uiViewport;
+  root.dataset.uiOrientation = viewport.orientation;
+  root.dataset.uiShort = uiShort ? "true" : "false";
+  return viewport;
+}
+
+syncResponsiveViewportState();
+window.addEventListener("resize", syncResponsiveViewportState, { passive: true });
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", syncResponsiveViewportState, { passive: true });
+  window.visualViewport.addEventListener("scroll", syncResponsiveViewportState, { passive: true });
+}
+
 // Hard-fix: ensure canvas has real, non-zero layout size immediately.
 // This prevents the 1x1 backing-store bug that makes the world look "black".
 canvas.style.position = "fixed";
 canvas.style.inset = "0";
-canvas.style.width = "100vw";
-canvas.style.height = "100vh";
+canvas.style.width = "100%";
+canvas.style.height = "100%";
 canvas.style.display = "block";
 canvas.style.background = "#07080c";
 canvas.style.touchAction = "none";
@@ -317,14 +366,22 @@ const DEFAULT_MATCH_CONFIG = Object.freeze({
   mapMode: MAP_MODE.WORLD_MAP,
   mapSource: MAP_SOURCE.POLITICAL_EARTH,
   customMapId: "",
+  infiniteResources: false,
   infiniteGold: false,
   infiniteTroops: false,
   disableMissileSilo: false,
   disableAbmLauncher: false,
+  disableAirbase: false,
   disableDefencePost: false,
   playerGoldBoost: 1,
   playerTroopsBoost: 1
 });
+const MATCH_DISABLED_STRUCTURE_RULES = Object.freeze([
+  Object.freeze({ key: "disableMissileSilo", type: "missile_silo", label: "Missile Silo", buttonId: "btnMissileSilo" }),
+  Object.freeze({ key: "disableAbmLauncher", type: "abm_launcher", label: "ABM Launcher", buttonId: "btnAbmLauncher" }),
+  Object.freeze({ key: "disableAirbase", type: "airbase", label: "Airbase", buttonId: "btnAirbase" }),
+  Object.freeze({ key: "disableDefencePost", type: "defence_post", label: "Defence Post", buttonId: "btnDefencePost" }),
+]);
 let earthData = null;
 let earthCountryBotCap = 0;
 let earthCountryBotCapPromise = null;
@@ -1375,6 +1432,7 @@ const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   startBurstExpand: Object.freeze({ cmd: "start_burst_expand", predictLocal: true }),
   startBurstAttack: Object.freeze({ cmd: "start_burst_attack", predictLocal: true }),
   pickSpawn: Object.freeze({ cmd: "pick_spawn" }),
+  startResearch: Object.freeze({ cmd: "start_research" }),
   launchMissileWarhead: Object.freeze({ cmd: "launch_missile_warhead" }),
   launchAirbaseTransport: Object.freeze({ cmd: "launch_airbase_transport" }),
   placeStructure: Object.freeze({ cmd: "place_structure" })
@@ -2923,6 +2981,7 @@ function startSoloSimulationWorker(worldRef) {
       type: "init_world",
       worldState: buildSoloSimulationWorldState(worldRef),
       liveRules: {
+        infiniteResources: !!cfg.infiniteResources,
         infiniteGold: !!cfg.infiniteGold,
         infiniteTroops: !!cfg.infiniteTroops,
         playerIncomeOpen: Number(profile.playerIncomeOpen) || 1,
@@ -3409,13 +3468,16 @@ function connectMultiplayerMatchSocket() {
 function getPlayer() {
   const fallbackAgg = attackCommitFromRatio(0.2);
   if (!world) {
-    return { gold: 0, goldPS: 0, food: 0, foodPS: 0, foodDemandPS: 0, steel: 0, steelPS: 0, oil: 0, oilPS: 0, oilDemandPS: 0, population: 0, popCap: 0, popPS: 0, growthZone: "OK", infantry: 0, troopsCap: 0, infantryPS: 0, attackRatio: 0.2, aggression: fallbackAgg, attackCommit: fallbackAgg, mobilization: 0.30, stabilityFactor: 1, stabilityPct: 100, warExhaustion: 0, warExhaustionPct: 0, workersPop: 0, armyPop: 0 };
+    return { gold: 0, goldPS: 0, food: 0, foodPS: 0, foodDemandPS: 0, steel: 0, steelPS: 0, oil: 0, oilPS: 0, oilDemandPS: 0, population: 0, popCap: 0, popPS: 0, growthZone: "OK", infantry: 0, troopsCap: 0, infantryPS: 0, attackRatio: 0.2, aggression: fallbackAgg, attackCommit: fallbackAgg, mobilization: 0.30, stabilityFactor: 1, stabilityPct: 100, warExhaustion: 0, warExhaustionPct: 0, workersPop: 0, armyPop: 0, researchPoints: 0, researchPointsPerDay: 0 };
   }
   // Avoid crashes if world.player is temporarily unset.
   const p = world.player || (world.nation && world.nation[OWNER.PLAYER]);
   const resources = (typeof world.getNationResources === "function")
     ? (world.getNationResources(OWNER.PLAYER) || {})
     : {};
+  const researchState = (typeof world.getResearchState === "function")
+    ? (world.getResearchState(OWNER.PLAYER) || null)
+    : null;
   return {
     ...(p || { gold: 0, goldPS: 0, population: 0, popCap: 0, popPS: 0, growthZone: "OK", infantry: 0, troopsCap: 0, infantryPS: 0, attackRatio: 0.2, aggression: fallbackAgg, attackCommit: fallbackAgg, mobilization: 0.30, stabilityFactor: 1, stabilityPct: 100, warExhaustion: 0, warExhaustionPct: 0, workersPop: 0, armyPop: 0 }),
     food: Math.max(0, Number(resources.food) || 0),
@@ -3425,7 +3487,9 @@ function getPlayer() {
     steelPS: Number(resources.steelPS) || 0,
     oil: Math.max(0, Number(resources.oil) || 0),
     oilPS: Number(resources.oilPS) || 0,
-    oilDemandPS: Number(resources.oilDemandPS) || 0
+    oilDemandPS: Number(resources.oilDemandPS) || 0,
+    researchPoints: Math.max(0, Number(researchState?.points) || 0),
+    researchPointsPerDay: Math.max(0, Number(researchState?.incomePerDay) || 0)
   };
 }
 
@@ -4239,6 +4303,8 @@ function sanitizeMatchConfig(next) {
     return fallback;
   };
 
+  const infiniteResources = Boolean(src.infiniteResources) || Boolean(src.infiniteGold) || Boolean(src.infiniteTroops);
+
   return {
     sizePreset,
     aiCount,
@@ -4246,10 +4312,12 @@ function sanitizeMatchConfig(next) {
     mapMode,
     mapSource,
     customMapId,
-    infiniteGold: Boolean(src.infiniteGold),
-    infiniteTroops: Boolean(src.infiniteTroops),
+    infiniteResources,
+    infiniteGold: infiniteResources || Boolean(src.infiniteGold),
+    infiniteTroops: infiniteResources || Boolean(src.infiniteTroops),
     disableMissileSilo: Boolean(src.disableMissileSilo),
     disableAbmLauncher: Boolean(src.disableAbmLauncher),
+    disableAirbase: Boolean(src.disableAirbase),
     disableDefencePost: Boolean(src.disableDefencePost),
     playerGoldBoost: parseBoost(src.playerGoldBoost, DEFAULT_MATCH_CONFIG.playerGoldBoost),
     playerTroopsBoost: parseBoost(src.playerTroopsBoost, DEFAULT_MATCH_CONFIG.playerTroopsBoost)
@@ -4459,9 +4527,10 @@ function getDifficultyProfile(key) {
 function getDisabledStructureTypes(matchConfig) {
   const cfg = sanitizeMatchConfig(matchConfig);
   const set = new Set();
-  if (cfg.disableMissileSilo) set.add("missile_silo");
-  if (cfg.disableAbmLauncher) set.add("abm_launcher");
-  if (cfg.disableDefencePost) set.add("defence_post");
+  for (let i = 0; i < MATCH_DISABLED_STRUCTURE_RULES.length; i++) {
+    const rule = MATCH_DISABLED_STRUCTURE_RULES[i];
+    if (cfg[rule.key]) set.add(rule.type);
+  }
   return set;
 }
 
@@ -4469,8 +4538,8 @@ function structureTypeLabel(type) {
   const t = String(type || "").toLowerCase();
   if (t === "missile_silo") return "Missile Silo";
   if (t === "abm_launcher") return "ABM Launcher";
-  if (t === "defence_post") return "Defence Post";
   if (t === "airbase") return "Airbase";
+  if (t === "defence_post") return "Defence Post";
   return "Structure";
 }
 
@@ -4598,11 +4667,11 @@ function applyMatchWorldRestrictions(worldRef, matchConfig) {
 
 function applyMatchBuildButtonRestrictions(matchConfig) {
   const cfg = sanitizeMatchConfig(matchConfig);
-  const rows = [
-    { id: "btnMissileSilo", disabled: cfg.disableMissileSilo, label: "Missile Silo" },
-    { id: "btnAbmLauncher", disabled: cfg.disableAbmLauncher, label: "ABM Launcher" },
-    { id: "btnDefencePost", disabled: cfg.disableDefencePost, label: "Defence Post" }
-  ];
+  const rows = MATCH_DISABLED_STRUCTURE_RULES.map((rule) => ({
+    id: rule.buttonId,
+    disabled: !!cfg[rule.key],
+    label: rule.label
+  }));
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const el = document.getElementById(row.id);
@@ -4641,6 +4710,11 @@ function applyLiveMatchModifiers(frameDt) {
   );
   const applyInfiniteResources = (nation) => {
     if (!nation || !nation.alive) return;
+    if (cfg.infiniteResources) {
+      nation.food = Math.max(Number(nation.food) || 0, 1_000_000_000);
+      nation.steel = Math.max(Number(nation.steel) || 0, 1_000_000_000);
+      nation.oil = Math.max(Number(nation.oil) || 0, 1_000_000_000);
+    }
     if (cfg.infiniteGold) {
       nation.gold = Math.max(Number(nation.gold) || 0, 1_000_000_000);
     }
@@ -4826,10 +4900,11 @@ const BUILD_HOTKEY_BUTTON_IDS = Object.freeze({
   "3": "btnBarracks",
   "4": "btnDefencePost",
   "5": "btnPort",
-  "6": "btnMissileSilo",
-  "7": "btnAbmLauncher",
-  "8": "btnAirbase",
-  "9": "btnCoastalRig"
+  "6": "btnCoastalRig",
+  "7": "btnResearchLab",
+  "8": "btnMissileSilo",
+  "9": "btnAbmLauncher",
+  "0": "btnAirbase"
 });
 
 const QUICK_LAUNCH_HOTKEY_BUTTON_IDS = Object.freeze({
@@ -6302,12 +6377,20 @@ function createMainMenuController(options = null) {
   const updateLogBtnLabel = document.getElementById("mmUpdateLogBtnLabel");
   const updateLogBtnSub = document.getElementById("mmUpdateLogBtnSub");
   const bookBtn = document.getElementById("mmBookBtn");
+  const guideBackBtn = document.getElementById("mmGuideBackBtn");
   const updatesEyebrow = document.getElementById("mmUpdatesEyebrow");
   const updatesTitle = document.getElementById("mmUpdatesTitle");
   const updatesHeroBadge = document.getElementById("mmUpdatesHeroBadge");
   const updatesHeroTitle = document.getElementById("mmUpdatesHeroTitle");
   const updatesHeroCopy = document.getElementById("mmUpdatesHeroCopy");
   const updatesTimeline = document.getElementById("mmUpdatesTimeline");
+  const guideEyebrow = document.getElementById("mmGuideEyebrow");
+  const guideTitle = document.getElementById("mmGuideTitle");
+  const guideHeroBadge = document.getElementById("mmGuideHeroBadge");
+  const guideHeroTitle = document.getElementById("mmGuideHeroTitle");
+  const guideHeroCopy = document.getElementById("mmGuideHeroCopy");
+  const guideHighlights = document.getElementById("mmGuideHighlights");
+  const guideSections = document.getElementById("mmGuideSections");
   const nameInput = document.getElementById("mmNameInput");
   const flagPreview = document.getElementById("mmPlayerFlagPreview");
   const countryColorInput = document.getElementById("mmCountryColorInput");
@@ -6430,10 +6513,12 @@ function createMainMenuController(options = null) {
     difficulty: document.getElementById("mmCfgDifficulty"),
     mapMode: document.getElementById("mmCfgMapMode"),
     customMapId: document.getElementById("mmCfgCustomMap"),
+    infiniteResources: document.getElementById("mmCfgInfiniteResources"),
     infiniteGold: document.getElementById("mmCfgInfiniteGold"),
     infiniteTroops: document.getElementById("mmCfgInfiniteTroops"),
     disableMissileSilo: document.getElementById("mmCfgDisableMissileSilo"),
     disableAbmLauncher: document.getElementById("mmCfgDisableAbmLauncher"),
+    disableAirbase: document.getElementById("mmCfgDisableAirbase"),
     disableDefencePost: document.getElementById("mmCfgDisableDefencePost"),
     playerGoldBoost: document.getElementById("mmCfgPlayerGoldBoost"),
     playerTroopsBoost: document.getElementById("mmCfgPlayerTroopsBoost")
@@ -6486,7 +6571,8 @@ function createMainMenuController(options = null) {
     multiplayer: "Create or join a private multiplayer lobby.",
     mpjoin: "Enter a lobby code to join.",
     mplobby: "Lobby connected. Waiting for host.",
-    updates: "Review the latest build notes and announcements."
+    updates: "Review the latest build notes and announcements.",
+    guide: "Read the field manual and open only the systems you need."
   });
   let currentView = "home";
   let playMenuMode = "singleplayer";
@@ -6580,6 +6666,27 @@ function createMainMenuController(options = null) {
     }
   };
 
+  const normalizeUpdateLogQuickButton = () => {
+    if (!(updateLogBtn instanceof HTMLButtonElement)) return;
+    updateLogBtn.classList.remove("isUpdateLog");
+    const staleLabel = updateLogBtn.querySelector("#mmUpdateLogBtnLabel");
+    const staleSub = updateLogBtn.querySelector("#mmUpdateLogBtnSub");
+    if (staleLabel) staleLabel.remove();
+    if (staleSub) staleSub.remove();
+    let icon = updateLogBtn.querySelector(".mainMenuQuickBtnIcon");
+    if (!(icon instanceof HTMLImageElement)) {
+      icon = document.createElement("img");
+      icon.className = "mainMenuQuickBtnIcon";
+      icon.alt = "";
+      icon.setAttribute("aria-hidden", "true");
+      icon.draggable = false;
+      updateLogBtn.replaceChildren(icon);
+    }
+    icon.src = "/UI_Icons/Main-Menu/UpdateLog.png";
+  };
+
+  normalizeUpdateLogQuickButton();
+
   renderMainMenuUpdateLog({
     eyebrow: updatesEyebrow,
     title: updatesTitle,
@@ -6589,6 +6696,16 @@ function createMainMenuController(options = null) {
     timeline: updatesTimeline,
     quickLabel: updateLogBtnLabel,
     quickVersion: updateLogBtnSub
+  });
+
+  renderMainMenuGuide({
+    eyebrow: guideEyebrow,
+    title: guideTitle,
+    heroBadge: guideHeroBadge,
+    heroTitle: guideHeroTitle,
+    heroSummary: guideHeroCopy,
+    heroHighlights: guideHighlights,
+    sections: guideSections
   });
 
   const playerNameFromInput = () => {
@@ -8056,7 +8173,8 @@ function createMainMenuController(options = null) {
       view === "multiplayer" ||
       view === "mpjoin" ||
       view === "mplobby" ||
-      view === "updates"
+      view === "updates" ||
+      view === "guide"
     ) ? view : "home";
     const prev = currentView;
     currentView = next;
@@ -9262,10 +9380,12 @@ function createMainMenuController(options = null) {
     if (matchInputs.difficulty) matchInputs.difficulty.value = cfg.difficulty;
     if (matchInputs.mapMode) matchInputs.mapMode.value = String(cfg.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
     if (matchInputs.customMapId) matchInputs.customMapId.value = String(cfg.customMapId || "");
+    if (matchInputs.infiniteResources) matchInputs.infiniteResources.checked = !!cfg.infiniteResources;
     if (matchInputs.infiniteGold) matchInputs.infiniteGold.checked = !!cfg.infiniteGold;
     if (matchInputs.infiniteTroops) matchInputs.infiniteTroops.checked = !!cfg.infiniteTroops;
     if (matchInputs.disableMissileSilo) matchInputs.disableMissileSilo.checked = !!cfg.disableMissileSilo;
     if (matchInputs.disableAbmLauncher) matchInputs.disableAbmLauncher.checked = !!cfg.disableAbmLauncher;
+    if (matchInputs.disableAirbase) matchInputs.disableAirbase.checked = !!cfg.disableAirbase;
     if (matchInputs.disableDefencePost) matchInputs.disableDefencePost.checked = !!cfg.disableDefencePost;
     if (matchInputs.playerGoldBoost) matchInputs.playerGoldBoost.value = String(cfg.playerGoldBoost);
     if (matchInputs.playerTroopsBoost) matchInputs.playerTroopsBoost.value = String(cfg.playerTroopsBoost);
@@ -9297,10 +9417,12 @@ function createMainMenuController(options = null) {
       mapMode: MAP_MODE.WORLD_MAP,
       mapSource,
       customMapId,
+      infiniteResources: !!matchInputs.infiniteResources?.checked,
       infiniteGold: !!matchInputs.infiniteGold?.checked,
       infiniteTroops: !!matchInputs.infiniteTroops?.checked,
       disableMissileSilo: !!matchInputs.disableMissileSilo?.checked,
       disableAbmLauncher: !!matchInputs.disableAbmLauncher?.checked,
+      disableAirbase: !!matchInputs.disableAirbase?.checked,
       disableDefencePost: !!matchInputs.disableDefencePost?.checked,
       playerGoldBoost: Number(matchInputs.playerGoldBoost?.value),
       playerTroopsBoost: Number(matchInputs.playerTroopsBoost?.value)
@@ -9315,11 +9437,17 @@ function createMainMenuController(options = null) {
       : 0;
     const botsText = cfg.aiCount ? String(cfg.aiCount) : `Preset (${WORLD_SIZE_PRESETS[cfg.sizePreset]?.aiCount ?? "auto"})`;
     const botsCapText = earthCap > 0 ? `/${earthCap}` : "";
-    const disabled = [];
-    if (cfg.disableMissileSilo) disabled.push("Missile Silo");
-    if (cfg.disableAbmLauncher) disabled.push("ABM Launcher");
-    if (cfg.disableDefencePost) disabled.push("Defence Post");
-    const ruleText = disabled.length ? `Disabled: ${disabled.join(", ")}` : "No structure bans";
+    const rules = [];
+    if (cfg.infiniteResources) rules.push("Infinite Resources");
+    else {
+      if (cfg.infiniteGold) rules.push("Infinite Gold");
+      if (cfg.infiniteTroops) rules.push("Infinite Troops");
+    }
+    if (cfg.disableMissileSilo) rules.push("Disable Missile Silos");
+    if (cfg.disableAbmLauncher) rules.push("Disable ABM Launchers");
+    if (cfg.disableAirbase) rules.push("Remove Airbase");
+    if (cfg.disableDefencePost) rules.push("Disable Defence Posts");
+    const ruleText = rules.length ? rules.join(", ") : "Default rules";
     let modeText = "Political Earth";
     if (String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.EARTH) {
       modeText = "Earth";
@@ -9430,7 +9558,7 @@ function createMainMenuController(options = null) {
   setHint(libraryBtn, "Browse and publish community maps.");
   setHint(flagBtn, "Set your country color.");
   setHint(updateLogBtn, "Open the latest update log.");
-  setHint(bookBtn, "Guide is empty for now.");
+  setHint(bookBtn, "Open the game guide.");
 
   if (playBtn) {
     playBtn.addEventListener("click", () => {
@@ -9473,6 +9601,16 @@ function createMainMenuController(options = null) {
   }
   if (updatesBackBtn) {
     updatesBackBtn.addEventListener("click", () => {
+      setView("home");
+    });
+  }
+  if (bookBtn) {
+    bookBtn.addEventListener("click", () => {
+      setView("guide");
+    });
+  }
+  if (guideBackBtn) {
+    guideBackBtn.addEventListener("click", () => {
       setView("home");
     });
   }
@@ -10141,11 +10279,6 @@ function createMainMenuController(options = null) {
       setStatus("Country color updated.");
     });
   }
-  if (bookBtn) {
-    bookBtn.addEventListener("click", () => {
-      setStatus("Guide is empty for now.");
-    });
-  }
   document.addEventListener("keydown", (ev) => {
     if (mapLibraryModal && !mapLibraryModal.hidden && ev.key === "Escape") {
       ev.preventDefault();
@@ -10530,6 +10663,8 @@ if (!mainMenuController) {
 function boot() {
   renderer.resizeToDisplay();
   bindInput();
+  ensureDockLayoutObserver();
+  scheduleDockLayoutSync();
 
   hud.setOpMessage("");
   if (hud.onSettingsChange) {
@@ -10885,19 +11020,32 @@ function boot() {
   const btnTradesPanel = document.getElementById("btnTradesPanel");
   const researchModal = document.getElementById("researchModal");
   const researchBackdrop = document.getElementById("researchBackdrop");
+  const researchPanel = document.getElementById("researchPanel");
   const researchClose = document.getElementById("researchClose");
   const btnResearchPanel = document.getElementById("btnResearchPanel");
   const researchViewport = document.getElementById("researchTreeViewport");
-  const researchCanvas = document.getElementById("researchTreeCanvas");
-  const researchLinks = document.getElementById("researchTreeLinks");
-  const researchNodesLayer = document.getElementById("researchTreeNodes");
-  const researchInfoIcon = document.getElementById("researchInfoIcon");
+  const researchTreeGrid = document.getElementById("researchTreeGrid");
+  const researchBranchName = document.getElementById("researchBranchName");
+  const researchBranchDesc = document.getElementById("researchBranchDesc");
+  const researchPointsValue = document.getElementById("researchPointsValue");
+  const researchIncomeValue = document.getElementById("researchIncomeValue");
+  const researchLabsValue = document.getElementById("researchLabsValue");
+  const researchCitiesValue = document.getElementById("researchCitiesValue");
+  const researchInfoTier = document.getElementById("researchInfoTier");
+  const researchInfoIconImg = document.getElementById("researchInfoIconImg");
+  const researchInfoIconFallback = document.getElementById("researchInfoIconFallback");
+  const researchInfoBranch = document.getElementById("researchInfoBranch");
   const researchInfoName = document.getElementById("researchInfoName");
   const researchInfoStatus = document.getElementById("researchInfoStatus");
   const researchInfoDesc = document.getElementById("researchInfoDesc");
   const researchInfoPrice = document.getElementById("researchInfoPrice");
   const researchInfoTime = document.getElementById("researchInfoTime");
+  const researchInfoEffect = document.getElementById("researchInfoEffect");
+  const researchInfoRequirement = document.getElementById("researchInfoRequirement");
+  const researchActionHint = document.getElementById("researchActionHint");
   const researchActionBtn = document.getElementById("researchActionBtn");
+  const researchLabCostValue = document.getElementById("researchLabCostValue");
+  const researchCityYieldValue = document.getElementById("researchCityYieldValue");
   const researchTabButtons = Array.from(document.querySelectorAll("[data-research-tab]"));
   const tradeModal = document.getElementById("tradeModal");
   const tradeBackdrop = document.getElementById("tradeBackdrop");
@@ -10918,6 +11066,8 @@ function boot() {
   const tradeDurationInput = document.getElementById("tradeDurationInput");
   const tradeCreateBtn = document.getElementById("tradeCreateBtn");
   const tradeStatus = document.getElementById("tradeStatus");
+  const tradeTabButtons = Array.from(document.querySelectorAll("[data-trade-tab]"));
+  const tradeViews = Array.from(document.querySelectorAll("[data-trade-view]"));
 
   const TRADE_RESOURCE_META = Object.freeze({
     food: Object.freeze({ key: "food", label: "Food", icon: "F", iconPath: "/UI_Icons/TradeResources/Food.png", rateKey: "foodPS" }),
@@ -10927,9 +11077,40 @@ function boot() {
   const TRADE_RESOURCE_KEYS = Object.freeze(["food", "steel", "oil"]);
 
   let tradeTargetNationId = 0;
+  let tradeActiveTab = "board";
   let tradeStatusExpireAtMs = 0;
 
   const isTradeOpen = () => !!(tradeModal && !tradeModal.hidden);
+
+  const normalizeTradeTab = (tabRaw) => {
+    const tab = String(tabRaw || "").toLowerCase();
+    if (tab === "offers" || tab === "requests") return tab;
+    return "board";
+  };
+
+  const setTradeTab = (tabRaw, resetScroll = false) => {
+    tradeActiveTab = normalizeTradeTab(tabRaw);
+    for (let i = 0; i < tradeTabButtons.length; i++) {
+      const btn = tradeTabButtons[i];
+      if (!btn) continue;
+      const isActive = normalizeTradeTab(btn.dataset.tradeTab) === tradeActiveTab;
+      btn.classList.toggle("isTabSelected", isActive);
+      btn.setAttribute("aria-selected", isActive ? "true" : "false");
+      btn.tabIndex = isActive ? 0 : -1;
+    }
+    for (let i = 0; i < tradeViews.length; i++) {
+      const view = tradeViews[i];
+      if (!view) continue;
+      const isActive = normalizeTradeTab(view.dataset.tradeView) === tradeActiveTab;
+      view.hidden = !isActive;
+      view.classList.toggle("isActive", isActive);
+      if (isActive && resetScroll) {
+        view.scrollTop = 0;
+        const list = view.querySelector(".tradeDealsList");
+        if (list) list.scrollTop = 0;
+      }
+    }
+  };
 
   const getNationName = (nationIdRaw) => {
     const nationId = Math.max(0, Number(nationIdRaw) | 0);
@@ -11072,32 +11253,49 @@ function boot() {
       const key = TRADE_RESOURCE_KEYS[i];
       const meta = TRADE_RESOURCE_META[key];
       if (!meta) continue;
-      const row = document.createElement("div");
+      const row = document.createElement("section");
       row.className = "tradeResourceRow";
 
-      const icon = createTradeResourceIcon(meta, "tradeResIcon", meta.label);
-      row.appendChild(icon);
-
-      const labelWrap = document.createElement("div");
+      const top = document.createElement("div");
+      top.className = "tradeResourceTop";
+      const identity = document.createElement("div");
+      identity.className = "tradeResourceIdentity";
+      identity.appendChild(createTradeResourceIcon(meta, "tradeResIcon", meta.label));
       const label = document.createElement("div");
       label.className = "tradeResourceLabel";
       label.textContent = meta.label;
-      const rate = Math.max(0, Number(stats[meta.rateKey]) || 0);
       const stock = Math.max(0, Number(stats[key]) || 0);
-      const details = document.createElement("div");
-      details.className = "tradeResourceMeta";
-      if (key === "food") {
-        const demand = Math.max(0, Number(stats.foodDemandPS) || 0);
-        details.textContent = `${fmtCompactLocal(stock)} stored  |  +${rate.toFixed(2)}/s  |  demand ${demand.toFixed(2)}/s`;
-      } else if (key === "oil") {
-        const demand = Math.max(0, Number(stats.oilDemandPS) || 0);
-        details.textContent = `${fmtCompactLocal(stock)} stored  |  +${rate.toFixed(2)}/s  |  demand ${demand.toFixed(2)}/s`;
-      } else {
-        details.textContent = `${fmtCompactLocal(stock)} stored  |  +${rate.toFixed(2)}/s`;
+      const valueWrap = document.createElement("div");
+      valueWrap.className = "tradeResourceValueWrap";
+      const value = document.createElement("strong");
+      value.className = "tradeResourceValue";
+      value.textContent = fmtCompactLocal(stock);
+      const valueLabel = document.createElement("span");
+      valueLabel.className = "tradeResourceValueLabel";
+      valueLabel.textContent = "stored";
+      valueWrap.appendChild(value);
+      valueWrap.appendChild(valueLabel);
+      identity.appendChild(label);
+      top.appendChild(identity);
+      top.appendChild(valueWrap);
+      row.appendChild(top);
+
+      const statsRow = document.createElement("div");
+      statsRow.className = "tradeResourceStats";
+      const income = document.createElement("div");
+      income.className = "tradeResourceStat";
+      income.innerHTML = `<span class="tradeResourceStatLabel">Income</span><strong class="tradeResourceStatValue">+${Math.max(0, Number(stats[meta.rateKey]) || 0).toFixed(2)}/s</strong>`;
+      statsRow.appendChild(income);
+
+      if (key === "food" || key === "oil") {
+        const demandKey = key === "food" ? "foodDemandPS" : "oilDemandPS";
+        const demand = document.createElement("div");
+        demand.className = "tradeResourceStat";
+        demand.innerHTML = `<span class="tradeResourceStatLabel">Demand</span><strong class="tradeResourceStatValue">${Math.max(0, Number(stats[demandKey]) || 0).toFixed(2)}/s</strong>`;
+        statsRow.appendChild(demand);
       }
-      labelWrap.appendChild(label);
-      labelWrap.appendChild(details);
-      row.appendChild(labelWrap);
+
+      row.appendChild(statsRow);
       tradeMyResources.appendChild(row);
     }
   };
@@ -11189,6 +11387,11 @@ function boot() {
     host.dataset.empty = value > 0 ? "false" : "true";
   };
 
+  const formatTradeRatePerDay = (rateRaw, resourceLabelRaw = "Resource") => {
+    const amount = fmtCompactLocal(Math.max(0, Number(rateRaw) || 0));
+    return `${amount}/day ${String(resourceLabelRaw || "Resource")}`;
+  };
+
   const createTradeFlowLeg = (labelTextRaw, resourceRaw, rateRaw) => {
     const resourceKey = String(resourceRaw || "").toLowerCase();
     const meta = TRADE_RESOURCE_META[resourceKey] || { key: resourceKey, label: resourceKey || "Resource", iconPath: "" };
@@ -11210,7 +11413,7 @@ function boot() {
 
     const value = document.createElement("div");
     value.className = "tradeFlowValue";
-    value.textContent = `${fmtCompactLocal(Math.max(0, Number(rateRaw) || 0))}/min ${meta.label}`;
+    value.textContent = formatTradeRatePerDay(rateRaw, meta.label);
 
     copy.appendChild(label);
     copy.appendChild(value);
@@ -11582,6 +11785,7 @@ function boot() {
     btnTradesPanel?.classList.add("isOpen");
     const targetNationId = Math.max(0, Number(targetNationIdRaw) | 0);
     tradeTargetNationId = targetNationId;
+    setTradeTab("board", true);
     populateTradeNationOptions(targetNationId);
     decorateTradeGoodsOptions(tradeOfferGoodsSelect);
     decorateTradeGoodsOptions(tradeRequestGoodsSelect);
@@ -11620,6 +11824,11 @@ function boot() {
       tradeTargetNationId = Math.max(0, Number(tradeNationSelect.value) | 0);
       refreshTradePanel(false);
     });
+  }
+  for (let i = 0; i < tradeTabButtons.length; i++) {
+    const btn = tradeTabButtons[i];
+    if (!btn) continue;
+    btn.addEventListener("click", () => setTradeTab(btn.dataset.tradeTab, true));
   }
   if (tradeOfferRateInput) {
     tradeOfferRateInput.min = String(TRADE_DEAL_MIN_RATE_PER_MIN);
@@ -11704,514 +11913,773 @@ function boot() {
 
   const normalizeResearchTab = (tabRaw) => {
     const t = String(tabRaw || "").toLowerCase();
-    if (t === "economy") return "economy";
-    if (t === "intel" || t === "intelligence") return "intel";
-    return "military";
+    if (t === "military") return "military";
+    if (t === "infrastructure" || t === "infra") return "infrastructure";
+    return "economy";
   };
-  const RESEARCH_NODE_W = 128;
-  const RESEARCH_NODE_H = 92;
+  const formatResearchDurationLabel = (secondsRaw) => {
+    const total = Math.max(0, Math.round(Number(secondsRaw) || 0));
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
+    if (mins > 0 && secs > 0) return `${mins}m ${secs}s`;
+    if (mins > 0) return `${mins}m`;
+    return `${secs}s`;
+  };
+  const formatResearchPointValue = (valueRaw, suffix = " RP") => {
+    const value = Math.max(0, Number(valueRaw) || 0);
+    const rounded = value >= 100 ? Math.round(value) : (Math.round(value * 10) / 10);
+    const hasFraction = Math.abs(rounded - Math.round(rounded)) > 0.001;
+    return `${rounded.toLocaleString(undefined, { minimumFractionDigits: hasFraction ? 1 : 0, maximumFractionDigits: 1 })}${suffix}`;
+  };
+  const formatResearchIncome = (valueRaw) => {
+    const value = Math.max(0, Number(valueRaw) || 0);
+    return `+${value.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} RP / day`;
+  };
+  const formatResearchTierRoman = (tierRaw) => {
+    const tier = Math.max(1, Number(tierRaw) || 1);
+    return ({ 1: "I", 2: "II", 3: "III", 4: "IV", 5: "V", 6: "VI" }[tier] || String(tier));
+  };
+  const getResearchNodeGlyph = (nodeRaw) => {
+    const source = String(nodeRaw?.name || "").trim();
+    const words = source.split(/\s+/).filter(Boolean).filter((word) => !/^(research|branch|tier)$/i.test(word));
+    const initials = (words.length ? words : source.split(/\s+/).filter(Boolean))
+      .slice(0, 2)
+      .map((word) => String(word || "").replace(/[^A-Za-z0-9]/g, "").charAt(0).toUpperCase())
+      .join("");
+    return initials || "RP";
+  };
+  const createEmptyResearchState = () => {
+    const branches = {};
+    for (let i = 0; i < RESEARCH_BRANCH_ORDER.length; i += 1) {
+      branches[RESEARCH_BRANCH_ORDER[i]] = { completedIds: [], active: null };
+    }
+    return {
+      ok: false,
+      points: 0,
+      incomePerDay: 0,
+      cityIncomePerDay: 0,
+      labIncomePerDay: 0,
+      labCount: 0,
+      branches
+    };
+  };
   const researchState = {
-    tab: "military",
-    selectedId: "",
-    scale: 1,
+    tab: "economy",
+    selectedByTab: Object.create(null),
+    lastTreeSigByTab: Object.create(null),
+    renderQueued: false
+  };
+  const researchIconStateByNodeId = new Map();
+  const researchChainCache = new Map();
+  const researchLayoutCache = new Map();
+  const researchViewportState = {
     x: 0,
     y: 0,
-    dragging: false,
-    dragX: 0,
-    dragY: 0,
-    initialized: false
+    scale: 1,
+    targetX: 0,
+    targetY: 0,
+    targetScale: 1,
+    rafId: 0,
+    isInitialized: false
   };
-  const RESEARCH_TREES = Object.freeze({
-    military: Object.freeze([
-      { id: "mil_logistics", name: "Logistics Doctrine", desc: "Faster reinforcement and mobilization throughput.", icon: "/UI_Icons/Expressions/war.png", price: 600, time: "35s", state: "unlocked", x: 620, y: 1280, parents: [] },
-      { id: "mil_armored", name: "Armored Doctrine", desc: "Heavy armor focus with stronger frontline breakthroughs.", icon: "/UI_Icons/infantry.png", price: 900, time: "45s", state: "", x: 1240, y: 980, parents: ["mil_logistics"], exclusiveGroup: "mil_doctrine" },
-      { id: "mil_siege", name: "Siege Logistics", desc: "Attrition-heavy doctrine for prolonged assaults.", icon: "/UI_Icons/Expressions/war.png", price: 1050, time: "56s", state: "", x: 1240, y: 1280, parents: ["mil_logistics"], exclusiveGroup: "mil_doctrine" },
-      { id: "mil_tactical", name: "Tactical Command Net", desc: "Faster order relay and tactical synchronization.", icon: "/UI_Icons/Expressions/war.png", price: 950, time: "50s", state: "", x: 1240, y: 1580, parents: ["mil_logistics"] },
-      { id: "mil_ew", name: "Electronic Warfare", desc: "Disrupts hostile command efficiency in contested zones.", icon: "/UI_Icons/Expressions/war.png", price: 1350, time: "72s", state: "", x: 1860, y: 940, parents: ["mil_armored"] },
-      { id: "mil_drone", name: "Drone Recon Wing", desc: "Persistent battlefield reconnaissance and target correction.", icon: "/UI_Icons/stability.png", price: 1420, time: "74s", state: "", x: 1860, y: 1280, parents: ["mil_armored"], exclusiveGroup: "mil_support" },
-      { id: "mil_barrier", name: "Adaptive Barrier Units", desc: "Fortified push doctrine with stronger survival in assaults.", icon: "/UI_Icons/abmMissile.png", price: 1470, time: "78s", state: "", x: 1860, y: 1620, parents: ["mil_siege", "mil_tactical"], exclusiveGroup: "mil_support" },
-      { id: "mil_precision", name: "Precision Strike Net", desc: "Advanced strike coordination with stronger impact.", icon: "/UI_Icons/HydrogenMissile.png", price: 2000, time: "95s", state: "", x: 2480, y: 1280, parents: ["mil_tactical"], parentsAny: ["mil_ew", "mil_drone", "mil_barrier"] }
-    ]),
-    economy: Object.freeze([
-      { id: "eco_automation", name: "Industrial Automation", desc: "Higher output from factories and core industry.", icon: "/UI_Icons/gold.png", price: 800, time: "40s", state: "unlocked", x: 620, y: 1280, parents: [] },
-      { id: "eco_trade", name: "Trade Corridor Security", desc: "Protects critical market routes during conflict.", icon: "/UI_Icons/gold.png", price: 1200, time: "65s", state: "", x: 1240, y: 980, parents: ["eco_automation"], exclusiveGroup: "eco_policy" },
-      { id: "eco_tax", name: "Tax Modernization", desc: "Increases passive gold from controlled regions.", icon: "/UI_Icons/population.png", price: 1000, time: "58s", state: "", x: 1240, y: 1280, parents: ["eco_automation"], exclusiveGroup: "eco_policy" },
-      { id: "eco_supply", name: "Supply Chain Audits", desc: "Reduces internal wastage across production.", icon: "/UI_Icons/gold.png", price: 1120, time: "60s", state: "", x: 1240, y: 1580, parents: ["eco_automation"] },
-      { id: "eco_market", name: "Market Forecasting", desc: "Improves timing of strategic spending.", icon: "/UI_Icons/gold.png", price: 1380, time: "70s", state: "", x: 1860, y: 940, parents: ["eco_trade"] },
-      { id: "eco_hedge", name: "Resource Hedging", desc: "Reduces output volatility during major wars.", icon: "/UI_Icons/gold.png", price: 1450, time: "76s", state: "", x: 1860, y: 1280, parents: ["eco_tax"] },
-      { id: "eco_bank", name: "National Reserve Banking", desc: "Stabilizes growth during war-time pressure.", icon: "/UI_Icons/gold.png", price: 1540, time: "82s", state: "", x: 1860, y: 1620, parents: ["eco_supply"], parentsAny: ["eco_trade", "eco_tax"] },
-      { id: "eco_sovereign", name: "Sovereign Investment Grid", desc: "Unlocks long-term macro-economic multipliers.", icon: "/UI_Icons/gold.png", price: 2100, time: "105s", state: "", x: 2480, y: 1280, parents: ["eco_bank"], parentsAny: ["eco_market", "eco_hedge"] }
-    ]),
-    intel: Object.freeze([
-      { id: "int_decrypt", name: "Signals Decryption", desc: "Earlier warning on hostile movement and launches.", icon: "/UI_Icons/stability.png", price: 750, time: "38s", state: "unlocked", x: 620, y: 1280, parents: [] },
-      { id: "int_analyst", name: "Analyst Bureaus", desc: "Faster intel refresh and better battlefield reading.", icon: "/UI_Icons/stability.png", price: 1050, time: "54s", state: "", x: 1240, y: 980, parents: ["int_decrypt"], exclusiveGroup: "int_focus" },
-      { id: "int_counter", name: "Counter-Intel Mesh", desc: "Reduces enemy recon quality in your territory.", icon: "/UI_Icons/stability.png", price: 1350, time: "75s", state: "", x: 1240, y: 1280, parents: ["int_decrypt"], exclusiveGroup: "int_focus" },
-      { id: "int_signal", name: "Signal Intercept Cells", desc: "Improves hostile radio traffic interception.", icon: "/UI_Icons/stability.png", price: 1180, time: "62s", state: "", x: 1240, y: 1580, parents: ["int_decrypt"] },
-      { id: "int_pattern", name: "Pattern Analysis Core", desc: "Improves strategic event prediction accuracy.", icon: "/UI_Icons/stability.png", price: 1420, time: "73s", state: "", x: 1860, y: 940, parents: ["int_analyst"] },
-      { id: "int_recon", name: "Deep Recon Grid", desc: "Expands strategic vision radius and tracking detail.", icon: "/UI_Icons/stability.png", price: 1600, time: "82s", state: "", x: 1860, y: 1280, parents: ["int_counter"] },
-      { id: "int_cipher", name: "Adaptive Cipher Labs", desc: "Rapidly rotates encryption during open war.", icon: "/UI_Icons/stability.png", price: 1500, time: "79s", state: "", x: 1860, y: 1620, parents: ["int_signal"], parentsAny: ["int_analyst", "int_counter"] },
-      { id: "int_forecast", name: "Strategic Forecast Engine", desc: "Long-range conflict prediction and targeting insights.", icon: "/UI_Icons/stability.png", price: 2250, time: "110s", state: "", x: 2480, y: 1280, parents: ["int_cipher"], parentsAny: ["int_pattern", "int_recon"] }
-    ])
-  });
-  const RESEARCH_LINK_OVERRIDES = Object.freeze({
-    military: Object.freeze({
-      "mil_logistics->mil_armored": Object.freeze([{ x: 900, y: 980 }, { x: 1210, y: 980 }]),
-      "mil_logistics->mil_siege": Object.freeze([{ x: 930, y: 1280 }, { x: 1210, y: 1280 }]),
-      "mil_logistics->mil_tactical": Object.freeze([{ x: 960, y: 1580 }, { x: 1210, y: 1580 }]),
-      "mil_armored->mil_ew": Object.freeze([{ x: 1580, y: 980 }, { x: 1580, y: 940 }, { x: 1830, y: 940 }]),
-      "mil_armored->mil_drone": Object.freeze([{ x: 1600, y: 980 }, { x: 1600, y: 1280 }, { x: 1830, y: 1280 }]),
-      "mil_siege->mil_barrier": Object.freeze([{ x: 1620, y: 1280 }, { x: 1620, y: 1620 }, { x: 1830, y: 1620 }]),
-      "mil_tactical->mil_barrier": Object.freeze([{ x: 1650, y: 1580 }, { x: 1650, y: 1620 }, { x: 1830, y: 1620 }]),
-      "mil_tactical->mil_precision": Object.freeze([{ x: 2080, y: 1580 }, { x: 2080, y: 1320 }, { x: 2450, y: 1320 }]),
-      "mil_ew->mil_precision": Object.freeze([{ x: 2200, y: 940 }, { x: 2200, y: 1200 }, { x: 2450, y: 1200 }]),
-      "mil_drone->mil_precision": Object.freeze([{ x: 2230, y: 1280 }, { x: 2450, y: 1280 }]),
-      "mil_barrier->mil_precision": Object.freeze([{ x: 2260, y: 1620 }, { x: 2260, y: 1360 }, { x: 2450, y: 1360 }])
-    }),
-    economy: Object.freeze({
-      "eco_automation->eco_trade": Object.freeze([{ x: 900, y: 980 }, { x: 1210, y: 980 }]),
-      "eco_automation->eco_tax": Object.freeze([{ x: 930, y: 1280 }, { x: 1210, y: 1280 }]),
-      "eco_automation->eco_supply": Object.freeze([{ x: 960, y: 1580 }, { x: 1210, y: 1580 }]),
-      "eco_trade->eco_market": Object.freeze([{ x: 1580, y: 980 }, { x: 1580, y: 940 }, { x: 1830, y: 940 }]),
-      "eco_tax->eco_hedge": Object.freeze([{ x: 1600, y: 1280 }, { x: 1830, y: 1280 }]),
-      "eco_supply->eco_bank": Object.freeze([{ x: 1620, y: 1580 }, { x: 1620, y: 1620 }, { x: 1830, y: 1620 }]),
-      "eco_trade->eco_bank": Object.freeze([{ x: 1550, y: 980 }, { x: 1550, y: 1540 }, { x: 1830, y: 1540 }]),
-      "eco_tax->eco_bank": Object.freeze([{ x: 1585, y: 1280 }, { x: 1585, y: 1620 }, { x: 1830, y: 1620 }]),
-      "eco_bank->eco_sovereign": Object.freeze([{ x: 2220, y: 1620 }, { x: 2220, y: 1280 }, { x: 2450, y: 1280 }]),
-      "eco_market->eco_sovereign": Object.freeze([{ x: 2180, y: 940 }, { x: 2180, y: 1160 }, { x: 2450, y: 1160 }]),
-      "eco_hedge->eco_sovereign": Object.freeze([{ x: 2200, y: 1280 }, { x: 2450, y: 1280 }])
-    }),
-    intel: Object.freeze({
-      "int_decrypt->int_analyst": Object.freeze([{ x: 900, y: 980 }, { x: 1210, y: 980 }]),
-      "int_decrypt->int_counter": Object.freeze([{ x: 930, y: 1280 }, { x: 1210, y: 1280 }]),
-      "int_decrypt->int_signal": Object.freeze([{ x: 960, y: 1580 }, { x: 1210, y: 1580 }]),
-      "int_analyst->int_pattern": Object.freeze([{ x: 1580, y: 980 }, { x: 1580, y: 940 }, { x: 1830, y: 940 }]),
-      "int_counter->int_recon": Object.freeze([{ x: 1600, y: 1280 }, { x: 1830, y: 1280 }]),
-      "int_signal->int_cipher": Object.freeze([{ x: 1620, y: 1580 }, { x: 1620, y: 1620 }, { x: 1830, y: 1620 }]),
-      "int_analyst->int_cipher": Object.freeze([{ x: 1550, y: 980 }, { x: 1550, y: 1500 }, { x: 1830, y: 1500 }]),
-      "int_counter->int_cipher": Object.freeze([{ x: 1585, y: 1280 }, { x: 1585, y: 1620 }, { x: 1830, y: 1620 }]),
-      "int_cipher->int_forecast": Object.freeze([{ x: 2220, y: 1620 }, { x: 2220, y: 1280 }, { x: 2450, y: 1280 }]),
-      "int_pattern->int_forecast": Object.freeze([{ x: 2180, y: 940 }, { x: 2180, y: 1160 }, { x: 2450, y: 1160 }]),
-      "int_recon->int_forecast": Object.freeze([{ x: 2200, y: 1280 }, { x: 2450, y: 1280 }])
-    })
-  });
-  const RESEARCH_PROGRESS_BY_TAB = new Map();
-  const clampResearchScale = (v) => clamp(Number(v) || 1, 0.22, 3.1);
-  const fmtPrice = (n) => `${fmtCompactLocal(Math.max(0, Number(n) || 0))} Gold`;
-  const getOffsetWithin = (el, ancestor) => {
-    let x = 0;
-    let y = 0;
-    let cur = el;
-    while (cur && cur !== ancestor) {
-      x += cur.offsetLeft || 0;
-      y += cur.offsetTop || 0;
-      cur = cur.offsetParent;
-    }
-    return { x, y };
+  const RESEARCH_NODE_CARD_WIDTH = 292;
+  const RESEARCH_NODE_CARD_HEIGHT = 92;
+  const RESEARCH_NODE_CARD_CENTER_X = RESEARCH_NODE_CARD_WIDTH / 2;
+  const RESEARCH_NODE_CARD_CENTER_Y = RESEARCH_NODE_CARD_HEIGHT / 2;
+  const RESEARCH_CHAIN_LEAD_SIZE = 224;
+  const RESEARCH_CHAIN_LEAD_CENTER = RESEARCH_CHAIN_LEAD_SIZE / 2;
+  const RESEARCH_VIEWPORT_MIN_SCALE = 0.42;
+  const RESEARCH_VIEWPORT_MAX_SCALE = 1.75;
+  const RESEARCH_VIEWPORT_DEFAULT_SCALE = 0.82;
+  const getResearchWorldState = () => {
+    if (typeof world?.getResearchState !== "function") return createEmptyResearchState();
+    const state = world.getResearchState(OWNER.PLAYER);
+    if (!state || state.ok === false) return createEmptyResearchState();
+    return state;
   };
-  const isResearchedProgress = (status) => String(status || "").toLowerCase() === "researched";
-  const getResearchData = (tabRaw) => RESEARCH_TREES[normalizeResearchTab(tabRaw)] || RESEARCH_TREES.military;
-  const getCombinedParentIds = (node) => {
-    const out = [];
-    if (Array.isArray(node?.parents)) out.push(...node.parents);
-    if (Array.isArray(node?.parentsAny)) out.push(...node.parentsAny);
-    return Array.from(new Set(out.map((v) => String(v || "").trim()).filter(Boolean)));
+  const getResearchBranchProgress = (tabRaw, researchWorldState = null) => {
+    const branchId = normalizeResearchTab(tabRaw);
+    const state = researchWorldState || getResearchWorldState();
+    return state?.branches?.[branchId] || { completedIds: [], active: null };
   };
-  const applyExclusiveLocks = (data, progress) => {
-    const chosenByGroup = new Map();
-    for (const node of data) {
-      const group = String(node?.exclusiveGroup || "").trim();
-      if (!group) continue;
-      if (!isResearchedProgress(progress.get(String(node.id || "")))) continue;
-      if (!chosenByGroup.has(group)) chosenByGroup.set(group, String(node.id || ""));
-    }
-    for (const node of data) {
-      const id = String(node.id || "");
-      if (!id || isResearchedProgress(progress.get(id))) continue;
-      const group = String(node?.exclusiveGroup || "").trim();
-      if (!group) continue;
-      const chosenId = chosenByGroup.get(group);
-      if (chosenId && chosenId !== id) progress.set(id, "blocked");
-      else if (String(progress.get(id) || "") === "blocked") progress.set(id, "unresearched");
-    }
-  };
-  const ensureResearchProgress = (tabRaw) => {
-    const tab = normalizeResearchTab(tabRaw);
-    const existing = RESEARCH_PROGRESS_BY_TAB.get(tab);
-    if (existing) return existing;
-    const data = getResearchData(tab);
-    const progress = new Map();
-    for (const node of data) {
-      const id = String(node.id || "");
-      if (!id) continue;
-      const seedState = String(node.state || "").toLowerCase();
-      if (seedState === "unlocked" || seedState === "active" || seedState === "researched") progress.set(id, "researched");
-      else progress.set(id, "unresearched");
-    }
-    applyExclusiveLocks(data, progress);
-    RESEARCH_PROGRESS_BY_TAB.set(tab, progress);
-    return progress;
-  };
-  const hasAllRequiredParents = (node, progress) => {
-    const req = Array.isArray(node?.parents) ? node.parents : [];
-    if (!req.length) return true;
-    return req.every((pid) => isResearchedProgress(progress.get(String(pid || ""))));
-  };
-  const hasAnyRequiredParents = (node, progress) => {
-    const req = Array.isArray(node?.parentsAny) ? node.parentsAny : [];
-    if (!req.length) return true;
-    return req.some((pid) => isResearchedProgress(progress.get(String(pid || ""))));
-  };
-  const getNodeViewState = (node, data, progress) => {
-    const id = String(node?.id || "");
-    if (!id) return "locked";
-    const p = String(progress.get(id) || "unresearched");
-    if (p === "researched") return "researched";
-    if (p === "blocked") return "blocked";
-    if (!hasAllRequiredParents(node, progress) || !hasAnyRequiredParents(node, progress)) return "locked";
-    return "available";
-  };
+  const getResearchBranchNodes = (tabRaw) => getResearchNodesForBranch(normalizeResearchTab(tabRaw));
   const getResearchNodeById = (tabRaw, idRaw) => {
-    const data = getResearchData(tabRaw);
-    const id = String(idRaw || "");
-    return data.find((n) => String(n.id || "") === id) || null;
+    const node = getResearchNode(idRaw);
+    return node && node.branchId === normalizeResearchTab(tabRaw) ? node : null;
   };
-  const getResearchNodeView = (tabRaw, idRaw) => {
-    const data = getResearchData(tabRaw);
-    const progress = ensureResearchProgress(tabRaw);
-    applyExclusiveLocks(data, progress);
-    const node = getResearchNodeById(tabRaw, idRaw);
-    if (!node) return { node: null, state: "locked", data, progress };
-    return { node, state: getNodeViewState(node, data, progress), data, progress };
-  };
-  const applyResearchTreeTransform = () => {
-    if (!researchCanvas) return;
-    researchCanvas.style.transform = `translate(${Math.round(researchState.x)}px, ${Math.round(researchState.y)}px) scale(${researchState.scale.toFixed(3)})`;
-  };
-  const drawResearchTreeLinks = () => {
-    if (!researchCanvas || !researchLinks) return;
-    const nodes = Array.from(researchCanvas.querySelectorAll(".researchIconNode[data-node-id]"));
-    if (!nodes.length) {
-      researchLinks.innerHTML = "";
-      return;
+  const getResearchNodeLocation = (tabRaw, nodeIdRaw) => {
+    const branch = getResearchBranch(normalizeResearchTab(tabRaw));
+    const nodeId = String(nodeIdRaw || "");
+    for (let tierIndex = 0; tierIndex < branch.tiers.length; tierIndex += 1) {
+      const tier = branch.tiers[tierIndex];
+      for (let nodeIndex = 0; nodeIndex < tier.nodes.length; nodeIndex += 1) {
+        const node = tier.nodes[nodeIndex];
+        if (String(node?.id || "") !== nodeId) continue;
+        return { tierIndex, nodeIndex, nodeCount: tier.nodes.length };
+      }
     }
-    const q = (n) => Math.round(Number(n) || 0);
-    const nodeMeta = new Map();
-    for (const node of nodes) {
-      const id = String(node.dataset?.nodeId || "").trim();
-      if (!id) continue;
-      const off = getOffsetWithin(node, researchCanvas);
-      const w = node.offsetWidth || RESEARCH_NODE_W;
-      const h = node.offsetHeight || RESEARCH_NODE_H;
-      nodeMeta.set(id, {
-        state: String(node.dataset?.nodeState || "locked"),
-        box: {
-          left: off.x,
-          right: off.x + w,
-          cy: off.y + (h * 0.5)
-        }
+    return null;
+  };
+  const getResearchBranchChains = (tabRaw) => {
+    const tab = normalizeResearchTab(tabRaw);
+    const cached = researchChainCache.get(tab);
+    if (cached) return cached;
+    const branch = getResearchBranch(tab);
+    const nodes = [];
+    for (let tierIndex = 0; tierIndex < branch.tiers.length; tierIndex += 1) {
+      const tier = branch.tiers[tierIndex];
+      for (let nodeIndex = 0; nodeIndex < tier.nodes.length; nodeIndex += 1) {
+        nodes.push(tier.nodes[nodeIndex]);
+      }
+    }
+    const childrenByParentId = new Map();
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i];
+      const requires = Array.isArray(node?.requires) ? node.requires : [];
+      if (!requires.length) continue;
+      const parentId = String(requires[0] || "");
+      if (!parentId) continue;
+      if (!childrenByParentId.has(parentId)) childrenByParentId.set(parentId, []);
+      childrenByParentId.get(parentId).push(node);
+    }
+    for (const list of childrenByParentId.values()) {
+      list.sort((a, b) => {
+        const tierDiff = (Number(a?.tier) || 0) - (Number(b?.tier) || 0);
+        if (tierDiff !== 0) return tierDiff;
+        return String(a?.name || "").localeCompare(String(b?.name || ""));
       });
     }
-    const paths = [];
-    for (const child of nodes) {
-      const childId = String(child.dataset?.nodeId || "").trim();
-      if (!childId) continue;
-      const childMeta = nodeMeta.get(childId);
-      if (!childMeta) continue;
-      const parentIds = String(child.dataset?.parentIds || "")
-        .split(",")
-        .map((s) => String(s || "").trim())
-        .filter(Boolean);
-      if (!parentIds.length) continue;
-      const parentEntries = parentIds
-        .map((pid) => ({ pid, meta: nodeMeta.get(pid) }))
-        .filter((entry) => !!entry.meta)
-        .map((entry) => ({ pid: entry.pid, meta: entry.meta }));
-      if (!parentEntries.length) continue;
-      parentEntries.sort((a, b) => a.meta.box.cy - b.meta.box.cy);
-      const childX = childMeta.box.left + 2;
-      const childY = childMeta.box.cy;
-      const overrideTable = RESEARCH_LINK_OVERRIDES[researchState.tab] || null;
-      const parentRightMax = Math.max(...parentEntries.map((entry) => entry.meta.box.right));
-      const laneCount = parentEntries.length;
-      const laneGap = laneCount > 3 ? 10 : 12;
-      const laneStartY = childY - (((laneCount - 1) * laneGap) * 0.5);
-      const portStepX = 5;
-      const firstPortX = childX - 10;
-      const minPortX = firstPortX - ((laneCount - 1) * portStepX);
-      const guardX = Math.max(parentRightMax + 12, minPortX - 18);
-      for (let i = 0; i < parentEntries.length; i += 1) {
-        const entry = parentEntries[i];
-        const parentState = String(entry.meta.state || "locked");
-        const sx = entry.meta.box.right - 2;
-        const sy = entry.meta.box.cy;
-        const edgeClass = (childMeta.state === "blocked" || parentState === "blocked")
-          ? " isDisabled"
-          : (isResearchedProgress(parentState) && (childMeta.state === "available" || childMeta.state === "researched"))
-            ? " isReady"
-            : " isPending";
-        const overridePoints = overrideTable && Array.isArray(overrideTable[`${entry.pid}->${childId}`])
-          ? overrideTable[`${entry.pid}->${childId}`]
-          : null;
-        if (overridePoints && overridePoints.length) {
-          let d = `M ${q(sx)} ${q(sy)}`;
-          let cx = sx;
-          let cy = sy;
-          for (const rawPoint of overridePoints) {
-            const px = Number(rawPoint?.x);
-            const py = Number(rawPoint?.y);
-            if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
-            if (Math.abs(px - cx) > 0.5) {
-              d += ` H ${q(px)}`;
-              cx = px;
-            }
-            if (Math.abs(py - cy) > 0.5) {
-              d += ` V ${q(py)}`;
-              cy = py;
-            }
-          }
-          if (Math.abs(childY - cy) > 0.5) {
-            d += ` V ${q(childY)}`;
-            cy = childY;
-          }
-          if (Math.abs(childX - cx) > 0.5) d += ` H ${q(childX)}`;
-          paths.push(`<path class="researchLinkEdge${edgeClass}" d="${d}" />`);
-          continue;
-        }
-        const laneY = laneStartY + (i * laneGap);
-        const portX = firstPortX - (i * portStepX);
-        const maxElbowX = portX - 8;
-        let elbowX = sx + 16 + (i * 4);
-        if (elbowX > maxElbowX) elbowX = maxElbowX;
-        if (elbowX < sx + 8) elbowX = sx + 8;
-        if (elbowX < guardX) elbowX = Math.min(maxElbowX, guardX + (i * 2));
-        const d = `M ${q(sx)} ${q(sy)} H ${q(elbowX)} V ${q(laneY)} H ${q(portX)} V ${q(childY)} H ${q(childX)}`;
-        paths.push(`<path class="researchLinkEdge${edgeClass}" d="${d}" />`);
+    const visited = new Set();
+    const chains = [];
+    const roots = nodes.filter((node) => !(Array.isArray(node?.requires) ? node.requires.length : 0));
+    for (let i = 0; i < roots.length; i += 1) {
+      const chain = [];
+      let current = roots[i];
+      while (current) {
+        const nodeId = String(current?.id || "");
+        if (!nodeId || visited.has(nodeId)) break;
+        chain.push(current);
+        visited.add(nodeId);
+        const next = (childrenByParentId.get(nodeId) || []).find((candidate) => !visited.has(String(candidate?.id || ""))) || null;
+        current = next;
       }
+      if (chain.length) chains.push(chain);
     }
-    researchLinks.innerHTML = paths.join("");
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i];
+      const nodeId = String(node?.id || "");
+      if (!nodeId || visited.has(nodeId)) continue;
+      chains.push([node]);
+      visited.add(nodeId);
+    }
+    researchChainCache.set(tab, chains);
+    return chains;
   };
-  const updateResearchInfoCard = (node, viewState = "locked") => {
-    if (!node) return;
-    const v = String(viewState || "locked");
-    if (researchInfoIcon) researchInfoIcon.src = String(node.icon || "/UI_Icons/stability.png");
-    if (researchInfoName) researchInfoName.textContent = String(node.name || "Research");
-    if (researchInfoDesc) researchInfoDesc.textContent = String(node.desc || "");
-    if (researchInfoPrice) researchInfoPrice.textContent = `Price: ${fmtPrice(node.price)}`;
-    if (researchInfoTime) researchInfoTime.textContent = `Time: ${String(node.time || "0s")}`;
-    if (researchInfoStatus) {
-      let status = "Requirements Missing";
-      if (v === "researched") status = "Researched";
-      else if (v === "available") status = "Ready to Research";
-      else if (v === "blocked") status = "Path Locked";
-      researchInfoStatus.textContent = status;
-    }
-    if (researchActionBtn) {
-      let label = "Requires Prerequisites";
-      let disabled = true;
-      if (v === "available") {
-        label = "Research";
-        disabled = false;
-      } else if (v === "researched") {
-        label = "Completed";
-      } else if (v === "blocked") {
-        label = "Path Locked";
+  const getResearchCanvasLayout = (tabRaw) => {
+    const tab = normalizeResearchTab(tabRaw);
+    const cached = researchLayoutCache.get(tab);
+    if (cached) return cached;
+    const chains = getResearchBranchChains(tab);
+    const columns = chains.length <= 2 ? 1 : 2;
+    const groupWidth = 860;
+    const groupBaseHeight = 360;
+    const colGap = 320;
+    const rowGap = 240;
+    const leftPad = 1400;
+    const topPad = 860;
+    const positions = new Map();
+    const chainLayouts = [];
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = 0;
+    let maxY = 0;
+    for (let chainIndex = 0; chainIndex < chains.length; chainIndex += 1) {
+      const chain = chains[chainIndex];
+      const col = chainIndex % columns;
+      const row = Math.floor(chainIndex / columns);
+      const stackHeight = (chain.length * RESEARCH_NODE_CARD_HEIGHT) + (Math.max(0, chain.length - 1) * 28);
+      const groupHeight = Math.max(groupBaseHeight, stackHeight + 80);
+      const x = leftPad + (col * (groupWidth + colGap));
+      const y = topPad + (row * (groupHeight + rowGap));
+      const leadX = 0;
+      const leadY = Math.round((groupHeight - RESEARCH_CHAIN_LEAD_SIZE) / 2);
+      const spineX = 470;
+      const cardX = 512;
+      const stackTop = Math.round((groupHeight - stackHeight) / 2);
+      chainLayouts.push({
+        x,
+        y,
+        width: groupWidth,
+        height: groupHeight,
+        leadX,
+        leadY,
+        spineX,
+        cardX,
+        stackTop,
+        nodes: chain
+      });
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + groupWidth);
+      maxY = Math.max(maxY, y + groupHeight);
+      for (let nodeIndex = 0; nodeIndex < chain.length; nodeIndex += 1) {
+        const node = chain[nodeIndex];
+        const nodeX = x + cardX;
+        const nodeY = y + stackTop + (nodeIndex * (RESEARCH_NODE_CARD_HEIGHT + 28));
+        positions.set(String(node.id || ""), { x: nodeX, y: nodeY, chainIndex, nodeIndex });
       }
-      researchActionBtn.textContent = label;
-      researchActionBtn.disabled = disabled;
+    }
+    const width = Math.max(5600, maxX + 1600);
+    const height = Math.max(4200, maxY + 1200);
+    const layout = {
+      width,
+      height,
+      startX: leftPad,
+      centerY: topPad + 480,
+      positions,
+      chains: chainLayouts
+    };
+    researchLayoutCache.set(tab, layout);
+    return layout;
+  };
+  const getResearchNodeCanvasPosition = (tabRaw, tierIndex, nodeIndex) => {
+    const branch = getResearchBranch(normalizeResearchTab(tabRaw));
+    const tier = branch.tiers[Math.max(0, tierIndex)] || null;
+    const node = tier?.nodes?.[Math.max(0, nodeIndex)] || null;
+    const layout = getResearchCanvasLayout(tabRaw);
+    if (!node) return { x: layout.startX, y: layout.centerY - RESEARCH_NODE_CARD_CENTER_Y };
+    return layout.positions.get(String(node.id || "")) || { x: layout.startX, y: layout.centerY - RESEARCH_NODE_CARD_CENTER_Y };
+  };
+  const getResearchNodeState = (tabRaw, nodeRaw, researchWorldState = null) => {
+    const node = nodeRaw && typeof nodeRaw === "object" ? nodeRaw : null;
+    if (!node) return "locked";
+    const progress = getResearchBranchProgress(tabRaw, researchWorldState);
+    const completed = new Set(Array.isArray(progress.completedIds) ? progress.completedIds.map((value) => String(value || "")) : []);
+    const nodeId = String(node.id || "");
+    if (completed.has(nodeId)) return "completed";
+    if (String(progress.active?.nodeId || "") === nodeId) return "researching";
+    return node.requires.every((req) => completed.has(String(req || ""))) ? "available" : "locked";
+  };
+  const getResearchNodeProgress01 = (tabRaw, nodeRaw, researchWorldState = null) => {
+    const node = nodeRaw && typeof nodeRaw === "object" ? nodeRaw : null;
+    if (!node) return 0;
+    const progress = getResearchBranchProgress(tabRaw, researchWorldState);
+    const completedIds = Array.isArray(progress.completedIds) ? progress.completedIds : [];
+    if (completedIds.includes(String(node.id || ""))) return 1;
+    if (String(progress.active?.nodeId || "") !== String(node.id || "")) return 0;
+    return Math.max(0, Math.min(1, Number(progress.active?.progress01) || 0));
+  };
+  const getResearchStateLabel = (stateRaw) => ({ completed: "Completed", researching: "Researching", available: "Available", locked: "Locked" }[String(stateRaw || "").toLowerCase()] || "Locked");
+  const getResearchRequirementText = (tabRaw, nodeRaw) => {
+    const req = Array.isArray(nodeRaw?.requires) ? nodeRaw.requires : [];
+    if (!req.length) return "None";
+    const names = req.map((id) => getResearchNodeById(tabRaw, id)?.name || "Previous node").filter(Boolean);
+    return names.length <= 1 ? `Complete ${names[0] || "previous node"}` : `Complete ${names.join(" + ")}`;
+  };
+  const ensureResearchSelectedId = (tabRaw, researchWorldState = null) => {
+    const tab = normalizeResearchTab(tabRaw);
+    const current = String(researchState.selectedByTab[tab] || "");
+    if (current && getResearchNodeById(tab, current)) return current;
+    const progress = getResearchBranchProgress(tab, researchWorldState);
+    const nodes = getResearchBranchNodes(tab);
+    const preferred = (progress.active && getResearchNodeById(tab, progress.active.nodeId))
+      || nodes.find((node) => getResearchNodeState(tab, node, researchWorldState) === "available")
+      || nodes.find((node) => getResearchNodeState(tab, node, researchWorldState) === "completed")
+      || nodes[0]
+      || null;
+    researchState.selectedByTab[tab] = String(preferred?.id || "");
+    return researchState.selectedByTab[tab];
+  };
+  const applyResearchViewportTransform = () => {
+    if (!researchViewport || !researchTreeGrid) return;
+    const x = Number.isFinite(researchViewportState.x) ? researchViewportState.x : 0;
+    const y = Number.isFinite(researchViewportState.y) ? researchViewportState.y : 0;
+    const scale = Number.isFinite(researchViewportState.scale) ? researchViewportState.scale : 1;
+    researchTreeGrid.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
+    researchViewport.style.setProperty("--research-canvas-pan-x", `${x}px`);
+    researchViewport.style.setProperty("--research-canvas-pan-y", `${y}px`);
+    researchViewport.style.setProperty("--research-canvas-zoom", String(scale));
+  };
+  const queueResearchViewportFrame = () => {
+    if (researchViewportState.rafId) return;
+    const step = () => {
+      researchViewportState.rafId = 0;
+      const dx = researchViewportState.targetX - researchViewportState.x;
+      const dy = researchViewportState.targetY - researchViewportState.y;
+      const ds = researchViewportState.targetScale - researchViewportState.scale;
+      researchViewportState.x += dx * 0.18;
+      researchViewportState.y += dy * 0.18;
+      researchViewportState.scale += ds * 0.2;
+      if (Math.abs(dx) < 0.22) researchViewportState.x = researchViewportState.targetX;
+      if (Math.abs(dy) < 0.22) researchViewportState.y = researchViewportState.targetY;
+      if (Math.abs(ds) < 0.0015) researchViewportState.scale = researchViewportState.targetScale;
+      applyResearchViewportTransform();
+      if (
+        Math.abs(researchViewportState.targetX - researchViewportState.x) > 0.22
+        || Math.abs(researchViewportState.targetY - researchViewportState.y) > 0.22
+        || Math.abs(researchViewportState.targetScale - researchViewportState.scale) > 0.0015
+      ) {
+        researchViewportState.rafId = requestAnimationFrame(step);
+      }
+    };
+    researchViewportState.rafId = requestAnimationFrame(step);
+  };
+  const setResearchViewportTransform = (xRaw, yRaw, scaleRaw, immediate = false) => {
+    const scale = Math.max(RESEARCH_VIEWPORT_MIN_SCALE, Math.min(RESEARCH_VIEWPORT_MAX_SCALE, Number(scaleRaw) || 1));
+    researchViewportState.targetX = Math.round(Number(xRaw) || 0);
+    researchViewportState.targetY = Math.round(Number(yRaw) || 0);
+    researchViewportState.targetScale = scale;
+    if (immediate) {
+      researchViewportState.x = researchViewportState.targetX;
+      researchViewportState.y = researchViewportState.targetY;
+      researchViewportState.scale = researchViewportState.targetScale;
+      applyResearchViewportTransform();
+      return;
+    }
+    queueResearchViewportFrame();
+  };
+  const getResearchViewportPoint = (clientXRaw, clientYRaw, useTarget = false) => {
+    if (!researchViewport) return { localX: 0, localY: 0, worldX: 0, worldY: 0 };
+    const rect = researchViewport.getBoundingClientRect();
+    const localX = Number(clientXRaw) - rect.left;
+    const localY = Number(clientYRaw) - rect.top;
+    const x = useTarget ? researchViewportState.targetX : researchViewportState.x;
+    const y = useTarget ? researchViewportState.targetY : researchViewportState.y;
+    const scale = useTarget ? researchViewportState.targetScale : researchViewportState.scale;
+    return {
+      localX,
+      localY,
+      worldX: (localX - x) / Math.max(0.001, scale),
+      worldY: (localY - y) / Math.max(0.001, scale)
+    };
+  };
+  const focusResearchViewportOnWorldPoint = (worldXRaw, worldYRaw, scaleRaw = researchViewportState.targetScale || RESEARCH_VIEWPORT_DEFAULT_SCALE, immediate = false) => {
+    if (!researchViewport) return;
+    const scale = Math.max(RESEARCH_VIEWPORT_MIN_SCALE, Math.min(RESEARCH_VIEWPORT_MAX_SCALE, Number(scaleRaw) || RESEARCH_VIEWPORT_DEFAULT_SCALE));
+    const viewportWidth = researchViewport.clientWidth || 0;
+    const viewportHeight = researchViewport.clientHeight || 0;
+    const x = Math.round((viewportWidth / 2) - ((Number(worldXRaw) || 0) * scale));
+    const y = Math.round((viewportHeight / 2) - ((Number(worldYRaw) || 0) * scale));
+    setResearchViewportTransform(x, y, scale, immediate);
+  };
+  const getResearchTreeRenderSignature = (tabRaw, researchWorldState = null) => {
+    const tab = normalizeResearchTab(tabRaw);
+    const state = researchWorldState || getResearchWorldState();
+    const branch = state?.branches?.[tab] || { completedIds: [], active: null };
+    const completedIds = Array.isArray(branch.completedIds) ? branch.completedIds.map((value) => String(value || "")).join(",") : "";
+    const activeNodeId = String(branch.active?.nodeId || "");
+    const remainingBucket = Math.max(0, Math.ceil(Number(branch.active?.remainingS) || 0));
+    const selectedId = ensureResearchSelectedId(tab, state);
+    const affordablePoints = Math.floor(Math.max(0, Number(state?.points) || 0));
+    return `${tab}|${selectedId}|${completedIds}|${activeNodeId}|${remainingBucket}|${affordablePoints}`;
+  };
+  const canStartResearchNode = (tabRaw, nodeRaw) => {
+    const node = nodeRaw && typeof nodeRaw === "object" ? nodeRaw : null;
+    if (!node) return { ok: false, reason: "Select a research node first." };
+    if (typeof world?.canStartResearch === "function") {
+      return world.canStartResearch(OWNER.PLAYER, normalizeResearchTab(tabRaw), node.id) || { ok: false, reason: "Unable to start research." };
+    }
+    const state = getResearchNodeState(tabRaw, node);
+    if (state === "completed") return { ok: false, reason: "This research is already complete." };
+    if (state === "researching") return { ok: false, reason: "This research is already in progress." };
+    if (state === "locked") return { ok: false, reason: getResearchRequirementText(tabRaw, node) };
+    return { ok: false, reason: "Research system unavailable." };
+  };
+  const queueResearchRender = () => {
+    if (!isResearchOpen() || researchState.renderQueued) return;
+    researchState.renderQueued = true;
+    requestAnimationFrame(() => {
+      researchState.renderQueued = false;
+      renderResearchPanel(researchState.tab, { force: true });
+    });
+  };
+  const ensureResearchIconState = (nodeRaw) => {
+    const node = nodeRaw && typeof nodeRaw === "object" ? nodeRaw : null;
+    const iconNode = getResearchIconNode(node);
+    const nodeId = String(iconNode?.id || node?.id || "");
+    if (!nodeId) return { status: "missing", url: "" };
+    const existing = researchIconStateByNodeId.get(nodeId);
+    if (existing) return existing;
+    const state = { status: "pending", url: "", candidates: getResearchIconCandidates(iconNode || node), index: 0 };
+    researchIconStateByNodeId.set(nodeId, state);
+    const tryNext = () => {
+      if (state.index >= state.candidates.length) {
+        state.status = "missing";
+        state.url = "";
+        queueResearchRender();
+        return;
+      }
+      const candidate = String(state.candidates[state.index] || "");
+      state.index += 1;
+      if (!candidate) {
+        tryNext();
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        state.status = "ready";
+        state.url = candidate;
+        queueResearchRender();
+      };
+      img.onerror = () => tryNext();
+      img.src = candidate;
+    };
+    if (state.candidates.length > 0) tryNext();
+    else state.status = "missing";
+    return state;
+  };
+  const fillResearchIconHost = (host, nodeRaw, fallbackClassName) => {
+    const node = nodeRaw && typeof nodeRaw === "object" ? nodeRaw : null;
+    if (!host || !node) return;
+    const iconState = ensureResearchIconState(node);
+    if (iconState.status === "ready" && iconState.url) {
+      const img = document.createElement("img");
+      img.className = "researchNodeIconImg";
+      img.alt = "";
+      img.src = iconState.url;
+      img.loading = "lazy";
+      img.decoding = "async";
+      host.appendChild(img);
+      return;
+    }
+    const fallback = document.createElement("span");
+    fallback.className = String(fallbackClassName || "researchNodeIconFallback");
+    fallback.textContent = getResearchNodeGlyph(node);
+    host.appendChild(fallback);
+  };
+  const setResearchInfoIcon = (nodeRaw) => {
+    const node = nodeRaw && typeof nodeRaw === "object" ? nodeRaw : null;
+    if (!researchInfoIconImg || !researchInfoIconFallback) return;
+    if (!node) {
+      researchInfoIconImg.hidden = true;
+      researchInfoIconImg.removeAttribute("src");
+      researchInfoIconFallback.hidden = false;
+      researchInfoIconFallback.textContent = "RP";
+      return;
+    }
+    const iconState = ensureResearchIconState(node);
+    researchInfoIconFallback.textContent = getResearchNodeGlyph(node);
+    if (iconState.status === "ready" && iconState.url) {
+      researchInfoIconImg.src = iconState.url;
+      researchInfoIconImg.hidden = false;
+      researchInfoIconFallback.hidden = true;
+      return;
+    }
+    researchInfoIconImg.hidden = true;
+    researchInfoIconImg.removeAttribute("src");
+    researchInfoIconFallback.hidden = false;
+  };
+  const appendResearchLinkSegment = (host, x, y, width, height, isLocked = false) => {
+    if (!host || width < 1 || height < 1) return;
+    const segment = document.createElement("div");
+    segment.className = `researchCanvasLinkSegment${height > width ? " isVertical" : ""}${isLocked ? " isLocked" : ""}`;
+    segment.style.left = `${Math.round(x)}px`;
+    segment.style.top = `${Math.round(y)}px`;
+    segment.style.width = `${Math.round(width)}px`;
+    segment.style.height = `${Math.round(height)}px`;
+    host.insertBefore(segment, host.firstChild);
+  };
+  const appendResearchStraightLink = (host, fromX, fromY, toX, toY, isLocked = false) => {
+    if (!host) return;
+    const thickness = 4;
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const length = Math.max(1, Math.sqrt((dx * dx) + (dy * dy)));
+    const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+    const segment = document.createElement("div");
+    segment.className = `researchCanvasLinkSegment${isLocked ? " isLocked" : ""}`;
+    segment.style.left = `${Math.round(fromX)}px`;
+    segment.style.top = `${Math.round(fromY - (thickness / 2))}px`;
+    segment.style.width = `${Math.round(length)}px`;
+    segment.style.height = `${thickness}px`;
+    segment.style.transformOrigin = "left center";
+    segment.style.transform = `rotate(${angle}deg)`;
+    host.insertBefore(segment, host.firstChild);
+  };
+  const renderResearchSummaryMetrics = (researchWorldState = null) => {
+    const state = researchWorldState || getResearchWorldState();
+    if (researchPointsValue) researchPointsValue.textContent = formatResearchPointValue(state.points);
+    if (researchIncomeValue) researchIncomeValue.textContent = formatResearchIncome(state.incomePerDay);
+    if (researchLabsValue) researchLabsValue.textContent = String(Math.max(0, Number(state.labCount) | 0));
+    if (researchCitiesValue) researchCitiesValue.textContent = formatResearchIncome(state.cityIncomePerDay);
+    if (researchLabCostValue) researchLabCostValue.textContent = "750k Gold + 350 Steel";
+    if (researchCityYieldValue) researchCityYieldValue.textContent = `${formatResearchIncome(state.cityIncomePerDay)} from cities`;
+  };
+  const renderResearchTree = (tabRaw, researchWorldState = null) => {
+    const tab = normalizeResearchTab(tabRaw);
+    const branch = getResearchBranch(tab);
+    const selectedId = ensureResearchSelectedId(tab, researchWorldState);
+    const layout = getResearchCanvasLayout(tab);
+    if (researchPanel) researchPanel.dataset.branch = tab;
+    if (researchViewport) researchViewport.dataset.branch = tab;
+    if (researchBranchName) researchBranchName.textContent = `${branch.label} Branch`;
+    if (researchBranchDesc) researchBranchDesc.textContent = String(branch.description || "");
+    if (!researchTreeGrid) return;
+    researchTreeGrid.innerHTML = "";
+    researchTreeGrid.style.setProperty("--research-canvas-width", `${layout.width}px`);
+    researchTreeGrid.style.setProperty("--research-canvas-height", `${layout.height}px`);
+    researchTreeGrid.dataset.branch = tab;
+
+    const chains = Array.isArray(layout.chains) ? layout.chains : [];
+    for (let chainIndex = 0; chainIndex < chains.length; chainIndex += 1) {
+      const chainLayout = chains[chainIndex];
+      const chainNodes = Array.isArray(chainLayout?.nodes) ? chainLayout.nodes : [];
+      if (!chainNodes.length) continue;
+      const group = document.createElement("div");
+      group.className = "researchChainGroup";
+      group.style.left = `${chainLayout.x}px`;
+      group.style.top = `${chainLayout.y}px`;
+      group.style.width = `${chainLayout.width}px`;
+      group.style.height = `${chainLayout.height}px`;
+
+      const lead = document.createElement("div");
+      lead.className = "researchChainLead";
+      lead.style.left = `${chainLayout.leadX}px`;
+      lead.style.top = `${chainLayout.leadY}px`;
+      const leadIcon = document.createElement("div");
+      leadIcon.className = "researchChainLeadIcon";
+      fillResearchIconHost(leadIcon, chainNodes[0], "researchChainLeadFallback");
+      lead.appendChild(leadIcon);
+      group.appendChild(lead);
+
+      const leadCenterY = chainLayout.leadY + RESEARCH_CHAIN_LEAD_CENTER;
+      const horizontalStart = chainLayout.leadX + RESEARCH_CHAIN_LEAD_SIZE - 6;
+      const horizontalWidth = Math.max(10, chainLayout.spineX - horizontalStart);
+      const firstCardCenterY = chainLayout.stackTop + RESEARCH_NODE_CARD_CENTER_Y;
+      const lastCardCenterY = chainLayout.stackTop + ((chainNodes.length - 1) * (RESEARCH_NODE_CARD_HEIGHT + 28)) + RESEARCH_NODE_CARD_CENTER_Y;
+      const spineTop = Math.max(12, firstCardCenterY - 54);
+      const spineHeight = Math.max(1, (lastCardCenterY - firstCardCenterY) + 108);
+      appendResearchLinkSegment(group, horizontalStart, leadCenterY - 4, horizontalWidth, 8, false);
+      if (chainNodes.length > 1) {
+        appendResearchLinkSegment(group, chainLayout.spineX - 4, spineTop, 8, spineHeight, false);
+      }
+
+      for (let nodeIndex = 0; nodeIndex < chainNodes.length; nodeIndex += 1) {
+        const node = chainNodes[nodeIndex];
+        const state = getResearchNodeState(tab, node, researchWorldState);
+        const isSelected = String(node.id || "") === selectedId;
+        const position = layout.positions.get(String(node.id || "")) || { x: chainLayout.x + chainLayout.cardX, y: chainLayout.y + chainLayout.stackTop };
+        const cardX = position.x - chainLayout.x;
+        const cardY = position.y - chainLayout.y;
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = `researchNodeCard is${state.charAt(0).toUpperCase()}${state.slice(1)}${isSelected ? " isSelected" : ""}`;
+        card.dataset.nodeId = String(node.id || "");
+        card.style.left = `${cardX}px`;
+        card.style.top = `${cardY}px`;
+        card.title = `${node.name} • ${getResearchStateLabel(state)}`;
+        card.setAttribute("aria-label", `${node.name}, tier ${formatResearchTierRoman(node.tier)}, ${getResearchStateLabel(state)}`);
+
+        const name = document.createElement("span");
+        name.className = "researchNodeTitle";
+        name.textContent = String(node.name || "Research Node");
+        const tierBadge = document.createElement("span");
+        tierBadge.className = "researchNodeTierBadge";
+        tierBadge.textContent = formatResearchTierRoman(node.tier);
+        card.append(name, tierBadge);
+        if (state === "researching" || state === "completed") {
+          const progress = document.createElement("div");
+          progress.className = "researchNodeProgress";
+          const fill = document.createElement("div");
+          fill.className = "researchNodeProgressFill";
+          fill.style.width = `${Math.round(getResearchNodeProgress01(tab, node, researchWorldState) * 100)}%`;
+          progress.appendChild(fill);
+          card.appendChild(progress);
+        }
+        group.appendChild(card);
+        appendResearchLinkSegment(
+          group,
+          chainLayout.spineX,
+          cardY + RESEARCH_NODE_CARD_CENTER_Y - 3,
+          Math.max(10, chainLayout.cardX - chainLayout.spineX),
+          6,
+          state === "locked"
+        );
+      }
+      researchTreeGrid.appendChild(group);
+    }
+  };
+  const renderResearchInspector = (tabRaw, researchWorldState = null) => {
+    const tab = normalizeResearchTab(tabRaw);
+    const node = getResearchNodeById(tab, ensureResearchSelectedId(tab, researchWorldState));
+    if (!node) return;
+    const gate = canStartResearchNode(tab, node);
+    const state = getResearchNodeState(tab, node, researchWorldState);
+    const status = state === "completed"
+      ? "Completed"
+      : state === "researching"
+        ? "Researching"
+        : state === "available" && gate.ok
+          ? "Ready to Start"
+          : state === "available"
+            ? "Branch Busy"
+            : "Locked";
+    const hint = state === "completed"
+      ? "This upgrade is already completed."
+      : state === "researching"
+        ? "This branch is already researching this node."
+        : gate.ok
+          ? "Only one node can research at a time in each branch."
+          : String(gate.reason || "Cannot start this research yet.");
+    if (researchInfoTier) researchInfoTier.textContent = formatResearchTierRoman(node.tier);
+    if (researchInfoBranch) researchInfoBranch.textContent = `${getResearchBranch(tab).label} Branch`;
+    if (researchInfoName) researchInfoName.textContent = String(node.name || "Research");
+    if (researchInfoStatus) {
+      researchInfoStatus.textContent = status;
+      researchInfoStatus.dataset.state = state;
+    }
+    if (researchInfoDesc) researchInfoDesc.textContent = String(node.summary || "");
+    if (researchInfoPrice) researchInfoPrice.textContent = formatResearchPointValue(node.costRp);
+    if (researchInfoTime) researchInfoTime.textContent = formatResearchDurationLabel(node.durationS);
+    if (researchInfoEffect) researchInfoEffect.textContent = String(node.effectText || "No effect listed.");
+    if (researchInfoRequirement) researchInfoRequirement.textContent = getResearchRequirementText(tab, node);
+    if (researchActionHint) researchActionHint.textContent = hint;
+    setResearchInfoIcon(node);
+    if (researchActionBtn) {
+      researchActionBtn.textContent = state === "completed" ? "Completed" : state === "researching" ? "Researching..." : gate.ok ? "Start Research" : state === "available" ? "Branch Busy" : "Locked";
+      researchActionBtn.disabled = !gate.ok;
       researchActionBtn.dataset.nodeId = String(node.id || "");
     }
   };
-  const centerResearchTree = () => {
-    if (!researchViewport) return;
-    const nodes = RESEARCH_TREES[researchState.tab] || [];
-    if (!nodes.length) return;
-    const vw = researchViewport.clientWidth;
-    const vh = researchViewport.clientHeight;
-    if (!(vw > 0 && vh > 0)) {
-      requestAnimationFrame(() => {
-        if (isResearchOpen()) centerResearchTree();
-      });
-      return;
-    }
-    let minX = Number.POSITIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-    for (const n of nodes) {
-      const x = Number(n.x) || 0;
-      const y = Number(n.y) || 0;
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x + RESEARCH_NODE_W > maxX) maxX = x + RESEARCH_NODE_W;
-      if (y + RESEARCH_NODE_H > maxY) maxY = y + RESEARCH_NODE_H;
-    }
-    researchState.scale = 0.72;
-    researchState.x = ((vw - (maxX - minX)) * 0.5) - minX;
-    researchState.y = ((vh - (maxY - minY)) * 0.5) - minY;
-    applyResearchTreeTransform();
+  const renderResearchPanel = (tabRaw = researchState.tab, opts = null) => {
+    researchState.tab = normalizeResearchTab(tabRaw);
+    const force = opts === true || !!opts?.force;
+    const researchWorldState = getResearchWorldState();
+    renderResearchSummaryMetrics(researchWorldState);
+    const treeSig = getResearchTreeRenderSignature(researchState.tab, researchWorldState);
+    if (!force && researchState.lastTreeSigByTab[researchState.tab] === treeSig) return;
+    researchState.lastTreeSigByTab[researchState.tab] = treeSig;
+    renderResearchTree(researchState.tab, researchWorldState);
+    renderResearchInspector(researchState.tab, researchWorldState);
+    applyResearchViewportTransform();
   };
-  const zoomResearchTreeAt = (nextScaleRaw, px, py) => {
+  const centerResearchViewportOnNode = (tabRaw, nodeIdRaw) => {
     if (!researchViewport) return;
-    const nextScale = clampResearchScale(nextScaleRaw);
-    if (Math.abs(nextScale - researchState.scale) < 1e-4) return;
-    const x = Number(px) || 0;
-    const y = Number(py) || 0;
-    const worldX = (x - researchState.x) / researchState.scale;
-    const worldY = (y - researchState.y) / researchState.scale;
-    researchState.scale = nextScale;
-    researchState.x = x - (worldX * researchState.scale);
-    researchState.y = y - (worldY * researchState.scale);
-    applyResearchTreeTransform();
-  };
-  const renderResearchTree = (tabRaw, recenter = false) => {
     const tab = normalizeResearchTab(tabRaw);
-    researchState.tab = tab;
-    if (!researchNodesLayer) return;
-    const data = getResearchData(tab);
-    if (!data.length) return;
-    const progress = ensureResearchProgress(tab);
-    applyExclusiveLocks(data, progress);
-    if (!data.some((n) => String(n.id) === String(researchState.selectedId || ""))) {
-      const preferred = data.find((n) => getNodeViewState(n, data, progress) === "available")
-        || data.find((n) => getNodeViewState(n, data, progress) === "researched")
-        || data[0];
-      researchState.selectedId = String(preferred?.id || "");
-    }
-    researchNodesLayer.innerHTML = "";
-    for (const node of data) {
-      const card = document.createElement("button");
-      card.type = "button";
-      const nodeState = getNodeViewState(node, data, progress);
-      const stateClass = ` is${nodeState.charAt(0).toUpperCase()}${nodeState.slice(1)}`;
-      const selectedClass = String(node.id || "") === String(researchState.selectedId || "") ? " isSelected" : "";
-      card.className = `researchIconNode${stateClass}${selectedClass}`;
-      card.dataset.nodeId = String(node.id || "");
-      card.dataset.nodeState = nodeState;
-      const parentIds = getCombinedParentIds(node);
-      if (parentIds.length) card.dataset.parentIds = parentIds.join(",");
-      else delete card.dataset.parentIds;
-      card.style.left = `${Math.round(Number(node.x) || 0)}px`;
-      card.style.top = `${Math.round(Number(node.y) || 0)}px`;
-      const icon = String(node.icon || "/UI_Icons/stability.png");
-      card.title = String(node.name || "Research");
-      const iconEl = document.createElement("img");
-      iconEl.src = icon;
-      iconEl.alt = "";
-      iconEl.setAttribute("aria-hidden", "true");
-      const nameEl = document.createElement("span");
-      nameEl.className = "researchNodeName";
-      nameEl.textContent = String(node.name || "Research");
-      card.appendChild(iconEl);
-      card.appendChild(nameEl);
-      researchNodesLayer.appendChild(card);
-    }
-    const infoNode = data.find((n) => String(n.id || "") === String(researchState.selectedId || "")) || data[0];
-    if (infoNode) updateResearchInfoCard(infoNode, getNodeViewState(infoNode, data, progress));
-    drawResearchTreeLinks();
-    if (recenter || !researchState.initialized) {
-      centerResearchTree();
-      researchState.initialized = true;
-    } else {
-      applyResearchTreeTransform();
-    }
+    const layout = getResearchCanvasLayout(tab);
+    const target = layout.positions.get(String(nodeIdRaw || "")) || { x: layout.startX, y: layout.centerY };
+    const centerX = target.x + RESEARCH_NODE_CARD_CENTER_X;
+    const centerY = target.y + RESEARCH_NODE_CARD_CENTER_Y;
+    const preferredScale = researchViewportState.isInitialized ? researchViewportState.targetScale : RESEARCH_VIEWPORT_DEFAULT_SCALE;
+    focusResearchViewportOnWorldPoint(centerX, centerY, preferredScale, !researchViewportState.isInitialized);
+    researchViewportState.isInitialized = true;
   };
-  const setResearchTab = (tabRaw) => {
+  const setResearchTab = (tabRaw, centerOnSelection = false) => {
     const active = normalizeResearchTab(tabRaw);
-    for (const btn of researchTabButtons) {
+    researchState.tab = active;
+    for (let i = 0; i < researchTabButtons.length; i += 1) {
+      const btn = researchTabButtons[i];
       if (!btn) continue;
       const isActive = normalizeResearchTab(btn.dataset?.researchTab) === active;
       btn.classList.toggle("isTabSelected", isActive);
       btn.setAttribute("aria-selected", isActive ? "true" : "false");
     }
-    requestAnimationFrame(() => renderResearchTree(active));
+    requestAnimationFrame(() => {
+      renderResearchPanel(active, { force: true });
+      if (centerOnSelection) {
+        centerResearchViewportOnNode(active, ensureResearchSelectedId(active, getResearchWorldState()));
+      }
+    });
   };
-
   const isResearchOpen = () => !!(researchModal && !researchModal.hidden);
   const setResearchOpen = (open) => {
     if (!researchModal) return;
-    const shown = !!open;
-    researchModal.hidden = !shown;
-    if (shown) {
+    researchModal.hidden = !open;
+    if (open) {
       setTradeOpen(false);
       hud.hideContextMenu();
       btnResearchPanel?.classList.add("isOpen");
-      setResearchTab("military");
-      requestAnimationFrame(() => renderResearchTree(researchState.tab, true));
+      setResearchTab(researchState.tab || "economy", true);
     } else {
       btnResearchPanel?.classList.remove("isOpen");
     }
   };
-
+  window.setInterval(() => {
+    if (isResearchOpen()) renderResearchPanel(researchState.tab);
+  }, 300);
+  if (researchTreeGrid) {
+    researchTreeGrid.addEventListener("click", (e) => {
+      const nodeEl = e.target && typeof e.target.closest === "function" ? e.target.closest(".researchNodeCard[data-node-id]") : null;
+      if (!nodeEl) return;
+      researchState.selectedByTab[researchState.tab] = String(nodeEl.dataset?.nodeId || "");
+      renderResearchPanel(researchState.tab, { force: true });
+    });
+  }
   if (researchViewport) {
-    researchViewport.addEventListener("pointerdown", (e) => {
-      const clickNode = e.target && typeof e.target.closest === "function"
-        ? e.target.closest(".researchIconNode")
-        : null;
-      if (clickNode) return;
-      if ((e.button | 0) !== 0) return;
-      researchState.dragging = true;
-      researchState.dragX = e.clientX;
-      researchState.dragY = e.clientY;
-      researchViewport.classList.add("isPanning");
-      try { researchViewport.setPointerCapture(e.pointerId); } catch {}
-      e.preventDefault();
-    });
-    researchViewport.addEventListener("pointermove", (e) => {
-      if (!researchState.dragging) return;
-      const dx = e.clientX - researchState.dragX;
-      const dy = e.clientY - researchState.dragY;
-      researchState.dragX = e.clientX;
-      researchState.dragY = e.clientY;
-      researchState.x += dx;
-      researchState.y += dy;
-      applyResearchTreeTransform();
-    });
-    const endResearchDrag = () => {
-      if (!researchState.dragging) return;
-      researchState.dragging = false;
+    applyResearchViewportTransform();
+    const panState = { pointerId: null, startX: 0, startY: 0, originX: 0, originY: 0 };
+    const stopPan = (pointerId = null) => {
+      if (pointerId != null && panState.pointerId != null && panState.pointerId !== pointerId) return;
+      panState.pointerId = null;
       researchViewport.classList.remove("isPanning");
     };
-    researchViewport.addEventListener("pointerup", endResearchDrag);
-    researchViewport.addEventListener("pointercancel", endResearchDrag);
-    researchViewport.addEventListener("lostpointercapture", endResearchDrag);
+    researchViewport.addEventListener("pointerdown", (e) => {
+      if ((e.button | 0) !== 0) return;
+      if (e.target && typeof e.target.closest === "function" && e.target.closest(".researchNodeCard")) return;
+      panState.pointerId = e.pointerId;
+      panState.startX = e.clientX;
+      panState.startY = e.clientY;
+      panState.originX = researchViewportState.targetX;
+      panState.originY = researchViewportState.targetY;
+      researchViewport.classList.add("isPanning");
+      if (typeof researchViewport.setPointerCapture === "function") researchViewport.setPointerCapture(e.pointerId);
+    });
+    researchViewport.addEventListener("pointermove", (e) => {
+      if (panState.pointerId !== e.pointerId) return;
+      e.preventDefault();
+      setResearchViewportTransform(
+        panState.originX + (e.clientX - panState.startX),
+        panState.originY + (e.clientY - panState.startY),
+        researchViewportState.targetScale,
+        true
+      );
+    });
+    researchViewport.addEventListener("pointerup", (e) => stopPan(e.pointerId));
+    researchViewport.addEventListener("pointercancel", (e) => stopPan(e.pointerId));
+    researchViewport.addEventListener("lostpointercapture", (e) => stopPan(e.pointerId));
     researchViewport.addEventListener("wheel", (e) => {
       e.preventDefault();
-      const rect = researchViewport.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const py = e.clientY - rect.top;
-      const factor = e.deltaY < 0 ? 1.08 : 0.925;
-      zoomResearchTreeAt(researchState.scale * factor, px, py);
+      const point = getResearchViewportPoint(e.clientX, e.clientY);
+      const intensity = e.deltaMode === 1 ? 0.08 : 0.0018;
+      const nextScale = researchViewportState.targetScale * Math.exp(-e.deltaY * intensity);
+      const clampedScale = Math.max(RESEARCH_VIEWPORT_MIN_SCALE, Math.min(RESEARCH_VIEWPORT_MAX_SCALE, nextScale));
+      const nextX = point.localX - (point.worldX * clampedScale);
+      const nextY = point.localY - (point.worldY * clampedScale);
+      setResearchViewportTransform(nextX, nextY, clampedScale, false);
+      researchViewportState.isInitialized = true;
     }, { passive: false });
-  }
-  if (researchNodesLayer) {
-    researchNodesLayer.addEventListener("click", (e) => {
-      const nodeEl = e.target && typeof e.target.closest === "function"
-        ? e.target.closest(".researchIconNode[data-node-id]")
-        : null;
-      if (!nodeEl) return;
-      const id = String(nodeEl.dataset?.nodeId || "");
-      if (!id) return;
-      researchState.selectedId = id;
-      renderResearchTree(researchState.tab, false);
-    });
   }
   if (researchActionBtn) {
     researchActionBtn.addEventListener("click", () => {
-      const { node, state, data, progress } = getResearchNodeView(researchState.tab, researchState.selectedId);
-      if (!node || state !== "available") return;
-      progress.set(String(node.id || ""), "researched");
-      applyExclusiveLocks(data, progress);
-      hud.setOpMessage(`${String(node.name || "Research")} completed.`);
-      renderResearchTree(researchState.tab, false);
+      const tab = researchState.tab;
+      const node = getResearchNodeById(tab, researchActionBtn.dataset?.nodeId || ensureResearchSelectedId(tab, getResearchWorldState()));
+      const gate = canStartResearchNode(tab, node);
+      if (!gate.ok || !node) {
+        if (gate.reason) hud.setOpMessage(gate.reason);
+        renderResearchPanel(tab, { force: true });
+        return;
+      }
+      const res = (typeof world?.startResearch === "function")
+        ? world.startResearch(OWNER.PLAYER, tab, node.id)
+        : { ok: false, reason: "Research system unavailable." };
+      if (isQueuedActionResult(res)) {
+        hud.setOpMessage(`${node.name} research queued.`);
+      } else if (!res?.ok) {
+        hud.setOpMessage(String(res?.reason || "Unable to start research."));
+      } else {
+        hud.setOpMessage(`${node.name} research started.`);
+      }
+      renderResearchPanel(tab, { force: true });
     });
   }
   window.addEventListener("resize", () => {
-    if (isResearchOpen()) requestAnimationFrame(() => renderResearchTree(researchState.tab, true));
+    if (isResearchOpen()) requestAnimationFrame(() => renderResearchPanel(researchState.tab, { force: true }));
     if (isTradeOpen()) requestAnimationFrame(() => refreshTradePanel(true));
   });
-  for (const btn of researchTabButtons) {
+  for (let i = 0; i < researchTabButtons.length; i += 1) {
+    const btn = researchTabButtons[i];
     if (!btn) continue;
-    btn.addEventListener("click", () => setResearchTab(btn.dataset?.researchTab));
+    btn.addEventListener("click", () => setResearchTab(btn.dataset?.researchTab, true));
   }
   if (btnResearchPanel) btnResearchPanel.addEventListener("click", () => setResearchOpen(true));
   if (researchClose) researchClose.addEventListener("click", () => setResearchOpen(false));
@@ -12586,6 +13054,7 @@ function boot() {
       hud.setSelectedStructure(getSelectedStructure());
       syncSpawnProgressUI();
       syncMultiplayerSyncLagUI();
+      syncEventsCardHeightWithBuildCard();
       uiMs += performance.now() - hudStart;
     }
 
@@ -12637,6 +13106,9 @@ function boot() {
       const playerResources = (typeof world.getNationResources === "function")
         ? (world.getNationResources(OWNER.PLAYER) || {})
         : {};
+      const researchBonuses = (typeof world.getResearchBonuses === "function")
+        ? (world.getResearchBonuses(OWNER.PLAYER) || {})
+        : {};
       hud.setBuildCosts({
         city: world.getBuildCost("city", OWNER.PLAYER),
         factory: world.getBuildCost("factory", OWNER.PLAYER),
@@ -12644,6 +13116,7 @@ function boot() {
         defence_post: world.getBuildCost("defence_post", OWNER.PLAYER),
         port: world.getBuildCost("port", OWNER.PLAYER),
         coastal_rig: world.getBuildCost("coastal_rig", OWNER.PLAYER),
+        research_lab: world.getBuildCost("research_lab", OWNER.PLAYER),
         missile_silo: world.getBuildCost("missile_silo", OWNER.PLAYER),
         abm_launcher: world.getBuildCost("abm_launcher", OWNER.PLAYER),
         airbase: world.getBuildCost("airbase", OWNER.PLAYER),
@@ -12656,6 +13129,7 @@ function boot() {
           defence_post: world.getStructureResourceCost ? world.getStructureResourceCost("defence_post") : null,
           port: world.getStructureResourceCost ? world.getStructureResourceCost("port") : null,
           coastal_rig: world.getStructureResourceCost ? world.getStructureResourceCost("coastal_rig") : null,
+          research_lab: world.getStructureResourceCost ? world.getStructureResourceCost("research_lab") : null,
           missile_silo: world.getStructureResourceCost ? world.getStructureResourceCost("missile_silo") : null,
           abm_launcher: world.getStructureResourceCost ? world.getStructureResourceCost("abm_launcher") : null,
           airbase: world.getStructureResourceCost ? world.getStructureResourceCost("airbase") : null
@@ -12667,11 +13141,20 @@ function boot() {
           defence_post: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("defence_post") : 0,
           port: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("port") : 0,
           coastal_rig: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("coastal_rig") : 0,
+          research_lab: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("research_lab") : 0,
           missile_silo: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("missile_silo") : 0,
           abm_launcher: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("abm_launcher") : 0,
           airbase: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("airbase") : 0
         }
       });
+      if (typeof hud.setBuildLocks === "function") {
+        hud.setBuildLocks({
+          missile_silo: {
+            locked: !researchBonuses.unlockMissileSilo,
+            reason: "Research Nuclear Research to unlock Missile Silos."
+          }
+        });
+      }
 
       const eventsScope = (hud.getEventsScope && hud.getEventsScope() === "global") ? "global" : "nationwide";
       const eventsSrc = eventsScope === "global"
@@ -12908,6 +13391,7 @@ function buildMatchSummaryPayload(result, opts = {}) {
   const barracksCount = Math.max(0, world?._barracksCount?.[OWNER.PLAYER] | 0);
   const portCount = Math.max(0, world?._portCount?.[OWNER.PLAYER] | 0);
   let defenceCount = 0;
+  let researchLabCount = 0;
   let missileSiloCount = 0;
   let abmCount = 0;
   let airbaseCount = 0;
@@ -12918,12 +13402,13 @@ function buildMatchSummaryPayload(result, opts = {}) {
       if ((st.owner | 0) !== OWNER.PLAYER) continue;
       const type = String(st.type || "");
       if (type === "defence_post") defenceCount += ((st.count | 0) || 1);
+      if (type === "research_lab") researchLabCount += ((st.count | 0) || 1);
       if (type === "missile_silo") missileSiloCount += ((st.count | 0) || 1);
       if (type === "abm_launcher") abmCount += ((st.count | 0) || 1);
       if (type === "airbase") airbaseCount += ((st.count | 0) || 1);
     }
   }
-  const structuresText = `City ${cityCount} | Factory ${factoryCount} | Barracks ${barracksCount} | Defence ${defenceCount} | Port ${portCount} | Silos ${missileSiloCount} | ABM ${abmCount} | Airbase ${airbaseCount}`;
+  const structuresText = `City ${cityCount} | Factory ${factoryCount} | Barracks ${barracksCount} | Defence ${defenceCount} | Port ${portCount} | Labs ${researchLabCount} | Silos ${missileSiloCount} | ABM ${abmCount} | Airbase ${airbaseCount}`;
 
   const titleText = outcome === "win"
     ? (isTest ? "Victory Test" : "Victory")
@@ -14035,6 +14520,7 @@ function buildIntelData(targetId) {
     { type: "barracks", label: "Barracks", count: counts.barracks || 0 },
     { type: "defence_post", label: "Defence Post", count: counts.defence_post || 0 },
     { type: "port", label: "Port", count: counts.port || 0 },
+    { type: "research_lab", label: "Research Lab", count: counts.research_lab || 0 },
     { type: "missile_silo", label: "Missile Silo", count: counts.missile_silo || 0 },
     { type: "abm_launcher", label: "ABM Launcher", count: counts.abm_launcher || 0 },
     { type: "airbase", label: "Airbase", count: counts.airbase || 0 }
@@ -14058,6 +14544,24 @@ function buildIntelData(targetId) {
 }
 
 function countStructuresByType(worldRef, ownerId) {
+  if (worldRef && typeof worldRef.getNationStructureCounts === "function") {
+    const cached = worldRef.getNationStructureCounts(ownerId);
+    if (cached) {
+      return {
+        capital: cached.capital || 0,
+        city: cached.city || 0,
+        factory: cached.factory || 0,
+        barracks: cached.barracks || 0,
+        defence_post: cached.defence_post || 0,
+        port: cached.port || 0,
+        research_lab: cached.research_lab || 0,
+        missile_silo: cached.missile_silo || 0,
+        abm_launcher: cached.abm_launcher || 0,
+        airbase: cached.airbase || 0
+      };
+    }
+  }
+
   const counts = {
     capital: 0,
     city: 0,
@@ -14065,6 +14569,7 @@ function countStructuresByType(worldRef, ownerId) {
     barracks: 0,
     defence_post: 0,
     port: 0,
+    research_lab: 0,
     missile_silo: 0,
     abm_launcher: 0,
     airbase: 0
@@ -14845,6 +15350,7 @@ function viewNationSmooth(nationId) {
 
 function refreshAllUI() {
   syncEventsCardHeightWithBuildCard();
+  scheduleDockLayoutSync();
   refreshNukePreview();
   updateQuickLaunchButtons();
   hud.setStats(getPlayer());
@@ -14856,6 +15362,43 @@ function refreshAllUI() {
   syncSpawnProgressUI();
 }
 
+let dockLayoutSyncScheduled = false;
+let dockLayoutResizeObserver = null;
+function scheduleDockLayoutSync() {
+  if (dockLayoutSyncScheduled) return;
+  dockLayoutSyncScheduled = true;
+
+  const runSync = () => {
+    dockLayoutSyncScheduled = false;
+    syncEventsCardHeightWithBuildCard();
+  };
+
+  requestAnimationFrame(() => {
+    requestAnimationFrame(runSync);
+  });
+
+  window.setTimeout(runSync, 180);
+
+  if (document.fonts?.ready && typeof document.fonts.ready.then === "function") {
+    document.fonts.ready.then(() => {
+      syncEventsCardHeightWithBuildCard();
+    }).catch(() => {});
+  }
+}
+
+function ensureDockLayoutObserver() {
+  if (dockLayoutResizeObserver || typeof ResizeObserver !== "function") return;
+  const hudRoot = document.getElementById("hud");
+  const buildCard = document.getElementById("structureBar");
+  if (!hudRoot || !buildCard) return;
+
+  dockLayoutResizeObserver = new ResizeObserver(() => {
+    scheduleDockLayoutSync();
+  });
+  dockLayoutResizeObserver.observe(hudRoot);
+  dockLayoutResizeObserver.observe(buildCard);
+}
+
 function syncEventsCardHeightWithBuildCard() {
   const eventsCard = document.getElementById("events");
   const buildCard = document.getElementById("structureBar");
@@ -14863,6 +15406,7 @@ function syncEventsCardHeightWithBuildCard() {
   const tradesLaunchBar = document.getElementById("tradesLaunchBar");
   const researchLaunchBar = document.getElementById("researchLaunchBar");
   const hudRoot = document.getElementById("hud");
+  const viewport = getViewportSnapshot();
   if (eventsCard && hudRoot) {
     const rootStyles = getComputedStyle(hudRoot);
     const docStyles = getComputedStyle(document.documentElement);
@@ -14870,7 +15414,7 @@ function syncEventsCardHeightWithBuildCard() {
     const spawnClearanceRaw = Number.parseFloat(docStyles.getPropertyValue("--spawn-progress-clearance"));
     const reserve = (Number.isFinite(reserveRaw) && reserveRaw > 0) ? reserveRaw : 260;
     const spawnClearance = (Number.isFinite(spawnClearanceRaw) && spawnClearanceRaw > 0) ? spawnClearanceRaw : 56;
-    const vh = Math.max(320, Number(window.innerHeight) || 0);
+    const vh = Math.max(320, Number(viewport.height) || 0);
     const available = Math.max(160, vh - spawnClearance - reserve - 18);
     const maxHeightPx = Math.max(150, Math.floor(Math.min(560, vh * 0.5, available)));
 
@@ -14887,47 +15431,50 @@ function syncEventsCardHeightWithBuildCard() {
   if (!buildWidth) return;
 
   const buildLeft = Math.round(buildRect.left - hudRect.left);
+  const buildRight = buildLeft + buildWidth;
   const bottom = Math.max(0, Math.round(hudRect.bottom - buildRect.top));
-  const quickWidth = buildWidth;
-  const quickLeft = buildLeft;
-
-  if (quickLaunchBar) {
-    quickLaunchBar.style.left = `${quickLeft}px`;
-    quickLaunchBar.style.right = "auto";
-    quickLaunchBar.style.transform = "none";
-    quickLaunchBar.style.width = `${quickWidth}px`;
-    quickLaunchBar.style.maxWidth = `${quickWidth}px`;
-    quickLaunchBar.style.bottom = `${bottom}px`;
-  }
-
-  const leftDockGap = 4;
-  const layoutLeftDockBar = (bar, anchorLeft) => {
-    if (!bar) return anchorLeft;
+  const visibleUtilityBars = [tradesLaunchBar, researchLaunchBar].filter((bar) => {
+    if (!bar) return false;
     const cs = getComputedStyle(bar);
-    if (bar.hidden || cs.display === "none") return anchorLeft;
+    return !bar.hidden && cs.display !== "none";
+  });
+  const utilityGap = 4;
+  const utilityCount = visibleUtilityBars.length;
+  const totalUtilityGap = utilityCount > 0 ? utilityGap * utilityCount : 0;
+  const utilityWidth = utilityCount > 0
+    ? Math.max(140, Math.min(200, Math.floor((buildWidth - totalUtilityGap) * 0.24)))
+    : 0;
+  const quickWidth = Math.max(220, buildWidth - (utilityWidth * utilityCount) - totalUtilityGap);
+  const quickLeft = Math.max(buildLeft, buildRight - quickWidth);
 
-    const rect = bar.getBoundingClientRect();
-    let barWidth = Math.round(Number(rect.width) || 0);
-    if (!(barWidth > 0)) {
-      const parsedWidth = Number.parseFloat(cs.width);
-      if (Number.isFinite(parsedWidth) && parsedWidth > 0) barWidth = Math.round(parsedWidth);
-    }
-    if (!(barWidth > 0)) return anchorLeft;
-
-    const maxLeft = Math.max(0, Math.round(hudRect.width - barWidth));
-    const barLeft = Math.max(0, Math.min(maxLeft, anchorLeft - barWidth - leftDockGap));
+  const applyDockBarLayout = (bar, barLeft, barWidth) => {
+    if (!bar || !(barWidth > 0)) return;
     bar.style.left = `${barLeft}px`;
     bar.style.right = "auto";
     bar.style.transform = "none";
     bar.style.width = `${barWidth}px`;
     bar.style.maxWidth = `${barWidth}px`;
     bar.style.bottom = `${bottom}px`;
-    return barLeft;
   };
 
-  let leftAnchor = quickLeft;
-  leftAnchor = layoutLeftDockBar(tradesLaunchBar, leftAnchor);
-  layoutLeftDockBar(researchLaunchBar, leftAnchor);
+  applyDockBarLayout(quickLaunchBar, quickLeft, quickWidth);
+
+  const quickBarHeight = quickLaunchBar
+    ? Math.max(0, Math.round(Number(quickLaunchBar.getBoundingClientRect().height) || 0))
+    : 0;
+
+  let utilityLeft = buildLeft;
+  for (const bar of visibleUtilityBars) {
+    applyDockBarLayout(bar, utilityLeft, utilityWidth);
+    if (quickBarHeight > 0) {
+      bar.style.height = `${quickBarHeight}px`;
+      bar.style.minHeight = `${quickBarHeight}px`;
+    } else {
+      bar.style.height = "";
+      bar.style.minHeight = "";
+    }
+    utilityLeft += utilityWidth + utilityGap;
+  }
 }
 
 function getPlayerAnchorCell() {
@@ -15121,7 +15668,7 @@ function refreshOpUI(quick = false) {
   });
 
   hud.renderOpList(list, world.focusOpId);
-  if (hud.renderDockOperations) hud.renderDockOperations(dockOps);
+  if (!quick && hud.renderDockOperations) hud.renderDockOperations(dockOps);
 
   if (!quick) {
     const f = finalizeSelection();

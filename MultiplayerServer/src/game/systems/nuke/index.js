@@ -228,8 +228,8 @@ export function installNuke(World) {
     const dist = Math.hypot(ex - sx, ey - sy);
 
     const speed = Math.max(1, Number(spec.flightSpeedTilesPerS) || 1);
-    // Keep missile velocity distance-invariant: no fixed launch-time bonus.
-    const durationS = Math.max(0.1, dist / speed);
+    const baseFlightTimeS = Math.max(0, Number(spec.baseFlightTimeS) || 0);
+    const durationS = Math.max(0.1, baseFlightTimeS + (dist / speed));
 
     const seed = (((st.id | 0) * 2654435761) ^ ((tx + 1) * 73856093) ^ ((ty + 1) * 19349663) ^ (spec.key === "hydrogen" ? 0x9E3779B9 : 0x7F4A7C15)) >>> 0;
     const blastRadiusTiles = Math.max(1, Number(spec.blastRadiusTiles) || 1);

@@ -2,6 +2,7 @@
 
 import {
   OWNER,
+  RESOURCE_STOCK_CAP,
   TRADE_DEAL_MAX_DURATION_MIN,
   TRADE_DEAL_MAX_RATE_PER_MIN,
   TRADE_DEAL_MIN_DURATION_MIN,
@@ -69,6 +70,12 @@ function describeTradeAgreement(world, offerResourceRaw, requestResourceRaw) {
     ? world._resourceLabel(requestResourceRaw)
     : String(requestResourceRaw || "Resource");
   return `${offerLabel} for ${requestLabel}`;
+}
+
+function getTradeStockCap(resourceRaw) {
+  const resource = normalizeTradeResource(resourceRaw);
+  if (!resource) return 1;
+  return Math.max(1, Number(RESOURCE_STOCK_CAP?.[resource]) || 1);
 }
 
 function findTradeRequestIndex(world, requestIdRaw) {
@@ -243,11 +250,13 @@ export function installTrading(World) {
     if (ratePerMinute < TRADE_DEAL_MIN_RATE_PER_MIN || ratePerMinute > TRADE_DEAL_MAX_RATE_PER_MIN) {
       return {
         ok: false,
-        reason: `Rate must be between ${TRADE_DEAL_MIN_RATE_PER_MIN} and ${TRADE_DEAL_MAX_RATE_PER_MIN} per minute.`
+        reason: `Rate must be between ${TRADE_DEAL_MIN_RATE_PER_MIN} and ${TRADE_DEAL_MAX_RATE_PER_MIN} per day.`
       };
     }
 
-    const ratePerSecond = ratePerMinute / 60;
+    // The HUD date advances one in-game day per world-time second.
+    // Match trade flow to that cadence so entered values are units per day.
+    const ratePerSecond = ratePerMinute;
     const startupBuffer = Math.max(
       1,
       ratePerMinute,
@@ -321,7 +330,7 @@ export function installTrading(World) {
 
     if (recipientIsHuman) {
       this._pushEvent(
-        `${fromName} offers ${request.offerRatePerMinute}/min ${offerLabel} for ${request.requestRatePerMinute}/min ${requestLabel}.`,
+        `${fromName} offers ${request.offerRatePerMinute}/day ${offerLabel} for ${request.requestRatePerMinute}/day ${requestLabel}.`,
         {
           kind: "trade_request",
           requestId: request.id | 0,
@@ -622,24 +631,49 @@ export function installTrading(World) {
 
       const offerWant = Math.max(0, Number(deal.offerRatePerSecond) || 0) * dt;
       const requestWant = Math.max(0, Number(deal.requestRatePerSecond) || 0) * dt;
+      const fromState = (typeof this._ensureNationResourceState === "function")
+        ? this._ensureNationResourceState(from)
+        : fromNation;
+      const toState = (typeof this._ensureNationResourceState === "function")
+        ? this._ensureNationResourceState(to)
+        : toNation;
+
+      const offerStock = Math.max(0, Number(fromState?.[deal.offerResource]) || 0);
+      const requestStock = Math.max(0, Number(toState?.[deal.requestResource]) || 0);
+      const toCapLeft = Math.max(0, getTradeStockCap(deal.offerResource) - Math.max(0, Number(toState?.[deal.offerResource]) || 0));
+      const fromCapLeft = Math.max(0, getTradeStockCap(deal.requestResource) - Math.max(0, Number(fromState?.[deal.requestResource]) || 0));
+
+      const offerScale = offerWant > 0.000001
+        ? Math.min(1, offerStock / offerWant, toCapLeft / offerWant)
+        : 1;
+      const requestScale = requestWant > 0.000001
+        ? Math.min(1, requestStock / requestWant, fromCapLeft / requestWant)
+        : 1;
+      const scale = Math.max(0, Math.min(offerScale, requestScale));
+
+      if (scale <= 0.000001) {
+        deal.stalledS = Math.max(0, Number(deal.stalledS) || 0) + dt;
+        if ((Number(deal.stalledS) || 0) >= 15) {
+          removeDealAt(this, i, "invalid");
+        }
+        continue;
+      }
+      deal.stalledS = 0;
 
       const offerSpent = (typeof this._spendResource === "function")
-        ? this._spendResource(from, deal.offerResource, offerWant)
+        ? this._spendResource(from, deal.offerResource, offerWant * scale)
         : 0;
+      const requestSpent = (typeof this._spendResource === "function")
+        ? this._spendResource(to, deal.requestResource, requestWant * scale)
+        : 0;
+
       if (offerSpent > 0 && typeof this._grantResource === "function") {
         const offerGranted = Math.max(0, Number(this._grantResource(to, deal.offerResource, offerSpent)) || 0);
-        const offerRefund = Math.max(0, offerSpent - offerGranted);
-        if (offerRefund > 0.00001) this._grantResource(from, deal.offerResource, offerRefund);
         if (offerGranted > 0) deal.transferredFrom = Math.max(0, Number(deal.transferredFrom) || 0) + offerGranted;
       }
 
-      const requestSpent = (typeof this._spendResource === "function")
-        ? this._spendResource(to, deal.requestResource, requestWant)
-        : 0;
       if (requestSpent > 0 && typeof this._grantResource === "function") {
         const requestGranted = Math.max(0, Number(this._grantResource(from, deal.requestResource, requestSpent)) || 0);
-        const requestRefund = Math.max(0, requestSpent - requestGranted);
-        if (requestRefund > 0.00001) this._grantResource(to, deal.requestResource, requestRefund);
         if (requestGranted > 0) deal.transferredTo = Math.max(0, Number(deal.transferredTo) || 0) + requestGranted;
       }
 

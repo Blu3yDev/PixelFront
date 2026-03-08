@@ -1,6 +1,6 @@
 // FILE: src/game/systems/navy.js
 
-import { OWNER, TRADE_EVENT_COOLDOWN_S, TRADE_SHIP_HP, TRADE_SHIP_RESPAWN_S, TRADE_SHIP_REWARD_GOLD, TRADE_SHIP_SPEED_CPS, TRADE_TRAIL_FADE_S, TRADE_TRAIL_MAX_POINTS, TRADE_TRAIL_POINT_SPACING, TRADE_TRIP_STEPS_MAX, TRADE_TRIP_STEPS_MIN, TRADE_WANDER_MAX_S, TRADE_WANDER_MIN_S, TRANSPORT_SPEED_CPS, WARSHIP_CHASE_TILES, WARSHIP_DETECT_TILES, WARSHIP_DPS, WARSHIP_HP, WARSHIP_LAUNCH_GOLD_COST, WARSHIP_MAX_ACTIVE, WARSHIP_RAID_LOOT_TRADE_GOLD, WARSHIP_RAID_LOOT_TRANSPORT_GOLD, WARSHIP_RAID_LOOT_WARSHIP_GOLD, WARSHIP_RANGE_TILES, WARSHIP_SPEED_CPS, WAR_EVENT_COOLDOWN_S } from "../config.js";
+import { OWNER, TRADE_EVENT_COOLDOWN_S, TRADE_SHIP_HP, TRADE_SHIP_MAX_OUTGOING, TRADE_SHIP_RESPAWN_S, TRADE_SHIP_REWARD_GOLD, TRADE_SHIP_SPEED_CPS, TRADE_TRAIL_FADE_S, TRADE_TRAIL_MAX_POINTS, TRADE_TRAIL_POINT_SPACING, TRADE_TRIP_STEPS_MAX, TRADE_TRIP_STEPS_MIN, TRADE_WANDER_MAX_S, TRADE_WANDER_MIN_S, TRANSPORT_SPEED_CPS, WARSHIP_CHASE_TILES, WARSHIP_DETECT_TILES, WARSHIP_DPS, WARSHIP_HP, WARSHIP_LAUNCH_GOLD_COST, WARSHIP_MAX_ACTIVE, WARSHIP_RAID_LOOT_TRADE_GOLD, WARSHIP_RAID_LOOT_TRANSPORT_GOLD, WARSHIP_RAID_LOOT_WARSHIP_GOLD, WARSHIP_RANGE_TILES, WARSHIP_SPEED_CPS, WAR_EVENT_COOLDOWN_S } from "../config.js";
 import { clamp01, clamp8, clampInt, fbm01, hash01, lerp, mulberry32, noise2, ridgeFbm01, smoothstep01, title } from "../utils.js";
 
 export function installNavy(World) {
@@ -57,11 +57,14 @@ export function installNavy(World) {
 
           if (s.mode === "toPort") {
             // Trip complete: payout, then despawn and respawn after a cooldown (per-port-slot ship).
-            n.gold += TRADE_SHIP_REWARD_GOLD;
+            const researchBonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(A) : null;
+            const rewardMul = 1 + Math.max(0, Number(researchBonuses?.tradeShipRewardMul) || 0);
+            const reward = Math.max(0, TRADE_SHIP_REWARD_GOLD * rewardMul);
+            n.gold += reward;
 
             if (A === OWNER.PLAYER && this.time >= this._tradeEventCooldownUntil[A]) {
               this._tradeEventCooldownUntil[A] = this.time + TRADE_EVENT_COOLDOWN_S;
-              this._pushEvent(`Trade ship returned (+${TRADE_SHIP_REWARD_GOLD} Gold).`);
+              this._pushEvent(`Trade ship returned (+${Math.round(reward)} Gold).`);
             }
 
             this._navySetTradeSlotCooldown(A, s.portKey, TRADE_SHIP_RESPAWN_S);
@@ -86,11 +89,14 @@ export function installNavy(World) {
           }
 
           if (this.time >= (Number(s.wanderUntil) || 0)) {
-            n.gold += TRADE_SHIP_REWARD_GOLD;
+            const researchBonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(A) : null;
+            const rewardMul = 1 + Math.max(0, Number(researchBonuses?.tradeShipRewardMul) || 0);
+            const reward = Math.max(0, TRADE_SHIP_REWARD_GOLD * rewardMul);
+            n.gold += reward;
 
             if (A === OWNER.PLAYER && this.time >= this._tradeEventCooldownUntil[A]) {
               this._tradeEventCooldownUntil[A] = this.time + TRADE_EVENT_COOLDOWN_S;
-              this._pushEvent(`Trade route completed (+${TRADE_SHIP_REWARD_GOLD} Gold).`);
+              this._pushEvent(`Trade route completed (+${Math.round(reward)} Gold).`);
             }
 
             this._navySetTradeSlotCooldown(A, s.portKey, TRADE_SHIP_RESPAWN_S);
@@ -174,6 +180,8 @@ export function installNavy(World) {
       idToShip.clear();
       const combatShips = this._navyTickCombatShips || (this._navyTickCombatShips = []);
       combatShips.length = 0;
+      const warships = this._navyTickWarships || (this._navyTickWarships = []);
+      warships.length = 0;
       const shipsByComp = this._navyTickShipsByComp || (this._navyTickShipsByComp = new Map());
       shipsByComp.clear();
       const rigsByComp = this._navyTickRigsByComp || (this._navyTickRigsByComp = new Map());
@@ -209,6 +217,7 @@ export function installNavy(World) {
           if (c) s.comp = c;
         }
         combatShips.push(s);
+        if (k === "war") warships.push(s);
         if (c) {
           let arr = shipsByComp.get(c);
           if (!arr) {
@@ -219,9 +228,9 @@ export function installNavy(World) {
         }
       }
 
-      const structures = this.structures || [];
-      for (let i = 0; i < structures.length; i++) {
-        const st = structures[i];
+      const rigStructures = Array.isArray(this._coastalRigStructures) ? this._coastalRigStructures : this.structures || [];
+      for (let i = 0; i < rigStructures.length; i++) {
+        const st = rigStructures[i];
         if (!st) continue;
         if (String(st.type || "") !== "coastal_rig") continue;
         if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(st)) continue;
@@ -240,9 +249,9 @@ export function installNavy(World) {
         arr.push(st);
       }
 
-      for (let i = 0; i < ships.length; i++) {
-        const w = ships[i];
-        if (!w || w.kind !== "war") continue;
+      for (let i = 0; i < warships.length; i++) {
+        const w = warships[i];
+        if (!w) continue;
 
         const A = (w.owner | 0);
         const wx = (w.cx | 0), wy = (w.cy | 0);
@@ -441,9 +450,14 @@ export function installNavy(World) {
       // Build per-port slots and ensure each slot maintains one trade ship (after cooldown).
       const shipsByKey = this._navyTickShipsByKey || (this._navyTickShipsByKey = new Set());
       shipsByKey.clear();
+      const tradeSpawnCounts = this._navyTickTradeSpawnCounts || (this._navyTickTradeSpawnCounts = new Int32Array(this._nationCount + 1));
+      tradeSpawnCounts.fill(0);
       for (let i = 0; i < ships.length; i++) {
         const s = ships[i];
-        if (s && s.kind === "trade" && s.portKey) shipsByKey.add(String(s.portKey));
+        if (!s || s.kind !== "trade") continue;
+        if (s.portKey) shipsByKey.add(String(s.portKey));
+        const ownerId = s.owner | 0;
+        if (ownerId > 0 && ownerId < tradeSpawnCounts.length) tradeSpawnCounts[ownerId] = (tradeSpawnCounts[ownerId] | 0) + 1;
       }
 
       for (let id = 1; id <= this._nationCount; id++) {
@@ -456,9 +470,11 @@ export function installNavy(World) {
         for (let p = 0; p < ports.length; p++) {
           const st = ports[p];
           if (!st) continue;
+          if (TRADE_SHIP_MAX_OUTGOING > 0 && (tradeSpawnCounts[id] | 0) >= TRADE_SHIP_MAX_OUTGOING) break;
 
           const c = ((st.count | 0) > 0 ? (st.count | 0) : 1) | 0;
           for (let slot = 0; slot < c; slot++) {
+            if (TRADE_SHIP_MAX_OUTGOING > 0 && (tradeSpawnCounts[id] | 0) >= TRADE_SHIP_MAX_OUTGOING) break;
             const baseKey = String(st.id || ((st.x | 0) + "," + (st.y | 0)));
             let slotKeys = st._navySlotKeys;
             if (!Array.isArray(slotKeys) || slotKeys.length < c || String(st._navySlotKeyBase || "") !== baseKey) {
@@ -474,34 +490,29 @@ export function installNavy(World) {
             const ok = this._navySpawnTradeShipFromPortSlot(id, st, slot, key);
             if (ok && ok.ok) {
               shipsByKey.add(key);
+              tradeSpawnCounts[id] = (tradeSpawnCounts[id] | 0) + 1;
             }
           }
         }
       }
 
       // Update per-nation ship counts (used by AI dispatch + UI).
+      const shipsByCompForAi = this._navyTickShipsByCompForAi || (this._navyTickShipsByCompForAi = new Map());
+      shipsByCompForAi.clear();
       if (this._tradeShipCount) this._tradeShipCount.fill(0);
       if (this._warShipCount) this._warShipCount.fill(0);
       if (this._transportCount) this._transportCount.fill(0);
       for (let i = 0; i < ships.length; i++) {
         const s = ships[i];
         if (!s) continue;
-        const o = (s.owner | 0);
-        if (o <= 0) continue;
-        const k = String(s.kind || "");
-        if (k === "trade") this._tradeShipCount[o] = (this._tradeShipCount[o] | 0) + 1;
-        else if (k === "war") this._warShipCount[o] = (this._warShipCount[o] | 0) + 1;
-        else if (k === "transport") this._transportCount[o] = (this._transportCount[o] | 0) + 1;
-      }
-
-      // Bucket current ships by water component for AI naval threat scans.
-      const shipsByCompForAi = this._navyTickShipsByCompForAi || (this._navyTickShipsByCompForAi = new Map());
-      shipsByCompForAi.clear();
-      for (let i = 0; i < ships.length; i++) {
-        const s = ships[i];
-        if (!s) continue;
         const k = String(s.kind || "");
         if (k !== "trade" && k !== "transport" && k !== "war") continue;
+        const o = (s.owner | 0);
+        if (o > 0) {
+          if (k === "trade") this._tradeShipCount[o] = (this._tradeShipCount[o] | 0) + 1;
+          else if (k === "war") this._warShipCount[o] = (this._warShipCount[o] | 0) + 1;
+          else if (k === "transport") this._transportCount[o] = (this._transportCount[o] | 0) + 1;
+        }
 
         let c = (s.comp | 0);
         if (!c && this._navyIsWater((s.cx | 0), (s.cy | 0))) {

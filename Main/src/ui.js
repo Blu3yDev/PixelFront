@@ -21,6 +21,11 @@ export function createHUD() {
 
   // Top HUD
   const gameTimer = must("gameTimer");
+  const gameDate = document.createElement("div");
+  gameDate.id = "gameDate";
+  gameDate.className = "panel ui-interactive gameDate topTimer";
+  gameDate.setAttribute("aria-label", "In-game date");
+  hud.appendChild(gameDate);
   const btnPause = must("btnPause");
   const btnLeaveGame = must("btnLeaveGame");
   const btnSettings = must("btnSettings");
@@ -121,7 +126,16 @@ export function createHUD() {
     else img.addEventListener("load", process, { once: true });
   };
   setPauseButtonA11y(false);
-  for (const img of hudControlIcons) trimHudIconWhitespace(img);
+  const scheduleHudIconTrim = (img) => {
+    if (!img) return;
+    const run = () => trimHudIconWhitespace(img);
+    if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(run, { timeout: 1200 });
+      return;
+    }
+    window.setTimeout(run, 0);
+  };
+  for (const img of hudControlIcons) scheduleHudIconTrim(img);
 
   // Dock
   const dock = must("events");
@@ -212,6 +226,8 @@ export function createHUD() {
   const statInfCap = must("statInfCap");
   const statInfDelta = must("statInfDelta");
   const statStabilityVal = must("statStabilityVal");
+  const statResearchVal = maybe("statResearchVal");
+  const statResearchDelta = maybe("statResearchDelta");
 
   // Selected
   const selectedCard = must("selectedCard");
@@ -242,6 +258,7 @@ export function createHUD() {
     barracks: "Increases troop cap and training speed",
     defence_post: "Boosts defence in a nearby radius (stacks)",
     coastal_rig: "Ocean-only oil platform. Supplies Oil for naval and airborne logistics",
+    research_lab: "Generates Research Points and unlocks long-term national upgrades",
     missile_silo: "Builds and launches strategic warheads",
     abm_launcher: "Intercepts incoming missiles in a local radius",
     airbase: "Supports airborne operations and transport plane launches"
@@ -266,6 +283,7 @@ export function createHUD() {
   const btnDefencePost = must("btnDefencePost");
   const btnPort = must("btnPort");
   const btnCoastalRig = must("btnCoastalRig");
+  const btnResearchLab = must("btnResearchLab");
   const btnMissileSilo = must("btnMissileSilo");
   const btnAbmLauncher = must("btnAbmLauncher");
   const btnAirbase = must("btnAirbase");
@@ -321,6 +339,7 @@ export function createHUD() {
   let dockOpsLastCount = -1;
   const dockOpsExpanded = new Set();
   let alliesRenderSig = "";
+  let selectedRenderSig = "";
   const eventRowCache = new Map();
   const opItemCache = new Map();
   const allyRowCache = new Map();
@@ -741,6 +760,7 @@ export function createHUD() {
     defence_post: { el: btnDefencePost, name: "Defence Post", costEl: null },
     port: { el: btnPort, name: "Port", costEl: null },
     coastal_rig: { el: btnCoastalRig, name: "Coastal Rig", costEl: null },
+    research_lab: { el: btnResearchLab, name: "Research Lab", costEl: null },
     missile_silo: { el: btnMissileSilo, name: "Missile Silo", costEl: null },
     abm_launcher: { el: btnAbmLauncher, name: "ABM Launcher", costEl: null },
     airbase: { el: btnAirbase, name: "Airbase", costEl: null }
@@ -801,6 +821,7 @@ export function createHUD() {
     { el: btnDefencePost, type: "defence_post" },
     { el: btnPort, type: "port" },
     { el: btnCoastalRig, type: "coastal_rig" },
+    { el: btnResearchLab, type: "research_lab" },
     { el: btnMissileSilo, type: "missile_silo" },
     { el: btnAbmLauncher, type: "abm_launcher" },
     { el: btnAirbase, type: "airbase" }
@@ -808,6 +829,11 @@ export function createHUD() {
 
   for (const b of buildBtns) {
     b.el.addEventListener("click", () => {
+      const lockState = buildLockState[b.type] || { locked: false, reason: "" };
+      if (lockState.locked) {
+        showActionWarning(lockState.reason || `${title(b.type)} is locked.`);
+        return;
+      }
       setBuildMode(buildMode === b.type ? null : b.type);
       if (cbBuildMode) cbBuildMode(buildMode);
     });
@@ -818,7 +844,7 @@ export function createHUD() {
   }
 
   // Keep the latest costs in UI to show in the build-mode label.
-  const lastBuildCosts = { city: 0, factory: 0, barracks: 0, defence_post: 0, port: 0, coastal_rig: 0, missile_silo: 0, abm_launcher: 0, airbase: 0 };
+  const lastBuildCosts = { city: 0, factory: 0, barracks: 0, defence_post: 0, port: 0, coastal_rig: 0, research_lab: 0, missile_silo: 0, abm_launcher: 0, airbase: 0 };
   let lastPlayerGold = 0;
   const lastBuildResourceCosts = {
     city: { food: 0, steel: 0, oil: 0 },
@@ -827,12 +853,17 @@ export function createHUD() {
     defence_post: { food: 0, steel: 0, oil: 0 },
     port: { food: 0, steel: 0, oil: 0 },
     coastal_rig: { food: 0, steel: 0, oil: 0 },
+    research_lab: { food: 0, steel: 0, oil: 0 },
     missile_silo: { food: 0, steel: 0, oil: 0 },
     abm_launcher: { food: 0, steel: 0, oil: 0 },
     airbase: { food: 0, steel: 0, oil: 0 }
   };
-  const lastBuildOilUpkeep = { city: 0, factory: 0, barracks: 0, defence_post: 0, port: 0, coastal_rig: 0, missile_silo: 0, abm_launcher: 0, airbase: 0 };
+  const lastBuildOilUpkeep = { city: 0, factory: 0, barracks: 0, defence_post: 0, port: 0, coastal_rig: 0, research_lab: 0, missile_silo: 0, abm_launcher: 0, airbase: 0 };
   let lastPlayerResources = { food: 0, steel: 0, oil: 0 };
+  const buildLockState = Object.create(null);
+  for (const key of Object.keys(buildBtnMeta)) {
+    buildLockState[key] = { locked: false, reason: "" };
+  }
 
   function normalizeResourceBundle(bundleRaw) {
     const bundle = (bundleRaw && typeof bundleRaw === "object") ? bundleRaw : {};
@@ -844,6 +875,7 @@ export function createHUD() {
   }
 
   function canAffordBuildType(type) {
+    if (buildLockState[type]?.locked) return false;
     const goldCost = Math.max(0, Number(lastBuildCosts[type]) || 0);
     if (lastPlayerGold < goldCost) return false;
     const bundle = normalizeResourceBundle(lastBuildResourceCosts[type]);
@@ -875,10 +907,14 @@ export function createHUD() {
   function renderBuildTooltip(type) {
     const meta = buildBtnMeta[type];
     if (!meta) return;
+    const lockState = buildLockState[type] || { locked: false, reason: "" };
     const bundle = normalizeResourceBundle(lastBuildResourceCosts[type]);
     const afford = getBuildAffordState(type);
     const oilUpkeep = Math.max(0, Number(lastBuildOilUpkeep[type]) || 0);
     buildHoverTitle.textContent = meta.name || title(type) || "Structure";
+    buildHoverSub.textContent = lockState.locked
+      ? String(lockState.reason || "Locked until researched.")
+      : "Construction requirements";
     const values = {
       gold: Math.max(0, Number(lastBuildCosts[type]) || 0),
       food: bundle.food,
@@ -893,7 +929,7 @@ export function createHUD() {
       valueEl.textContent = resource === "oil" ? fmtTooltipOilUpkeep(values[resource]) : fmtCompact(values[resource]);
       const missing = resource === "oil"
         ? (oilUpkeep > 0 && lastPlayerResources.oil + 0.00001 < oilUpkeep)
-        : !afford[resource];
+        : (lockState.locked || !afford[resource]);
       valueEl.classList.toggle("isMissing", missing);
     }
   }
@@ -933,6 +969,18 @@ export function createHUD() {
   window.addEventListener("scroll", () => {
     if (activeBuildTooltipType) positionBuildTooltip(activeBuildTooltipType);
   }, true);
+
+  function applyBuildLockVisual(type) {
+    const meta = buildBtnMeta[type];
+    if (!meta?.el) return;
+    const lockState = buildLockState[type] || { locked: false, reason: "" };
+    const isRuleDisabled = meta.el.classList.contains("isDisabledByRule") || !!meta.el.disabled;
+    meta.el.classList.toggle("isLockedByResearch", !!lockState.locked);
+    meta.el.setAttribute("aria-disabled", lockState.locked ? "true" : "false");
+    if (!isRuleDisabled) {
+      meta.el.title = lockState.locked ? String(lockState.reason || "Locked until researched.") : "";
+    }
+  }
 
   function refreshBuildModeLabel() {
     if (!buildMode) {
@@ -1141,6 +1189,8 @@ export function createHUD() {
       inf: infVal,
       pop: popVal,
       structs,
+      structItems: new Map(),
+      dataSig: "",
       closeBtn,
       resizeHandle
     };
@@ -1148,6 +1198,14 @@ export function createHUD() {
 
   function applyIntelData(panelRef, data) {
     if (!panelRef || !data) return;
+    const structs = Array.isArray(data.structures) ? data.structures : [];
+    let sig = `${String(data.name || "Nation Intel")}|${String(data.meta || "")}|${Math.max(0, Math.floor(Number(data.landOwned) || 0))}|${Number.isFinite(Number(data.landPct)) ? Number(data.landPct).toFixed(1) : ""}|${Math.max(0, Math.floor(Number(data.gold) || 0))}|${String(data.populationText || "0")}|${typeof data.infantryText === "string" ? data.infantryText : Math.max(0, Math.floor(Number(data.infantry) || 0))}|${structs.length}|`;
+    for (let i = 0; i < structs.length; i++) {
+      const s = structs[i];
+      sig += `${String(s?.type || "")}:${Math.max(0, Math.floor(Number(s?.count) || 0))}|`;
+    }
+    if (panelRef.dataSig === sig) return;
+    panelRef.dataSig = sig;
 
     panelRef.title.textContent = String(data.name || "Nation Intel");
     panelRef.meta.textContent = String(data.meta || "");
@@ -1166,8 +1224,6 @@ export function createHUD() {
 
     panelRef.pop.textContent = String(data.populationText || "0");
 
-    panelRef.structs.innerHTML = "";
-    const structs = Array.isArray(data.structures) ? data.structures : [];
     const iconFor = {
       capital: "/Structures/capital.png",
       city: "/Structures/city.png",
@@ -1175,32 +1231,46 @@ export function createHUD() {
       barracks: "/Structures/barracks.png",
       defence_post: "/Structures/defence_post.png",
       port: "/Structures/port.png",
+      research_lab: "/Structures/research_lab.png",
       missile_silo: "/Structures/missile_silo.png",
       abm_launcher: "/Structures/abm_launcher.png",
       airbase: "/Structures/airbase.png"
     };
 
+    const liveTypes = new Set();
+    const frag = document.createDocumentFragment();
     for (const s of structs) {
       const type = String(s?.type || "");
       const count = Math.max(0, Math.floor(Number(s?.count) || 0));
-      const icon = iconFor[type] || "";
+      liveTypes.add(type);
 
-      const item = document.createElement("div");
-      item.className = "intelStruct" + (count <= 0 ? " isZero" : "");
+      let itemRef = panelRef.structItems.get(type);
+      if (!itemRef) {
+        const item = document.createElement("div");
+        const img = document.createElement("img");
+        img.alt = "";
+        const val = document.createElement("div");
+        val.className = "intelStructCount";
+        item.appendChild(img);
+        item.appendChild(val);
+        itemRef = { item, img, val };
+        panelRef.structItems.set(type, itemRef);
+      }
 
-      const img = document.createElement("img");
-      img.alt = "";
-      img.src = icon;
-      if (s?.label) img.title = String(s.label);
-
-      const val = document.createElement("div");
-      val.className = "intelStructCount";
-      val.textContent = fmtCompact(count);
-
-      item.appendChild(img);
-      item.appendChild(val);
-      panelRef.structs.appendChild(item);
+      itemRef.item.className = "intelStruct" + (count <= 0 ? " isZero" : "");
+      itemRef.img.src = iconFor[type] || "";
+      itemRef.img.title = s?.label ? String(s.label) : "";
+      itemRef.val.textContent = fmtCompact(count);
+      frag.appendChild(itemRef.item);
     }
+
+    for (const [type, itemRef] of panelRef.structItems) {
+      if (liveTypes.has(type)) continue;
+      if (itemRef?.item?.parentNode === panelRef.structs) panelRef.structs.removeChild(itemRef.item);
+      panelRef.structItems.delete(type);
+    }
+
+    panelRef.structs.replaceChildren(frag);
   }
 
   function startIntelDrag(panel, mode, e) {
@@ -1453,6 +1523,17 @@ export function createHUD() {
     hideCtx();
   });
 
+  function buildEventList(events, limit, filterFn) {
+    if (!Array.isArray(events) || events.length <= 0) return [];
+    const out = [];
+    for (let i = events.length - 1; i >= 0 && out.length < limit; i--) {
+      const ev = events[i];
+      if (!filterFn(ev)) continue;
+      out.push(ev);
+    }
+    return out;
+  }
+
   const api = {
     getEventsVisible: () => eventsVisible,
     setEventsVisible: (v) => {
@@ -1465,7 +1546,7 @@ export function createHUD() {
       const scope = (String(scopeRaw || eventsScope).toLowerCase() === "global") ? "global" : "nationwide";
       const limit = scope === "global" ? 140 : 60;
       const filterFn = scope === "global" ? isGlobalRelevantEvent : isPlayerRelevantEvent;
-      const arr = Array.isArray(events) ? events.filter(filterFn).slice(-limit) : [];
+      const arr = buildEventList(events, limit, filterFn);
       const nowSec = Math.floor(Number(now) || 0);
       let hasPendingExpiry = false;
       let sig = `${scope}|${arr.length}|`;
@@ -1787,6 +1868,14 @@ export function createHUD() {
       statInfCap.textContent = fmtCompact(p.troopsCap || 0);
       statInfDelta.textContent = fmtDelta(p.infantryPS || 0);
 
+      if (statResearchVal) statResearchVal.textContent = fmtCompact(p.researchPoints || 0);
+      if (statResearchDelta) {
+        const rpd = Number(p.researchPointsPerDay) || 0;
+        const sign = rpd >= 0 ? "+" : "-";
+        statResearchDelta.textContent = `${sign}${Math.abs(rpd).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} RP/day`;
+        statResearchDelta.classList.toggle("isNegative", rpd < 0);
+      }
+
       const stabilityPct = clampInt(Math.round(Number(p.stabilityPct ?? (clamp01(p.stabilityFactor ?? 1) * 100))), 0, 100);
       const warExhaustionPct = clampInt(Math.round(Number(p.warExhaustionPct ?? (clamp01(p.warExhaustion ?? 0) * 100))), 0, 100);
       statStabilityVal.textContent = `${stabilityPct}%`;
@@ -1821,7 +1910,7 @@ export function createHUD() {
     clearBuildMode: () => setBuildMode(null),
 
     // Update build costs displayed on the build buttons and in the build-mode label.
-    // Expects: { city, factory, barracks, defence_post, port, coastal_rig, missile_silo, abm_launcher, airbase, playerGold, playerResources, resourceCosts, oilUpkeep }
+    // Expects: { city, factory, barracks, defence_post, port, coastal_rig, research_lab, missile_silo, abm_launcher, airbase, playerGold, playerResources, resourceCosts, oilUpkeep }
     setBuildCosts: (m) => {
       const obj = m || {};
       lastPlayerGold = Math.max(0, Math.floor(Number(obj.playerGold) || 0));
@@ -1836,7 +1925,8 @@ export function createHUD() {
         const meta = buildBtnMeta[k];
         if (meta && meta.costEl) meta.costEl.textContent = cost > 0 ? `${fmtCompact(cost)}g` : "";
         if (meta && meta.el) {
-          meta.el.classList.toggle("isUnaffordable", !canAffordBuildType(k));
+          meta.el.classList.toggle("isUnaffordable", !buildLockState[k]?.locked && !canAffordBuildType(k));
+          applyBuildLockVisual(k);
         }
       }
 
@@ -1847,8 +1937,42 @@ export function createHUD() {
 
       refreshBuildModeLabel();
     },
+    setBuildLocks: (locksRaw) => {
+      const locks = (locksRaw && typeof locksRaw === "object") ? locksRaw : {};
+      for (const k of Object.keys(buildBtnMeta)) {
+        const entry = locks[k];
+        buildLockState[k] = {
+          locked: !!entry?.locked,
+          reason: String(entry?.reason || "")
+        };
+        applyBuildLockVisual(k);
+      }
+      if (buildMode && buildLockState[buildMode]?.locked) {
+        setBuildMode(null);
+      } else {
+        refreshBuildModeLabel();
+      }
+      if (activeBuildTooltipType) {
+        renderBuildTooltip(activeBuildTooltipType);
+        positionBuildTooltip(activeBuildTooltipType);
+      }
+    },
 
     setSelectedStructure: (sel) => {
+      if (!sel) {
+        if (selectedRenderSig === "__none__") return;
+        selectedRenderSig = "__none__";
+      }
+      const actions = Array.isArray(sel?.actions) ? sel.actions : [];
+      if (sel) {
+        let sig = `${sel.id ?? 0}|${sel.entityKind || "structure"}|${String(sel.name || "")}|${String(sel.desc || "")}|${String(sel.ownerName || "")}|${String(sel.type || "")}|${sel.level ?? ""}|${String(sel.metaText || "")}|${sel.progress ? `${Math.round(clamp01(Number(sel.progress.progress01) || 0) * 100)}:${String(sel.progress.label || "")}` : "-"}|${actions.length}|`;
+        for (let i = 0; i < actions.length; i++) {
+          const a = actions[i];
+          sig += `${String(a?.id || "")}:${String(a?.label || "")}:${a?.disabled ? 1 : 0}:${String(a?.style || "")}|`;
+        }
+        if (sig === selectedRenderSig) return;
+        selectedRenderSig = sig;
+      }
       if (!sel) {
         selectedCard.hidden = true;
         selectedName.textContent = "None";
@@ -1884,7 +2008,6 @@ export function createHUD() {
       }
 
       selectedActions.innerHTML = "";
-      const actions = Array.isArray(sel.actions) ? sel.actions : [];
       if (!actions.length) return;
       for (const a of actions) {
         const btn = document.createElement("button");
@@ -2133,6 +2256,7 @@ export function createHUD() {
     isSettingsOpen: () => !settingsModal.hidden,
     setGameTime: (sec) => {
       gameTimer.textContent = fmtClock(sec);
+      gameDate.textContent = fmtCalendarDate(sec);
     },
     setSpawnProgress: (status) => {
       if (!spawnProgressWrap || !spawnProgressFill || !spawnProgressText) return;
@@ -2348,6 +2472,27 @@ function fmtClock(sec) {
   const s = t % 60;
   if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function fmtCalendarDate(sec) {
+  const elapsedDays = Math.max(0, Math.floor(Number(sec) || 0));
+  const date = new Date(Date.UTC(2000, 0, 1 + elapsedDays));
+  const month = date.toLocaleString("en-US", { month: "long", timeZone: "UTC" });
+  const day = date.getUTCDate();
+  const year = date.getUTCFullYear();
+  return `${month} ${day}${fmtOrdinal(day)}, ${year}`;
+}
+
+function fmtOrdinal(day) {
+  const n = Math.abs(Math.floor(Number(day) || 0));
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return "th";
+  switch (n % 10) {
+    case 1: return "st";
+    case 2: return "nd";
+    case 3: return "rd";
+    default: return "th";
+  }
 }
 
 function title(s) {

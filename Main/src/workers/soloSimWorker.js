@@ -414,6 +414,11 @@ function applyLiveMatchModifiersStep(dt) {
 
   const applyInfiniteResources = (nation) => {
     if (!nation || !nation.alive) return;
+    if (rules.infiniteResources) {
+      nation.food = Math.max(Number(nation.food) || 0, 1_000_000_000);
+      nation.steel = Math.max(Number(nation.steel) || 0, 1_000_000_000);
+      nation.oil = Math.max(Number(nation.oil) || 0, 1_000_000_000);
+    }
     if (rules.infiniteGold) {
       nation.gold = Math.max(Number(nation.gold) || 0, 1_000_000_000);
     }

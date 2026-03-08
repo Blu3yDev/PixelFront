@@ -41,6 +41,7 @@ import {
   STRUCT_COST_MAX,
   STRUCT_STACK_MAX,
   TRANSPORT_HP,
+  TRANSPORT_MAX_ACTIVE,
   TRANSPORT_SPEED_CPS,
   WARSHIP_LAUNCH_GOLD_COST,
   WARSHIP_MAX_ACTIVE,
@@ -64,6 +65,7 @@ import {
   installMap,
   installNuke,
   installNavy,
+  installResearch,
   installResources,
   installStructures,
   installTrading,
@@ -77,6 +79,19 @@ const LABEL_STEP_S = 1.0;
 const PLAYER_OP_SMOOTH_STEP_TICKS = 1; // 60 Hz while player-driven ops are active
 const AI_OP_SMOOTH_MAX_STEP_TICKS = 1; // Parity: run non-player ops at the same cadence as player ops.
 const toStepTicks = (seconds) => Math.max(1, Math.round(Math.max(0, Number(seconds) || 0) * SIM_HZ));
+const STRUCTURE_COUNT_CACHE_TYPES = Object.freeze([
+  "capital",
+  "city",
+  "factory",
+  "barracks",
+  "defence_post",
+  "port",
+  "coastal_rig",
+  "research_lab",
+  "missile_silo",
+  "abm_launcher",
+  "airbase"
+]);
 
 class CompactBorderSet {
   constructor(world, ownerId) {
@@ -227,6 +242,7 @@ export class World {
     this._structureById = new Map();
     this._structAt = new Int32Array(n);
     this._nextStructId = 1;
+    this._coastalRigStructures = [];
     this.nukeFlights = [];
     this._nextNukeFlightId = 1;
     this._activeSiloBuildIds = new Set();
@@ -415,6 +431,16 @@ export class World {
     this._cityCount = new Int32Array(this._nationCount + 1);
     this._factoryCount = new Int32Array(this._nationCount + 1);
     this._barracksCount = new Int32Array(this._nationCount + 1);
+    this._researchLabCount = new Int32Array(this._nationCount + 1);
+    this._coastalRigCount = new Int32Array(this._nationCount + 1);
+    this._oilUpkeepStructuresByOwner = new Array(this._nationCount + 1);
+    for (let i = 0; i <= this._nationCount; i++) this._oilUpkeepStructuresByOwner[i] = [];
+    this._structureEconomyCacheReady = false;
+    this._structureCountCacheByType = Object.create(null);
+    for (let i = 0; i < STRUCTURE_COUNT_CACHE_TYPES.length; i++) {
+      this._structureCountCacheByType[STRUCTURE_COUNT_CACHE_TYPES[i]] = new Int32Array(this._nationCount + 1);
+    }
+    this._structureCountCacheDirty = true;
 
     // Rebel pocket tracking (low stability)
     this._lowStabTime = new Float32Array(this._nationCount + 1);
@@ -1044,6 +1070,9 @@ export class World {
         this._tickResources(this._economyStepS);
       }
       this._tickEconomy(this._economyStepS);
+      if (typeof this._tickResearch === "function") {
+        this._tickResearch(this._economyStepS);
+      }
       this._tickReinforcements(this._economyStepS);
       if (typeof this._tickTrading === "function") {
         this._tickTrading(this._economyStepS);
@@ -1557,6 +1586,62 @@ export class World {
     return this._labelPos[ownerId] || null;
   }
 
+  _markStructureCountCacheDirty() {
+    this._structureCountCacheDirty = true;
+  }
+
+  _ensureStructureCountCache() {
+    if (!this._structureCountCacheDirty) return;
+
+    const cache = this._structureCountCacheByType || (this._structureCountCacheByType = Object.create(null));
+    for (let i = 0; i < STRUCTURE_COUNT_CACHE_TYPES.length; i++) {
+      const type = STRUCTURE_COUNT_CACHE_TYPES[i];
+      let arr = cache[type];
+      if (!(arr instanceof Int32Array) || arr.length !== (this._nationCount + 1)) {
+        arr = cache[type] = new Int32Array(this._nationCount + 1);
+      } else {
+        arr.fill(0);
+      }
+    }
+
+    const structures = this.structures || [];
+    for (let i = 0; i < structures.length; i++) {
+      const st = structures[i];
+      if (!st) continue;
+      const ownerId = st.owner | 0;
+      if (ownerId <= 0 || ownerId > (this._nationCount | 0)) continue;
+      const type = String(st.type || "");
+      const arr = cache[type];
+      if (!arr) continue;
+      arr[ownerId] += Math.max(0, this._structureTotalCount(st) | 0);
+    }
+
+    this._structureCountCacheDirty = false;
+  }
+
+  getStructureCount(typeRaw, ownerId) {
+    const owner = ownerId | 0;
+    if (owner <= 0 || owner > (this._nationCount | 0)) return 0;
+    const type = String(typeRaw || "");
+    if (!type) return 0;
+    this._ensureStructureCountCache();
+    const arr = this._structureCountCacheByType?.[type];
+    return arr ? Math.max(0, arr[owner] | 0) : 0;
+  }
+
+  getNationStructureCounts(ownerId) {
+    const owner = ownerId | 0;
+    if (owner <= 0 || owner > (this._nationCount | 0)) return null;
+    this._ensureStructureCountCache();
+    const out = Object.create(null);
+    for (let i = 0; i < STRUCTURE_COUNT_CACHE_TYPES.length; i++) {
+      const type = STRUCTURE_COUNT_CACHE_TYPES[i];
+      const arr = this._structureCountCacheByType?.[type];
+      out[type] = arr ? Math.max(0, arr[owner] | 0) : 0;
+    }
+    return out;
+  }
+
   getStructureAt(x, y) {
     const ix = x | 0, iy = y | 0;
     if (ix < 0 || iy < 0 || ix >= this.w || iy >= this.h) return null;
@@ -1566,10 +1651,14 @@ export class World {
     return this._structureById.get(sid) || null;
   }
 
-  _getStructureBuildTimeS(type) {
+  _getStructureBuildTimeS(type, ownerId = 0) {
     const t = String(type || "");
     const fromConfig = Number(STRUCT_BUILD_TIME_S?.[t]);
-    if (Number.isFinite(fromConfig) && fromConfig > 0) return fromConfig;
+    const base = (Number.isFinite(fromConfig) && fromConfig > 0) ? fromConfig : 6;
+    const multiplier = (typeof this.getResearchStructureBuildTimeMultiplier === "function")
+      ? Math.max(0.55, Number(this.getResearchStructureBuildTimeMultiplier(ownerId)) || 1)
+      : 1;
+    if (Number.isFinite(base) && base > 0) return Math.max(0.1, base * multiplier);
     return 6;
   }
 
@@ -1649,7 +1738,7 @@ export class World {
     if (!d) return;
     d.pendingCount = Math.max(0, (d.pendingCount | 0) + add);
     if (!(d.buildRemainingS > 0.00001) || !(d.buildTotalS > 0.00001)) {
-      d.buildTotalS = Math.max(0.1, Number(this._getStructureBuildTimeS(st.type)) || 0.1);
+      d.buildTotalS = Math.max(0.1, Number(this._getStructureBuildTimeS(st.type, st.owner | 0)) || 0.1);
       d.buildRemainingS = d.buildTotalS;
     }
     if (this._activeStructureBuildIds) this._activeStructureBuildIds.add(st.id | 0);
@@ -2317,6 +2406,9 @@ export class World {
     const atomic = this._nukeSpec("atomic");
     const hydrogen = this._nukeSpec("hydrogen");
     if (!atomic || !hydrogen) return { ok: false, reason: "Warhead data unavailable." };
+    const bonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(oid) : null;
+    const atomicUnlocked = !!bonuses?.unlockAtomic;
+    const hydrogenUnlocked = !!bonuses?.unlockHydrogen;
 
     const d = this._ensureMissileSiloData(st);
     const buildingType = String(d.buildType || "");
@@ -2351,7 +2443,8 @@ export class World {
         buildTimeS: Math.max(0, Number(atomic.buildTimeS) || 0),
         blastRadiusTiles: Math.max(0, Number(atomic.blastRadiusTiles) || 0),
         launchStabilityPenaltyPct: Math.max(0, Number(atomic.launchStabilityPenaltyPct) || 0),
-        affordable: gold >= (Math.max(0, Number(atomic.buildGoldCost) || 0))
+        unlocked: atomicUnlocked,
+        affordable: atomicUnlocked && (gold >= (Math.max(0, Number(atomic.buildGoldCost) || 0)))
       },
       hydrogen: {
         type: hydrogen.key,
@@ -2360,7 +2453,8 @@ export class World {
         buildTimeS: Math.max(0, Number(hydrogen.buildTimeS) || 0),
         blastRadiusTiles: Math.max(0, Number(hydrogen.blastRadiusTiles) || 0),
         launchStabilityPenaltyPct: Math.max(0, Number(hydrogen.launchStabilityPenaltyPct) || 0),
-        affordable: gold >= (Math.max(0, Number(hydrogen.buildGoldCost) || 0))
+        unlocked: hydrogenUnlocked,
+        affordable: hydrogenUnlocked && (gold >= (Math.max(0, Number(hydrogen.buildGoldCost) || 0)))
       }
     };
   }
@@ -2382,6 +2476,9 @@ export class World {
 
     const spec = this._nukeSpec(warheadType);
     if (!spec) return { ok: false, reason: "Unknown warhead type." };
+    const bonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(oid) : null;
+    if (spec.key === "atomic" && !bonuses?.unlockAtomic) return { ok: false, reason: "Research Atomic Bombs first." };
+    if (spec.key === "hydrogen" && !bonuses?.unlockHydrogen) return { ok: false, reason: "Research Hydrogen Bombs first." };
 
     const nat = this.nation[oid];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
@@ -2653,7 +2750,7 @@ export class World {
         }
 
         if (!(d.buildRemainingS > 0.00001) || !(d.buildTotalS > 0.00001)) {
-          d.buildTotalS = Math.max(0.1, Number(this._getStructureBuildTimeS(st.type)) || 0.1);
+          d.buildTotalS = Math.max(0.1, Number(this._getStructureBuildTimeS(st.type, st.owner | 0)) || 0.1);
           d.buildRemainingS = d.buildTotalS;
         }
 
@@ -2674,7 +2771,7 @@ export class World {
         }
 
         if ((d.pendingCount | 0) > 0) {
-          d.buildTotalS = Math.max(0.1, Number(this._getStructureBuildTimeS(st.type)) || 0.1);
+          d.buildTotalS = Math.max(0.1, Number(this._getStructureBuildTimeS(st.type, st.owner | 0)) || 0.1);
           d.buildRemainingS = d.buildTotalS;
         } else {
           d.buildRemainingS = 0;
@@ -3176,6 +3273,11 @@ export class World {
   _onStructureRemoved(st) {
     if (!st) return;
     this._defencePostCacheReady = false;
+    this._markStructureCountCacheDirty();
+    if (String(st.type || "") === "coastal_rig" && Array.isArray(this._coastalRigStructures) && this._coastalRigStructures.length > 0) {
+      const idx = this._coastalRigStructures.indexOf(st);
+      if (idx >= 0) this._coastalRigStructures.splice(idx, 1);
+    }
     const sid = st.id | 0;
     const ownerId = st.owner | 0;
     this._activeSiloBuildIds.delete(sid);
@@ -3235,17 +3337,11 @@ export class World {
 
     const step = Math.max(0, Number(STRUCT_COST_LINEAR_STEP) || 0);
     const oid = ownerId | 0;
-    let count = 0;
-    // Count existing owned structures of this type to apply linear price growth.
-    for (let i = 0; i < this.structures.length; i++) {
-      const st = this.structures[i];
-      if (!st || st.owner !== oid || st.type !== t) continue;
-      count += this._structureTotalCount(st);
-    }
+    const count = this.getStructureCount(t, oid);
 
     // First owned structure of a type remains at base price.
     // Scaling starts from the second one.
-    const scaledCount = Math.max(0, count - 1);
+    const scaledCount = Math.max(0, count);
     const raw = Math.round(base * (1 + step * scaledCount));
     const capped = Math.min(STRUCT_COST_MAX, raw);
     return Math.max(base, capped | 0);
@@ -3264,6 +3360,10 @@ placeStructure(type, ownerId, x, y) {
   const idx = iy * this.w + ix;
   const nat = this.nation[oid];
   if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
+  if (t === "missile_silo") {
+    const bonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(oid) : null;
+    if (!bonuses?.unlockMissileSilo) return { ok: false, reason: "Research Nuclear Research to unlock Missile Silos." };
+  }
 
   if (t === "coastal_rig") {
     if (this.land[idx]) return { ok: false, reason: "Coastal Rigs must be built on ocean tiles." };
@@ -3306,7 +3406,10 @@ placeStructure(type, ownerId, x, y) {
         if (t === "airbase") return { ok: false, reason: "Airbase cannot be stacked." };
         if (t === "coastal_rig") return { ok: false, reason: "Coastal Rig cannot be stacked." };
         const cur = this._structureTotalCount(stHere);
-        if (cur >= STRUCT_STACK_MAX) return { ok: false, reason: `Max stack (${STRUCT_STACK_MAX}) reached.` };
+        const stackLimit = (typeof this.getStructureStackLimit === "function")
+          ? Math.max(1, this.getStructureStackLimit(oid, t) | 0)
+          : (STRUCT_STACK_MAX | 0);
+        if (cur >= stackLimit) return { ok: false, reason: `Max stack (${stackLimit}) reached.` };
 
         const cost = this.getBuildCost(t, oid) | 0;
         if (nat.gold < cost) return { ok: false, reason: `Not enough gold (need ${cost}).` };
@@ -3329,6 +3432,7 @@ placeStructure(type, ownerId, x, y) {
         }
 
         stHere.count = cur + 1;
+        this._markStructureCountCacheDirty();
         this._queueStructureConstruction(stHere, 1);
         if (oid === OWNER.PLAYER) {
           this._pushEvent(`${this._nameOf(oid)} started ${title(t)} construction (x${stHere.count}).`);
@@ -3654,6 +3758,8 @@ placeStructure(type, ownerId, x, y) {
     if (this.gameOver) return { ok: false, reason: "Game over." };
     const nat = this.nation[A];
     if (!nat || !nat.alive) return { ok: false, reason: "Invalid nation." };
+    const bonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(A) : null;
+    if (!bonuses?.unlockWarships) return { ok: false, reason: "Research Warships in Infrastructure first." };
     const oilNeed = (typeof this.getOilCostForAction === "function")
       ? Math.max(0, Number(this.getOilCostForAction("warship")) || 0)
       : 0;
@@ -4074,6 +4180,17 @@ placeStructure(type, ownerId, x, y) {
 
     const compId = (route.compId | 0) || (this._navyWaterCompAt((route.spawn.x | 0), (route.spawn.y | 0)) | 0);
     if (!compId) return { ok: false, reason: "No valid ocean route." };
+
+    if (TRANSPORT_MAX_ACTIVE > 0) {
+      let activeTransports = 0;
+      for (let i = 0; i < this.ships.length; i++) {
+        const s = this.ships[i];
+        if (s && s.kind === "transport" && ((s.owner | 0) === A)) activeTransports++;
+      }
+      if (activeTransports >= TRANSPORT_MAX_ACTIVE) {
+        return { ok: false, reason: `Transport cap reached (${TRANSPORT_MAX_ACTIVE}).` };
+      }
+    }
 
     if (missionKind === "war") {
       if (missionDefender <= 0 || missionDefender === A) return { ok: false, reason: "Invalid war target." };
@@ -4898,6 +5015,7 @@ placeStructure(type, ownerId, x, y) {
 // Attach subsystem methods onto World.prototype (keeps world.js focused on API + tick order).
 installMap(World);
 installResources(World);
+installResearch(World);
 installEconomy(World);
 installTrading(World);
 installStructures(World);

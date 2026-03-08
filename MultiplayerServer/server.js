@@ -12,11 +12,11 @@ const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 6
 const STARTED_EMPTY_LOBBY_TTL_MS = Math.max(60_000, Number(process.env.STARTED_EMPTY_LOBBY_TTL_MS || (1000 * 60 * 20)));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
 const MB = 1024 * 1024;
-const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(32, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 50));
+const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(28, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 42));
 const MATCH_SNAPSHOT_INTERVAL_MIN_MS = Math.max(24, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MIN_MS || 34));
 const MATCH_SNAPSHOT_INTERVAL_MAX_MS = Math.max(
   MATCH_SNAPSHOT_INTERVAL_MIN_MS,
-  Number(process.env.MATCH_SNAPSHOT_INTERVAL_MAX_MS || 140)
+  Number(process.env.MATCH_SNAPSHOT_INTERVAL_MAX_MS || 120)
 );
 const MATCH_MAX_STEPS_PER_PUMP = Math.max(2, Number(process.env.MATCH_MAX_STEPS_PER_PUMP || 8));
 const MATCH_PUMP_INTERVAL_MS = Math.max(10, Number(process.env.MATCH_PUMP_INTERVAL_MS || 16));
@@ -33,7 +33,7 @@ const MATCH_TILE_DELTA_DRAIN_MIN = Math.max(500, Number(process.env.MATCH_TILE_D
 const MATCH_TILE_DELTA_BACKLOG_CAP = Math.max(MATCH_TILE_DELTA_CAP, Number(process.env.MATCH_TILE_DELTA_BACKLOG_CAP || 180000));
 const MATCH_OWNER_SWEEP_CHUNK_MIN = Math.max(300, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MIN || 700));
 const MATCH_OWNER_SWEEP_CHUNK_MAX = Math.max(MATCH_OWNER_SWEEP_CHUNK_MIN, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MAX || 2600));
-const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(40, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 68));
+const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(34, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 56));
 const MATCH_ENTITY_DELTA_INTERVAL_MAX_MS = Math.max(
   MATCH_ENTITY_DELTA_INTERVAL_MS,
   Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MAX_MS || 280)
@@ -43,8 +43,8 @@ const MATCH_STRUCTURE_DELTA_INTERVAL_MAX_MS = Math.max(
   MATCH_STRUCTURE_DELTA_INTERVAL_MS,
   Number(process.env.MATCH_STRUCTURE_DELTA_INTERVAL_MAX_MS || 1100)
 );
-const MATCH_OPERATIONS_DELTA_INTERVAL_MS = Math.max(36, Number(process.env.MATCH_OPERATIONS_DELTA_INTERVAL_MS || 68));
-const MATCH_MOBILE_DELTA_INTERVAL_MS = Math.max(30, Number(process.env.MATCH_MOBILE_DELTA_INTERVAL_MS || 56));
+const MATCH_OPERATIONS_DELTA_INTERVAL_MS = Math.max(30, Number(process.env.MATCH_OPERATIONS_DELTA_INTERVAL_MS || 52));
+const MATCH_MOBILE_DELTA_INTERVAL_MS = Math.max(24, Number(process.env.MATCH_MOBILE_DELTA_INTERVAL_MS || 46));
 const MATCH_BACKPRESSURE_SOFT_BYTES = Math.max(64 * 1024, Number(process.env.MATCH_BACKPRESSURE_SOFT_BYTES || (384 * 1024)));
 const MATCH_BACKPRESSURE_HARD_BYTES = Math.max(MATCH_BACKPRESSURE_SOFT_BYTES, Number(process.env.MATCH_BACKPRESSURE_HARD_BYTES || (2 * 1024 * 1024)));
 const MATCH_BACKPRESSURE_DISCONNECT_MS = Math.max(1000, Number(process.env.MATCH_BACKPRESSURE_DISCONNECT_MS || 8000));
@@ -2569,23 +2569,46 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
   );
   const loadScale = Math.max(1, Number(runtime?.snapshotLoadScale) || 1);
   const playerLoadScale = Math.max(1, Number(runtime?.playerLoadScale) || 1);
+  const tileBacklogSize = Math.max(0, Number(runtime?.tileDeltaBacklog?.size) | 0);
+  const territoryPriority = !fullSync && (
+    !!runtime?.ownerSweepActive ||
+    !!runtime?.ownerDeltaOverflowed ||
+    tileBacklogSize > Math.max(MATCH_TILE_DELTA_CAP, MATCH_TILE_DELTA_DRAIN_MIN * 2)
+  );
   const metaScale = loadScale > 1 ? Math.min(2.35, 1 + ((loadScale - 1) * 0.70)) : 1;
   const pressureScale = (Number(runtime?.backpressuredSockets) | 0) > 0 ? 1.18 : 1;
   const lobbyScale = playerLoadScale > 1 ? Math.min(2.2, 1 + ((playerLoadScale - 1) * 0.62)) : 1;
+  const territoryMetaScale = territoryPriority
+    ? Math.min(
+        4.4,
+        1.9 +
+        ((tileBacklogSize / Math.max(1, MATCH_TILE_DELTA_CAP)) * 0.22) +
+        (runtime?.ownerSweepActive ? 0.55 : 0)
+      )
+    : 1;
   const statsIntervalMs = Math.max(220, Math.round(MATCH_SNAPSHOT_STATS_INTERVAL_MS * metaScale * pressureScale * lobbyScale));
   const relationsIntervalMs = Math.max(360, Math.round(MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS * Math.min(3.4, metaScale * 1.38) * pressureScale * lobbyScale));
   const eventsIntervalMs = Math.max(520, Math.round(MATCH_SNAPSHOT_EVENTS_INTERVAL_MS * Math.min(3.0, metaScale * 1.24) * pressureScale * lobbyScale));
   const statsDueMs = now - (Number(runtime.lastStatsSnapshotAtMs) || 0);
   const relationsDueMs = now - (Number(runtime.lastRelationsSnapshotAtMs) || 0);
   const eventsDueMs = now - (Number(runtime.lastEventsSnapshotAtMs) || 0);
+  const statsTargetMs = territoryPriority
+    ? Math.round(statsIntervalMs * territoryMetaScale)
+    : (loadShedding ? Math.round(statsIntervalMs * 1.9) : statsIntervalMs);
+  const relationsTargetMs = territoryPriority
+    ? Math.round(relationsIntervalMs * Math.max(2.4, territoryMetaScale * 1.12))
+    : (loadShedding ? Math.round(relationsIntervalMs * 2.1) : relationsIntervalMs);
+  const eventsTargetMs = territoryPriority
+    ? Math.round(eventsIntervalMs * Math.max(2.6, territoryMetaScale * 1.10))
+    : (loadShedding ? Math.round(eventsIntervalMs * 2.1) : eventsIntervalMs);
   const includeStats = fullSync || (
-    statsDueMs >= (loadShedding ? Math.round(statsIntervalMs * 1.9) : statsIntervalMs)
+    statsDueMs >= statsTargetMs
   );
   const includeRelations = fullSync || (!spawnActive && (
-    relationsDueMs >= (loadShedding ? Math.round(relationsIntervalMs * 2.1) : relationsIntervalMs)
+    relationsDueMs >= relationsTargetMs
   ));
   const includeEvents = fullSync || (!spawnActive && (
-    eventsDueMs >= (loadShedding ? Math.round(eventsIntervalMs * 2.1) : eventsIntervalMs)
+    eventsDueMs >= eventsTargetMs
   ));
   const packet = {
     type: fullSync ? "full_sync" : "snapshot_delta",
@@ -2666,7 +2689,7 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
     } else if (maxBufferedSeen >= MATCH_BACKPRESSURE_SOFT_BYTES) {
       tileDeltaCap = Math.round(tileDeltaCap * 0.78);
     }
-    const backlogSize = Math.max(0, Number(runtime?.tileDeltaBacklog?.size) | 0);
+    const backlogSize = tileBacklogSize;
     if (backlogSize > (MATCH_TILE_DELTA_CAP * 6)) {
       tileDeltaCap = Math.max(tileDeltaCap, MATCH_TILE_DELTA_CAP);
     } else if (backlogSize > (MATCH_TILE_DELTA_CAP * 3)) {
@@ -2674,6 +2697,10 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
     }
     if ((Number(runtime?.backpressuredSockets) | 0) <= 0 && avgSnapshotBytes < MATCH_SNAPSHOT_TARGET_BYTES && backlogSize > (MATCH_TILE_DELTA_CAP * 2)) {
       tileDeltaCap = Math.round(tileDeltaCap * 1.15);
+    }
+    if (territoryPriority && (Number(runtime?.backpressuredSockets) | 0) <= 0) {
+      if (avgSnapshotBytes < MATCH_SNAPSHOT_TARGET_BYTES) tileDeltaCap = Math.round(tileDeltaCap * 1.16);
+      else if (avgSnapshotBytes < MATCH_SNAPSHOT_TARGET_BYTES_HARD && backlogSize > MATCH_TILE_DELTA_CAP) tileDeltaCap = Math.round(tileDeltaCap * 1.08);
     }
     tileDeltaCap = Math.max(MATCH_TILE_DELTA_DRAIN_MIN, Math.min(MATCH_TILE_DELTA_CAP, tileDeltaCap));
     packet.changedTiles = drainRuntimeTileDeltaBacklog(runtime, tileDeltaCap);

@@ -1083,7 +1083,7 @@ export function installBorders(World) {
       if (!this._suspendOwnerVersionBump) {
         // Defer and dedupe pixel updates to reduce repeated work under mass captures.
         this._queuePixelWrite(idx);
-        if (!syncApplying && !this._headlessAuthoritative) {
+        if (!this._headlessAuthoritative) {
           if (x > 0) this._queuePixelWrite(idx - 1);
           if (x + 1 < w) this._queuePixelWrite(idx + 1);
           if (y > 0) this._queuePixelWrite(idx - w);

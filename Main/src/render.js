@@ -1708,7 +1708,16 @@ export class Renderer {
 
   _consumeOwnerDirtyFrame(ownerVersion) {
     const ver = ownerVersion | 0;
-    if ((this._ownerDirtyFrameVersion | 0) === ver && this._ownerDirtyFrameDelta) {
+    const ownerDirtyPending = Array.isArray(this.world?._ownerDirtyPending)
+      ? (this.world._ownerDirtyPending.length | 0)
+      : 0;
+    const ownerDirtyOverflow = !!this.world?._ownerDirtyOverflow;
+    if (
+      (this._ownerDirtyFrameVersion | 0) === ver &&
+      this._ownerDirtyFrameDelta &&
+      ownerDirtyPending <= 0 &&
+      !ownerDirtyOverflow
+    ) {
       return this._ownerDirtyFrameDelta;
     }
 

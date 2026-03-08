@@ -292,6 +292,26 @@
                   <p id="mmMpLobbyStatus" class="mainMenuConfigSummary">Waiting for host to start.</p>
                 </div>
               </section>
+
+              <section class="mainMenuPanel mainMenuPanelUpdates" aria-label="Main menu update log">
+                <div class="mainMenuCard mainMenuUpdateCard">
+                  <header class="mainMenuCardHeader">
+                    <div>
+                      <div id="mmUpdatesEyebrow" class="mainMenuUpdateEyebrow">Command Bulletin</div>
+                      <h2 id="mmUpdatesTitle" class="mainMenuCardTitle">Update Log</h2>
+                    </div>
+                    <button id="mmUpdatesBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+
+                  <section class="mainMenuUpdateHero" aria-label="Latest update">
+                    <span id="mmUpdatesHeroBadge" class="mainMenuUpdateBadge">Pre-Release</span>
+                    <h3 id="mmUpdatesHeroTitle" class="mainMenuUpdateHeroTitle">v1.7 Headline Placeholder</h3>
+                    <p id="mmUpdatesHeroCopy" class="mainMenuUpdateHeroCopy">Replace this short summary with the main thing players should know about the current build.</p>
+                  </section>
+
+                  <div id="mmUpdatesTimeline" class="mainMenuUpdateTimeline" aria-label="Update log entries"></div>
+                </div>
+              </section>
             </div>
           </div>
         </section>
@@ -314,6 +334,10 @@
             </button>
             <button id="mmFlagBtn" class="mainMenuQuickBtn" type="button" aria-label="Country Color">
               <img class="mainMenuQuickBtnIcon" src="/UI_Icons/Main-Menu/CountryColor.png" alt="" aria-hidden="true" draggable="false" />
+            </button>
+            <button id="mmUpdateLogBtn" class="mainMenuQuickBtn isUpdateLog" type="button" aria-label="Update Log">
+              <span id="mmUpdateLogBtnLabel" class="mainMenuQuickBtnLabel">Update Log</span>
+              <span id="mmUpdateLogBtnSub" class="mainMenuQuickBtnSub">v1.7</span>
             </button>
             <button id="mmBookBtn" class="mainMenuQuickBtn" type="button" aria-label="Guide">
               <img class="mainMenuQuickBtnIcon" src="/UI_Icons/Main-Menu/GuideBook.png" alt="" aria-hidden="true" draggable="false" />

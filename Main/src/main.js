@@ -9,6 +9,7 @@ import { createClient } from "@supabase/supabase-js";
 import { createMainMenuAuthController } from "./auth/mainMenuAuth.js";
 import { createPlayerStatsService } from "./auth/playerStatsService.js";
 import { createMainMenuLeaderboardController } from "./auth/mainMenuLeaderboard.js";
+import { renderMainMenuUpdateLog } from "./mainMenuUpdates.js";
 import {
   FLAG_LAYOUT_OPTIONS,
   FLAG_MAX_STROKES,
@@ -1286,6 +1287,8 @@ let multiplayerLastAppliedTick = 0;
 let multiplayerAwaitingFullSync = false;
 let multiplayerLastSnapshotAtMs = 0;
 let multiplayerLastFullSyncRequestAtMs = 0;
+let multiplayerLastFullSyncReceivedAtMs = 0;
+let multiplayerFullSyncRequestBackoffLevel = 0;
 let multiplayerLastHashMismatchAtMs = 0;
 let multiplayerConnectFailureStreak = 0;
 let multiplayerSessionProbeInFlight = false;
@@ -1314,6 +1317,7 @@ const multiplayerStanceCommandState = {
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 5000;
 const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 2300;
+const MULTIPLAYER_FULL_SYNC_REQUEST_MAX_COOLDOWN_MS = 12000;
 const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 2200;
 const MULTIPLAYER_HUD_STATUS_COOLDOWN_MS = 1200;
 const MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS = 240;
@@ -1324,13 +1328,13 @@ const MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS = 16;
 const MULTIPLAYER_CATCHUP_HARD_GAP_TICKS = 34;
 const MULTIPLAYER_CATCHUP_STICKY_MS = 240;
 const MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS = 160;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 3.2;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 5.0;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 8.0;
-const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 8;
-const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 16;
-const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 30;
-const MULTIPLAYER_DRAIN_MIN_INTERVAL_MS = 6;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 4.6;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 7.2;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 11.5;
+const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 12;
+const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 24;
+const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 42;
+const MULTIPLAYER_DRAIN_MIN_INTERVAL_MS = 4;
 const MULTIPLAYER_DEFERRED_UI_SYNC_INTERVAL_MS = 90;
 const MULTIPLAYER_HASH_VERIFY_MIN_INTERVAL_MS = 900;
 const MULTIPLAYER_HASH_VERIFY_MAX_WORLD_TILES = 1_800_000;
@@ -1348,8 +1352,8 @@ const MULTIPLAYER_STANCE_CMD_INTERVAL_MS = 44;
 const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   setAttackRatio: Object.freeze({ cmd: "set_attack_ratio" }),
   setMobilization: Object.freeze({ cmd: "set_mobilization" }),
-  startNeutral: Object.freeze({ cmd: "start_neutral" }),
-  startWarFocus: Object.freeze({ cmd: "start_war_focus" }),
+  startNeutral: Object.freeze({ cmd: "start_neutral", predictLocal: true }),
+  startWarFocus: Object.freeze({ cmd: "start_war_focus", predictLocal: true }),
   regenerate: Object.freeze({ cmd: "regenerate_match", serializeArgs: serializeMultiplayerRegenerateArgs }),
   cancelAllOperations: Object.freeze({ cmd: "cancel_all_operations" }),
   cancelOperation: Object.freeze({ cmd: "cancel_operation" }),
@@ -1368,8 +1372,8 @@ const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   cancelShip: Object.freeze({ cmd: "cancel_ship" }),
   startMissileSiloBuild: Object.freeze({ cmd: "start_missile_silo_build" }),
   startAirbaseTransportBuild: Object.freeze({ cmd: "start_airbase_transport_build" }),
-  startBurstExpand: Object.freeze({ cmd: "start_burst_expand" }),
-  startBurstAttack: Object.freeze({ cmd: "start_burst_attack" }),
+  startBurstExpand: Object.freeze({ cmd: "start_burst_expand", predictLocal: true }),
+  startBurstAttack: Object.freeze({ cmd: "start_burst_attack", predictLocal: true }),
   pickSpawn: Object.freeze({ cmd: "pick_spawn" }),
   launchMissileWarhead: Object.freeze({ cmd: "launch_missile_warhead" }),
   launchAirbaseTransport: Object.freeze({ cmd: "launch_airbase_transport" }),
@@ -1438,6 +1442,8 @@ function resetMultiplayerSnapshotState() {
   multiplayerDroppedDeltaPackets = false;
   multiplayerLastSnapshotAtMs = Date.now();
   multiplayerLastFullSyncRequestAtMs = 0;
+  multiplayerLastFullSyncReceivedAtMs = 0;
+  multiplayerFullSyncRequestBackoffLevel = 0;
   multiplayerLastHashMismatchAtMs = 0;
   multiplayerNextHudStatusAtMs = 0;
   multiplayerLastLabelRecomputeAtMs = 0;
@@ -1797,6 +1803,16 @@ function installMultiplayerWorldSync(worldRef) {
           }
         } catch {
           // Keep spawn pick resilient; authoritative snapshots will correct local state.
+        }
+      }
+      if (rule.predictLocal) {
+        try {
+          const predicted = original(...args);
+          if (predicted && typeof predicted === "object") {
+            return { ...predicted, predicted: true };
+          }
+        } catch {
+          // Keep local command prediction resilient; authoritative snapshots will correct local state.
         }
       }
       return multiplayerQueuedReturnForMethod(methodName, args);
@@ -2510,8 +2526,18 @@ function requestMultiplayerFullSync(reasonRaw = "") {
   const ws = multiplayerMatchSocket;
   if (!isMultiplayerMatchEnabled() || !ws || ws.readyState !== WebSocket.OPEN) return false;
   const now = Date.now();
-  if (now < multiplayerLastFullSyncRequestAtMs) return false;
-  multiplayerLastFullSyncRequestAtMs = now + MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS;
+  const awaitingMultiplier = multiplayerAwaitingFullSync ? 1.85 : 1;
+  const recentFullSyncMultiplier = (multiplayerLastFullSyncReceivedAtMs > 0 && (now - multiplayerLastFullSyncReceivedAtMs) < 1800)
+    ? 1.35
+    : 1;
+  const streakMultiplier = Math.min(4.5, 1 + (Math.max(0, multiplayerFullSyncRequestBackoffLevel | 0) * 0.75));
+  const cooldownMs = Math.min(
+    MULTIPLAYER_FULL_SYNC_REQUEST_MAX_COOLDOWN_MS,
+    Math.round(MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS * awaitingMultiplier * recentFullSyncMultiplier * streakMultiplier)
+  );
+  if ((now - multiplayerLastFullSyncRequestAtMs) < cooldownMs) return false;
+  multiplayerLastFullSyncRequestAtMs = now;
+  multiplayerFullSyncRequestBackoffLevel = Math.min(6, (multiplayerFullSyncRequestBackoffLevel | 0) + 1);
   const reason = String(reasonRaw || "manual").trim() || "manual";
   let localHash = "";
   try {
@@ -2649,6 +2675,8 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
   if (isFullSync) {
     multiplayerHasAuthoritativeSync = true;
     multiplayerDroppedDeltaPackets = false;
+    multiplayerLastFullSyncReceivedAtMs = multiplayerLastSnapshotAtMs;
+    multiplayerFullSyncRequestBackoffLevel = 0;
   }
 
   if (activeMultiplayerSession) {
@@ -3058,10 +3086,16 @@ function drainMultiplayerSnapshotBuffer(force = false) {
   }
 
   if (!progressed) {
+    const bufferedCatchupPackets = multiplayerSnapshotBuffer.size | 0;
+    const bufferHasCatchupHeadroom = bufferedCatchupPackets >= Math.min(24, Math.max(6, Math.ceil(gapTicks * 0.35)));
     if ((multiplayerLatestServerTick | 0) > (multiplayerLastAppliedTick | 0) && (now - multiplayerLastSnapshotAtMs) > MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS) {
       setMultiplayerHudStatus("Server delayed... attempting resync.");
       requestMultiplayerFullSync("gap_or_stale");
-    } else if (gapTicks >= MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS && (now - multiplayerLastSnapshotAtMs) > 1400) {
+    } else if (
+      gapTicks >= MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS &&
+      !bufferHasCatchupHeadroom &&
+      (now - multiplayerLastSnapshotAtMs) > 2400
+    ) {
       setMultiplayerHudStatus("Large desync detected... requesting full sync.");
       requestMultiplayerFullSync("large_gap_catchup");
     }
@@ -6228,6 +6262,7 @@ function createMainMenuController(options = null) {
   const settingsDoneBtn = document.getElementById("mmSettingsDoneBtn");
   const configBackBtn = document.getElementById("mmConfigBackBtn");
   const mapEditorBackBtn = document.getElementById("mmMapEditorBackBtn");
+  const updatesBackBtn = document.getElementById("mmUpdatesBackBtn");
   const multiplayerBackBtn = document.getElementById("mmMultiplayerBackBtn");
   const createLobbyBtn = document.getElementById("mmCreateLobbyBtn");
   const joinLobbyBtn = document.getElementById("mmJoinLobbyBtn");
@@ -6256,7 +6291,16 @@ function createMainMenuController(options = null) {
   const playLobbyCount = document.getElementById("mmPlayLobbyCount");
   const libraryBtn = document.getElementById("mmLibraryBtn");
   const flagBtn = document.getElementById("mmFlagBtn");
+  const updateLogBtn = document.getElementById("mmUpdateLogBtn");
+  const updateLogBtnLabel = document.getElementById("mmUpdateLogBtnLabel");
+  const updateLogBtnSub = document.getElementById("mmUpdateLogBtnSub");
   const bookBtn = document.getElementById("mmBookBtn");
+  const updatesEyebrow = document.getElementById("mmUpdatesEyebrow");
+  const updatesTitle = document.getElementById("mmUpdatesTitle");
+  const updatesHeroBadge = document.getElementById("mmUpdatesHeroBadge");
+  const updatesHeroTitle = document.getElementById("mmUpdatesHeroTitle");
+  const updatesHeroCopy = document.getElementById("mmUpdatesHeroCopy");
+  const updatesTimeline = document.getElementById("mmUpdatesTimeline");
   const nameInput = document.getElementById("mmNameInput");
   const flagPreview = document.getElementById("mmPlayerFlagPreview");
   const countryColorInput = document.getElementById("mmCountryColorInput");
@@ -6434,7 +6478,8 @@ function createMainMenuController(options = null) {
     mapeditor: "Build and paint your custom map.",
     multiplayer: "Create or join a private multiplayer lobby.",
     mpjoin: "Enter a lobby code to join.",
-    mplobby: "Lobby connected. Waiting for host."
+    mplobby: "Lobby connected. Waiting for host.",
+    updates: "Review the latest build notes and announcements."
   });
   let currentView = "home";
   let playMenuMode = "singleplayer";
@@ -6527,6 +6572,17 @@ function createMainMenuController(options = null) {
       // Ignore localStorage failures.
     }
   };
+
+  renderMainMenuUpdateLog({
+    eyebrow: updatesEyebrow,
+    title: updatesTitle,
+    heroBadge: updatesHeroBadge,
+    heroTitle: updatesHeroTitle,
+    heroSummary: updatesHeroCopy,
+    timeline: updatesTimeline,
+    quickLabel: updateLogBtnLabel,
+    quickVersion: updateLogBtnSub
+  });
 
   const playerNameFromInput = () => {
     const raw = nameInput ? String(nameInput.value || "").trim() : "";
@@ -7993,7 +8049,8 @@ function createMainMenuController(options = null) {
       view === "mapeditor" ||
       view === "multiplayer" ||
       view === "mpjoin" ||
-      view === "mplobby"
+      view === "mplobby" ||
+      view === "updates"
     ) ? view : "home";
     const prev = currentView;
     currentView = next;
@@ -9366,6 +9423,7 @@ function createMainMenuController(options = null) {
   setHint(mapEditorBtn, "Open advanced map editor.");
   setHint(libraryBtn, "Browse and publish community maps.");
   setHint(flagBtn, "Set your country color.");
+  setHint(updateLogBtn, "Open the latest update log.");
   setHint(bookBtn, "Guide is empty for now.");
 
   if (playBtn) {
@@ -9399,6 +9457,16 @@ function createMainMenuController(options = null) {
   }
   if (mapEditorBackBtn) {
     mapEditorBackBtn.addEventListener("click", () => {
+      setView("home");
+    });
+  }
+  if (updateLogBtn) {
+    updateLogBtn.addEventListener("click", () => {
+      setView("updates");
+    });
+  }
+  if (updatesBackBtn) {
+    updatesBackBtn.addEventListener("click", () => {
       setView("home");
     });
   }
@@ -12417,6 +12485,10 @@ function boot() {
     if (multiplayerClockActive && soloSimulationWorker) {
       stopSoloSimulationWorker();
     }
+    if (multiplayerClockActive && Array.isArray(world?._pixelWriteList) && world._pixelWriteList.length > 0) {
+      flushMultiplayerPixelWrites(world, 0);
+      if (world._pixelWriteList.length > 0) world.dirty = true;
+    }
     const soloSimulationOffloading = !!(soloSimulationWorker && !multiplayerClockActive);
     const soloSimulationActive = !!(soloSimulationOffloading && soloSimulationReady);
     if (paused || multiplayerClockActive || soloSimulationOffloading) {
@@ -14809,22 +14881,9 @@ function syncEventsCardHeightWithBuildCard() {
   if (!buildWidth) return;
 
   const buildLeft = Math.round(buildRect.left - hudRect.left);
-  const buildRight = buildLeft + buildWidth;
   const bottom = Math.max(0, Math.round(hudRect.bottom - buildRect.top));
-
-  const quickRect = quickLaunchBar?.getBoundingClientRect?.();
-  const quickWidth = Math.max(
-    180,
-    Math.min(
-      buildWidth,
-      Math.round(
-        Number(quickRect?.width) ||
-        Number.parseFloat(getComputedStyle(quickLaunchBar || buildCard).width) ||
-        520
-      )
-    )
-  );
-  const quickLeft = Math.max(buildLeft, buildRight - quickWidth);
+  const quickWidth = buildWidth;
+  const quickLeft = buildLeft;
 
   if (quickLaunchBar) {
     quickLaunchBar.style.left = `${quickLeft}px`;

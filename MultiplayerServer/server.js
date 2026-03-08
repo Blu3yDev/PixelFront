@@ -3208,6 +3208,30 @@ function isHostOnlyMatchCommand(cmdRaw) {
   return cmd === "regenerate_match";
 }
 
+function shouldPushPostCommandFullSync(cmdRaw) {
+  const cmd = String(cmdRaw || "").trim().toLowerCase();
+  return (
+    cmd === "pick_spawn" ||
+    cmd === "start_neutral" ||
+    cmd === "start_war_focus" ||
+    cmd === "start_burst_expand" ||
+    cmd === "start_burst_attack" ||
+    cmd === "place_structure" ||
+    cmd === "send_warship" ||
+    cmd === "launch_missile_warhead" ||
+    cmd === "launch_airbase_transport" ||
+    cmd === "declare_war" ||
+    cmd === "request_trade_deal" ||
+    cmd === "respond_trade_request" ||
+    cmd === "cancel_trade_request" ||
+    cmd === "cancel_trade_deal" ||
+    cmd === "request_ceasefire" ||
+    cmd === "request_alliance" ||
+    cmd === "respond_ceasefire_request" ||
+    cmd === "respond_alliance_request"
+  );
+}
+
 function applyAuthoritativeCommand(world, cmdRaw, argsRaw) {
   if (!world) return { ok: false, reason: "World unavailable." };
   const cmd = String(cmdRaw || "").trim();
@@ -3417,11 +3441,20 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
   // Push an authoritative delta immediately after accepted input to reduce visible input latency.
   try {
     const cmd = String(input.cmd || "").trim().toLowerCase();
+    const allowActorFastSync = (
+      shouldPushPostCommandFullSync(cmd) &&
+      ws &&
+      ws.readyState === WebSocket.OPEN &&
+      socketBufferedAmount(ws) <= MATCH_BACKPRESSURE_RECOVERY_SYNC_BUFFER_BYTES
+    );
     if (cmd === "regenerate_match") {
       applyPostRegenerateRuntimeState(lobby, runtime, args);
       return;
     }
     if (cmd === "pick_spawn") {
+      if (allowActorFastSync) {
+        sendFullSyncToSession(lobby, runtime, sessionId, ws, `post_cmd_${cmd}`);
+      }
       runtime.lastSnapshotAtMs = nowMs();
       broadcastSnapshotDelta(lobby, runtime);
       return;
@@ -3434,6 +3467,9 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
     const area = Math.max(1, worldW * worldH);
     const aiCount = Math.max(0, Number(runtime?.world?._ai?.length || 0) - 1);
     const heavyWorld = area > MATCH_RUNTIME_SAFE_MAX_WORLD_TILES || aiCount > MATCH_RUNTIME_SAFE_MAX_AI_COUNT;
+    if (allowActorFastSync && !heavyWorld) {
+      sendFullSyncToSession(lobby, runtime, sessionId, ws, `post_cmd_${cmd}`);
+    }
     if (!heavyWorld && backlogMs <= (stepMs * 1.5)) {
       runtime.lastSnapshotAtMs = nowMs();
       broadcastSnapshotDelta(lobby, runtime);

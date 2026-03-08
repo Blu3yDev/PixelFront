@@ -6063,6 +6063,12 @@ async function syncAccountProfileForStats(displayNameRaw = "") {
   }
 }
 
+function isExpectedStatsAuthMiss(err) {
+  const name = String(err?.name || "").trim().toLowerCase();
+  const message = String(err?.message || "").trim().toLowerCase();
+  return name.includes("authsessionmissingerror") || message.includes("auth session missing");
+}
+
 async function beginAccountMatchSessionTracking(displayNameRaw = "", modeRaw = "") {
   if (!playerStatsService?.enabled) return false;
   const displayName = resolvePlayerDisplayName(displayNameRaw || world?.nation?.[OWNER.PLAYER]?.name || loadMainMenuPlayerName());
@@ -6075,6 +6081,7 @@ async function beginAccountMatchSessionTracking(displayNameRaw = "", modeRaw = "
       matchMode: mode
     });
   } catch (err) {
+    if (isExpectedStatsAuthMiss(err)) return false;
     console.warn("[Stats] Failed to start tracked match session.", err);
     return false;
   }
@@ -7417,7 +7424,6 @@ function createMainMenuController(options = null) {
     if (msg.includes("session is not part of this lobby")) return true;
     if (msg.includes("missing sessionid")) return true;
     if (msg.includes("invalid lobby code")) return true;
-    if (status === 400 && msg.includes("request failed")) return true;
     return false;
   };
 

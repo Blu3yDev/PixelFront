@@ -12,6 +12,7 @@ import {
   ENV_RAIN,
   ENV_TIME,
   MAP_MODE,
+  RADAR_STATION_RADIUS_TILES,
   STRUCTURE_HIDE_ZOOM
 } from "./game/config.js";
 import { mulberry32 } from "./game/utils.js";
@@ -160,10 +161,15 @@ function randRange(rng, a, b) {
   return a + (b - a) * r;
 }
 
+function fogDarkenChannel(value, floor, mix) {
+  return clamp(lerp(Number(value) || 0, floor, mix), 0, 255) | 0;
+}
+
 function hasIntelAdjacency(world, ownerId) {
   if (ownerId === OWNER.PLAYER) return true;
-  if (!world || typeof world._bordersTouch !== "function") return false;
-  return world._bordersTouch(OWNER.PLAYER, ownerId | 0);
+  if (!world) return false;
+  if (typeof world._bordersTouch === "function" && world._bordersTouch(OWNER.PLAYER, ownerId | 0)) return true;
+  return !!world.isNationInRadarCoverage?.(OWNER.PLAYER, ownerId | 0);
 }
 
 function estimatePopulationText(world, ownerId, pop) {
@@ -327,12 +333,19 @@ export class Renderer {
     this._relationLayoutCache = new Map();
     this._relationLayoutCacheVersion = -1;
     this._relationLayoutCacheLastPruneAt = 0;
+    this._playerVisibleNationIds = new Set([OWNER.PLAYER]);
+    this._playerVisionOwnerVersion = -1;
+    this._playerVisionRadarVersion = -1;
+    this._playerVisionNationCount = -1;
+    this._playerVisionSignature = String(OWNER.PLAYER);
+    this._playerFogForceWorldRebuild = true;
+    this._playerFogForcePoliticalRebuild = true;
 
     this.dpr = 1;
     const earthPixelMode = String(world?._mapMode || "").toLowerCase() === MAP_MODE.WORLD_MAP;
     this.zoomLevels = earthPixelMode
-      ? [0.5, 1, 2, 3, 4, 6, 8, 10, 12]
-      : [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 10, 12];
+      ? [0.5, 1, 2, 3, 4, 6, 8, 10, 12, 14]
+      : [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 10, 12, 14];
     this.zoom = earthPixelMode ? 2 : 1.5;
     this.zoomTarget = this.zoom;
     this.zoomSmooth = 14; // higher = snappier smoothing
@@ -355,6 +368,7 @@ export class Renderer {
       showHeatmap: false,
       nukeDestinationOverlay: true,
       politicalMapMode: false,
+      fogOfWarMode: "simple",
       atmosphereEnabled: true,
       reduceMotion: false,
       lowPowerOverlays: false
@@ -378,6 +392,7 @@ export class Renderer {
     //   capital.png, city.png, factory.png, barracks.png
     this.structureIconMaxPx = 44; // bigger + constant size (no zoom scaling)
     this._structureIconCache = new Map();
+    this._structureIconTrimCache = new Map();
     this._structureIconFiles = Object.freeze({
       capital: "capital.png",
       city: "city.png",
@@ -389,6 +404,7 @@ export class Renderer {
       research_lab: "research_lab.png",
       missile_silo: "missile_silo.png",
       abm_launcher: "abm_launcher.png",
+      radar_station: "radar_station.png",
       airbase: "airbase.png"
     });
     this._nukeCenterIcon = null;
@@ -521,10 +537,16 @@ export class Renderer {
   // Main entry called by main.js
   draw(arg) { this.render(arg); }
 
+  _isAdvancedFogOfWarEnabled() {
+    const mode = String(this._clientSettings?.fogOfWarMode || "simple").trim().toLowerCase();
+    return mode === "advanced";
+  }
+
   setClientSettings(next) {
     const src = (next && typeof next === "object") ? next : {};
     const prev = this._clientSettings || {};
     const prevAtmosphere = Boolean(prev.atmosphereEnabled ?? true);
+    const prevFogMode = String(prev.fogOfWarMode || "simple").trim().toLowerCase();
 
     this._clientSettings = {
       showAIStructures: Object.prototype.hasOwnProperty.call(src, "showAIStructures")
@@ -554,6 +576,9 @@ export class Renderer {
       politicalMapMode: Object.prototype.hasOwnProperty.call(src, "politicalMapMode")
         ? Boolean(src.politicalMapMode)
         : Boolean(prev.politicalMapMode ?? false),
+      fogOfWarMode: Object.prototype.hasOwnProperty.call(src, "fogOfWarMode")
+        ? (String(src.fogOfWarMode || "simple").trim().toLowerCase() === "advanced" ? "advanced" : "simple")
+        : (String(prev.fogOfWarMode || "simple").trim().toLowerCase() === "advanced" ? "advanced" : "simple"),
       atmosphereEnabled: Object.prototype.hasOwnProperty.call(src, "atmosphereEnabled")
         ? Boolean(src.atmosphereEnabled)
         : Boolean(prev.atmosphereEnabled ?? true),
@@ -577,6 +602,13 @@ export class Renderer {
     this.hatchDirty = true;
     this._highlightDirty = true;
     this._politicalDirty = true;
+
+    if (String(this._clientSettings.fogOfWarMode || "simple") !== prevFogMode) {
+      this._playerFogForceWorldRebuild = true;
+      this._playerFogForcePoliticalRebuild = true;
+      this.worldDirty = true;
+      this._politicalFullRebuildRow = 0;
+    }
 
     if (!this._clientSettings.showHeatmap) this._releaseLayerSurface("heatmap");
     if (this._clientSettings.showHatchOverlay === false) {
@@ -1279,7 +1311,7 @@ export class Renderer {
     if (!file) return null;
 
     let img = this._structureIconCache.get(key);
-    if (img) return img;
+    if (img) return this._getTrimmedStructureIcon(key, img);
 
     img = new Image();
     img.decoding = "async";
@@ -1293,7 +1325,89 @@ export class Renderer {
     };
     img.src = `/Structures/${file}`;
     this._structureIconCache.set(key, img);
-    return img;
+    return this._getTrimmedStructureIcon(key, img);
+  }
+
+  _getTrimmedStructureIcon(key, img) {
+    if (!img || !img.complete || img.naturalWidth <= 0 || img.naturalHeight <= 0) return img;
+
+    const trimKey = `${String(key || "")}|${img.currentSrc || img.src || ""}|${img.naturalWidth}x${img.naturalHeight}`;
+    const cached = this._structureIconTrimCache.get(trimKey);
+    if (cached) return cached;
+
+    let out = img;
+    try {
+      const w = img.naturalWidth | 0;
+      const h = img.naturalHeight | 0;
+      const srcCanvas = document.createElement("canvas");
+      srcCanvas.width = w;
+      srcCanvas.height = h;
+      const srcCtx = srcCanvas.getContext("2d", { willReadFrequently: true });
+      if (srcCtx) {
+        srcCtx.drawImage(img, 0, 0, w, h);
+        const pixels = srcCtx.getImageData(0, 0, w, h).data;
+        let minX = w;
+        let minY = h;
+        let maxX = -1;
+        let maxY = -1;
+
+        for (let y = 0; y < h; y++) {
+          const rowOffset = y * w * 4;
+          for (let x = 0; x < w; x++) {
+            if (pixels[rowOffset + (x * 4) + 3] <= 8) continue;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+
+        if (maxX >= minX && maxY >= minY) {
+          const cropW = (maxX - minX + 1) | 0;
+          const cropH = (maxY - minY + 1) | 0;
+          if (cropW > 0 && cropH > 0 && (cropW !== w || cropH !== h)) {
+            const outCanvas = document.createElement("canvas");
+            outCanvas.width = cropW;
+            outCanvas.height = cropH;
+            const outCtx = outCanvas.getContext("2d");
+            if (outCtx) {
+              outCtx.drawImage(srcCanvas, minX, minY, cropW, cropH, 0, 0, cropW, cropH);
+              out = outCanvas;
+            }
+          }
+        }
+      }
+    } catch {}
+
+    this._structureIconTrimCache.set(trimKey, out);
+    return out;
+  }
+
+  _isDrawableIcon(icon) {
+    if (!icon) return false;
+    if (icon instanceof HTMLCanvasElement) return (icon.width | 0) > 0 && (icon.height | 0) > 0;
+    return !!(icon.complete && icon.naturalWidth > 0 && icon.naturalHeight > 0);
+  }
+
+  _getDrawableIconDims(icon) {
+    if (!this._isDrawableIcon(icon)) return null;
+    if (icon instanceof HTMLCanvasElement) {
+      return { w: icon.width | 0, h: icon.height | 0 };
+    }
+    return { w: icon.naturalWidth | 0, h: icon.naturalHeight | 0 };
+  }
+
+  _drawContainedIcon(ctx, icon, x, y, boxSize) {
+    const dims = this._getDrawableIconDims(icon);
+    if (!dims || dims.w <= 0 || dims.h <= 0) return false;
+
+    const scale = Math.min((boxSize || 0) / dims.w, (boxSize || 0) / dims.h);
+    const drawW = Math.max(1, Math.round(dims.w * scale));
+    const drawH = Math.max(1, Math.round(dims.h * scale));
+    const drawX = Math.round(x + ((boxSize - drawW) * 0.5));
+    const drawY = Math.round(y + ((boxSize - drawH) * 0.5));
+    ctx.drawImage(icon, drawX, drawY, drawW, drawH);
+    return true;
   }
 
   _getShipIcon(kind) {
@@ -2950,6 +3064,7 @@ export class Renderer {
   rebuildPoliticalMap(force = false) {
     const world = this.world;
     if (!world) return;
+    this._syncPlayerVisionState();
     if (!this._ensurePoliticalSurface()) return;
 
     const w = world.w | 0;
@@ -2958,6 +3073,8 @@ export class Renderer {
     const seed = (world.seed >>> 0) || 1;
     const now = (typeof world.time === "number") ? world.time : 0;
     const lowPower = !!this._clientSettings?.lowPowerOverlays;
+    const fogForceFull = !!this._playerFogForcePoliticalRebuild;
+    if (fogForceFull) force = true;
 
     const sizeChanged =
       !this.politicalImage ||
@@ -2977,6 +3094,7 @@ export class Renderer {
     const shadeArr = world.shade || null;
     const heightArr = world.height || null;
     const seaLevel = Number.isFinite(Number(world._seaLevel)) ? (world._seaLevel | 0) : 128;
+    const visibleOwners = this._playerVisibleNationIds;
 
     // Vintage atlas palette: warm parchment land + muted sea + inked borders.
     const neutralLandLight = { r: 228, g: 214, b: 183 };
@@ -3087,6 +3205,12 @@ export class Renderer {
         b = lerp(b, borderColor.b, 0.46);
       }
 
+      if (o > OWNER.NONE && visibleOwners && !visibleOwners.has(o)) {
+        r = fogDarkenChannel(r, 12, 0.82);
+        g = fogDarkenChannel(g, 14, 0.80);
+        b = fogDarkenChannel(b, 20, 0.74);
+      }
+
       data[p + 0] = clamp(r, 0, 255) | 0;
       data[p + 1] = clamp(g, 0, 255) | 0;
       data[p + 2] = clamp(b, 0, 255) | 0;
@@ -3145,6 +3269,7 @@ export class Renderer {
       this._politicalLastOwnerVersion = ownerVersion;
       this._politicalLastSeed = seed;
       this._politicalLastRebuildT = now;
+      this._playerFogForcePoliticalRebuild = false;
       return;
     }
 
@@ -3196,6 +3321,7 @@ export class Renderer {
     this._politicalLastOwnerVersion = ownerVersion;
     this._politicalLastSeed = seed;
     this._politicalLastRebuildT = now;
+    this._playerFogForcePoliticalRebuild = false;
   }
 
   // ===== Hatch overlay (contested / newly captured) =====
@@ -3333,6 +3459,143 @@ export class Renderer {
 
   markWorldDirty() { this.worldDirty = true; }
 
+  _syncPlayerVisionState() {
+    if (!this._isAdvancedFogOfWarEnabled()) {
+      this._playerVisibleNationIds = new Set([OWNER.PLAYER]);
+      return;
+    }
+    const world = this.world;
+    if (!world) return;
+
+    const ownerVersion = world.ownerVersion | 0;
+    const radarVersion = world.getRadarCoverageVersion?.() ?? 0;
+    const nationCount = Math.max(1, Number(world._nationCount) | 0);
+    if (
+      ownerVersion === (this._playerVisionOwnerVersion | 0) &&
+      radarVersion === (this._playerVisionRadarVersion | 0) &&
+      nationCount === (this._playerVisionNationCount | 0) &&
+      this._playerVisibleNationIds instanceof Set
+    ) {
+      return;
+    }
+
+    const nextVisible = new Set([OWNER.PLAYER]);
+    if (typeof world._bordersTouch === "function") {
+      for (let id = 1; id <= nationCount; id++) {
+        if (id === OWNER.PLAYER) continue;
+        if (world._bordersTouch(OWNER.PLAYER, id, ownerVersion)) nextVisible.add(id);
+      }
+    }
+    if (typeof world.getRadarCoverageNationIds === "function") {
+      const radarVisible = world.getRadarCoverageNationIds(OWNER.PLAYER);
+      if (radarVisible && typeof radarVisible[Symbol.iterator] === "function") {
+        for (const idRaw of radarVisible) {
+          const id = idRaw | 0;
+          if (id > OWNER.NONE) nextVisible.add(id);
+        }
+      }
+    }
+
+    const nextSignature = Array.from(nextVisible).sort((a, b) => a - b).join(",");
+    if (nextSignature !== String(this._playerVisionSignature || "")) {
+      this._playerFogForceWorldRebuild = true;
+      this._playerFogForcePoliticalRebuild = true;
+      this.worldDirty = true;
+      this._politicalDirty = true;
+      this._politicalFullRebuildRow = 0;
+    }
+
+    this._playerVisibleNationIds = nextVisible;
+    this._playerVisionOwnerVersion = ownerVersion;
+    this._playerVisionRadarVersion = radarVersion;
+    this._playerVisionNationCount = nationCount;
+    this._playerVisionSignature = nextSignature;
+  }
+
+  canPlayerSeeNation(ownerIdRaw) {
+    const ownerId = ownerIdRaw | 0;
+    if (!this._isAdvancedFogOfWarEnabled()) return true;
+    if (ownerId <= OWNER.NONE) return true;
+    if (ownerId === OWNER.PLAYER) return true;
+    this._syncPlayerVisionState();
+    return !!this._playerVisibleNationIds?.has(ownerId);
+  }
+
+  canPlayerSeeStructure(st) {
+    if (!st || typeof st !== "object") return false;
+    const ownerId = st.owner | 0;
+    if (ownerId <= OWNER.NONE || ownerId === OWNER.PLAYER) return true;
+
+    const world = this.world;
+    const land = world?.land || null;
+    const x = st.x | 0;
+    const y = st.y | 0;
+    const idx = y * (world?.w | 0) + x;
+    if (land && idx >= 0 && idx < land.length && !land[idx]) return true;
+
+    return this.canPlayerSeeNation(ownerId);
+  }
+
+  _applyPlayerFogToIndex(data, idxRaw) {
+    if (!this._isAdvancedFogOfWarEnabled()) return;
+    const idx = idxRaw | 0;
+    const world = this.world;
+    const land = world?.land || null;
+    const owner = world?.owner || null;
+    const visibleOwners = this._playerVisibleNationIds;
+    if (!data || !land || !owner || !visibleOwners) return;
+    if (idx < 0 || idx >= land.length || !land[idx]) return;
+
+    const ownerId = owner[idx] | 0;
+    if (ownerId <= OWNER.NONE || visibleOwners.has(ownerId)) return;
+
+    const p = idx << 2;
+    data[p + 0] = fogDarkenChannel(data[p + 0], 10, 0.82);
+    data[p + 1] = fogDarkenChannel(data[p + 1], 12, 0.80);
+    data[p + 2] = fogDarkenChannel(data[p + 2], 18, 0.74);
+  }
+
+  _applyPlayerFogRect(data, rect) {
+    if (!this._isAdvancedFogOfWarEnabled()) return;
+    const world = this.world;
+    const land = world?.land || null;
+    const owner = world?.owner || null;
+    const visibleOwners = this._playerVisibleNationIds;
+    if (!data || !land || !owner || !visibleOwners) return;
+
+    const w = world.w | 0;
+    const h = world.h | 0;
+    if (land.length !== (w * h) || owner.length !== (w * h)) return;
+
+    const x0 = Math.max(0, rect?.x | 0);
+    const y0 = Math.max(0, rect?.y | 0);
+    const x1 = Math.min(w, x0 + (rect?.w | 0));
+    const y1 = Math.min(h, y0 + (rect?.h | 0));
+    if (x1 <= x0 || y1 <= y0) return;
+
+    for (let y = y0; y < y1; y++) {
+      let idx = y * w + x0;
+      for (let x = x0; x < x1; x++, idx++) {
+        if (!land[idx]) continue;
+        const ownerId = owner[idx] | 0;
+        if (ownerId <= OWNER.NONE || visibleOwners.has(ownerId)) continue;
+
+        const p = idx << 2;
+        data[p + 0] = fogDarkenChannel(data[p + 0], 10, 0.82);
+        data[p + 1] = fogDarkenChannel(data[p + 1], 12, 0.80);
+        data[p + 2] = fogDarkenChannel(data[p + 2], 18, 0.74);
+      }
+    }
+  }
+
+  _applyPlayerFogByIndices(data, indices) {
+    if (!this._isAdvancedFogOfWarEnabled()) return;
+    if (!data || !Array.isArray(indices) || indices.length <= 0) return;
+    for (let i = 0; i < indices.length; i++) {
+      this._applyPlayerFogToIndex(data, indices[i]);
+    }
+  }
+
   _copyPixelsRect(src, dst, worldW, rect) {
     const x0 = rect.x | 0;
     const y0 = rect.y | 0;
@@ -3428,9 +3691,12 @@ export class Renderer {
 
   // ===== Map texture generation =====
   rebuildWorldTexture(force = false) {
+    this._syncPlayerVisionState();
     const w = this.world.w | 0;
     const h = this.world.h | 0;
     const worldFlagDirty = !!this.world.dirty;
+    const fogForceFull = !!this._playerFogForceWorldRebuild;
+    if (fogForceFull) force = true;
 
     if (!this.worldImage || !this.worldImage.data || this.worldImage.data.length !== (w * h * 4)) {
       this._bindWorldImageBuffer(this.world);
@@ -3454,9 +3720,10 @@ export class Renderer {
       if (!tileFull && !dirtyRect && !hasTiles && !hasPendingBins && !force && !this.worldDirty && !worldFlagDirty) return;
 
       const rectFull = !!(dirtyRect && dirtyRect.full);
-      const fullUpload = tileFull || rectFull;
+      const fullUpload = tileFull || rectFull || fogForceFull;
       if (fullUpload) {
         if (!this._worldImageUsesViewPixels) data.set(vp);
+        this._applyPlayerFogRect(data, { x: 0, y: 0, w, h });
         this.worldCtx.putImageData(this.worldImage, 0, 0);
         this._worldPendingDirtyBins.length = 0;
         this._worldPendingDirtyMeta = null;
@@ -3469,6 +3736,7 @@ export class Renderer {
           let sparseMeta = null;
           if (!this._worldImageUsesViewPixels) {
             sparseMeta = this._copyPixelsByIndexBins(vp, data, w, h, tileItems, 6);
+            this._applyPlayerFogByIndices(data, tileItems);
           } else {
             const BIN_SHIFT = 6;
             const BIN_SIZE = 1 << BIN_SHIFT;
@@ -3516,6 +3784,7 @@ export class Renderer {
         } else {
           if (dirtyRect) {
             if (!this._worldImageUsesViewPixels) this._copyPixelsRect(vp, data, w, dirtyRect);
+            this._applyPlayerFogRect(data, dirtyRect);
             this.worldCtx.putImageData(
               this.worldImage,
               0,
@@ -3527,6 +3796,7 @@ export class Renderer {
             );
           } else {
             if (!this._worldImageUsesViewPixels) data.set(vp);
+            this._applyPlayerFogRect(data, { x: 0, y: 0, w, h });
             this.worldCtx.putImageData(this.worldImage, 0, 0);
           }
           this._worldPendingDirtyBins.length = 0;
@@ -3534,6 +3804,7 @@ export class Renderer {
         }
       } else if (dirtyRect) {
         if (!this._worldImageUsesViewPixels) this._copyPixelsRect(vp, data, w, dirtyRect);
+        this._applyPlayerFogRect(data, dirtyRect);
         this.worldCtx.putImageData(
           this.worldImage,
           0,
@@ -3567,6 +3838,7 @@ export class Renderer {
         }
       }
 
+      this._playerFogForceWorldRebuild = false;
       this.worldDirty = false;
       this.world.dirty = false;
       return;
@@ -3585,7 +3857,9 @@ export class Renderer {
           data[i + 3] = 255;
         }
       }
+      this._applyPlayerFogRect(this.worldImage.data, { x: 0, y: 0, w, h });
       this.worldCtx.putImageData(this.worldImage, 0, 0);
+      this._playerFogForceWorldRebuild = false;
       this.worldDirty = false;
       this.world.dirty = false;
       return;
@@ -3680,7 +3954,9 @@ export class Renderer {
       }
     }
 
+    this._applyPlayerFogRect(this.worldImage.data, { x: 0, y: 0, w, h });
     this.worldCtx.putImageData(this.worldImage, 0, 0);
+    this._playerFogForceWorldRebuild = false;
     this.worldDirty = false;
     this.world.dirty = false;
   }
@@ -3751,11 +4027,11 @@ export class Renderer {
   ctx.setTransform(v.dpr, 0, 0, v.dpr, 0, 0);
   ctx.imageSmoothingEnabled = true;
 
-  // Draw structure sprites in screen space so the authored PNG detail stays
-  // readable instead of being crushed into the 3x3 tile footprint.
-  const iconSize = Math.max(9, Math.min(28, this.structureIconMaxPx | 0, Math.round(6 + (zoom * 3.25))));
+  // Follow zoom again so structures do not feel larger when zooming out, but
+  // keep a readable floor and ceiling.
+  const iconSize = Math.max(10, Math.min(20, this.structureIconMaxPx | 0, Math.round(zoom * 4)));
   const halfIcon = iconSize * 0.5;
-  const badgeBox = Math.max(10, Math.round(iconSize * 0.72));
+  const badgeBox = Math.max(11, Math.round(iconSize * 0.72));
   const halfBadgeBox = badgeBox * 0.5;
 
   // Small badge for stacked structures.
@@ -3763,6 +4039,7 @@ export class Renderer {
 
   for (const st of list) {
     if (!showAIStructures && (st.owner | 0) !== OWNER.PLAYER) continue;
+    if (!this.canPlayerSeeStructure(st)) continue;
 
     const wx = (st.x | 0) + 0.5;
     const wy = (st.y | 0) + 0.5;
@@ -3802,6 +4079,7 @@ export class Renderer {
     else if (st.type === "research_lab") { tr = 216; tg = 186; tb = 255; }
     else if (st.type === "missile_silo") { tr = 255; tg = 172; tb = 88; }
     else if (st.type === "abm_launcher") { tr = 255; tg = 126; tb = 96; }
+    else if (st.type === "radar_station") { tr = 144; tg = 232; tb = 210; }
     else if (st.type === "airbase") { tr = 160; tg = 208; tb = 255; }
     else { /* city/default */ tr = 210; tg = 210; tb = 210; }
 
@@ -3812,8 +4090,8 @@ export class Renderer {
     // Draw the icon at a readable screen-space size. Prefer PNG assets in
     // /Structures (or /structures).
     const icon = this._getStructureIcon(st.type);
-    if (icon && icon.complete && icon.naturalWidth > 0) {
-      ctx.drawImage(icon, x0, y0, iconSize, iconSize);
+    if (this._isDrawableIcon(icon)) {
+      this._drawContainedIcon(ctx, icon, x0, y0, iconSize);
     } else {
       // Fallback: keep a readable solid marker if the sprite is unavailable.
       ctx.fillStyle = `rgba(${r},${g},${b},0.98)`;
@@ -3838,7 +4116,7 @@ export class Renderer {
       const progress01 = (buildTotalS > 0.00001 && buildRemainingS > 0.00001)
         ? Math.max(0, Math.min(1, 1 - (buildRemainingS / Math.max(0.1, buildTotalS))))
         : 0;
-      const barW = Math.max(10, Math.round(iconSize * 0.78));
+      const barW = Math.max(11, Math.round(iconSize * 0.78));
       const barH = Math.max(2, Math.min(6, Math.round(iconSize * 0.16)));
       const barX = Math.round(sx - (barW * 0.5));
       const barY = Math.round(y0 - barH - 3);
@@ -3937,13 +4215,15 @@ export class Renderer {
       if (s && (s.id | 0) === sid) { st = s; break; }
     }
     if (!st) return;
+    if (!this.canPlayerSeeStructure(st)) return;
 
     const type = String(st.type || "");
     const isDefencePost = type === "defence_post";
     const isCapital = type === "capital";
     const isAbm = type === "abm_launcher";
+    const isRadar = type === "radar_station";
     const isAirbase = type === "airbase";
-    if (!isDefencePost && !isCapital && !isAbm && !isAirbase) return;
+    if (!isDefencePost && !isCapital && !isAbm && !isRadar && !isAirbase) return;
 
     const radiusTiles = isAirbase
       ? (Number(AIRBASE_LAUNCH_RADIUS_TILES) || 0)
@@ -3951,6 +4231,8 @@ export class Renderer {
       ? (Number(CAPITAL_DEFENCE_RADIUS_TILES) || 0)
       : isAbm
         ? (Number(ABM_RADIUS_TILES) || 0)
+        : isRadar
+          ? (Number(RADAR_STATION_RADIUS_TILES) || 0)
         : (Number(DEFENCE_POST_RADIUS_TILES) || 0);
     if (radiusTiles <= 0) return;
 
@@ -3964,13 +4246,13 @@ export class Renderer {
 
     const tint = this.world.getOwnerTint
       ? this.world.getOwnerTint(st.owner | 0)
-      : (isCapital ? { r: 255, g: 220, b: 90 } : isAbm ? { r: 250, g: 140, b: 90 } : isAirbase ? { r: 160, g: 208, b: 255 } : { r: 120, g: 200, b: 255 });
-    const accent = isCapital ? { r: 255, g: 215, b: 90 } : isAbm ? { r: 255, g: 176, b: 120 } : isAirbase ? { r: 190, g: 228, b: 255 } : { r: 200, g: 240, b: 255 };
+      : (isCapital ? { r: 255, g: 220, b: 90 } : isAbm ? { r: 250, g: 140, b: 90 } : isRadar ? { r: 112, g: 230, b: 210 } : isAirbase ? { r: 160, g: 208, b: 255 } : { r: 120, g: 200, b: 255 });
+    const accent = isCapital ? { r: 255, g: 215, b: 90 } : isAbm ? { r: 255, g: 176, b: 120 } : isRadar ? { r: 184, g: 255, b: 238 } : isAirbase ? { r: 190, g: 228, b: 255 } : { r: 200, g: 240, b: 255 };
     const rr = ((tint.r * 0.52) + (accent.r * 0.48)) | 0;
     const gg = ((tint.g * 0.52) + (accent.g * 0.48)) | 0;
     const bb = ((tint.b * 0.52) + (accent.b * 0.48)) | 0;
-    const fillA = isCapital ? 0.055 : isAbm ? 0.070 : 0.08;
-    const strokeA = isCapital ? 0.46 : isAbm ? 0.58 : 0.55;
+    const fillA = isCapital ? 0.055 : isAbm ? 0.070 : isRadar ? 0.075 : 0.08;
+    const strokeA = isCapital ? 0.46 : isAbm ? 0.58 : isRadar ? 0.56 : 0.55;
 
     ctx.save();
     ctx.setTransform(v.dpr, 0, 0, v.dpr, 0, 0);
@@ -4887,33 +5169,122 @@ export class Renderer {
 
     ctx.save();
     ctx.setTransform(v.dpr, 0, 0, v.dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
 
-    const x0 = rubberLine.x0;
-    const y0 = rubberLine.y0;
-    const x1 = rubberLine.x1;
-    const y1 = rubberLine.y1;
+    const x0 = Number(rubberLine.x0) || 0;
+    const y0 = Number(rubberLine.y0) || 0;
+    const x1 = Number(rubberLine.x1) || 0;
+    const y1 = Number(rubberLine.y1) || 0;
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const dist = Math.hypot(dx, dy);
+    const ux = dist > 0.0001 ? (dx / dist) : 1;
+    const uy = dist > 0.0001 ? (dy / dist) : 0;
+    const now = performance.now();
+    const pulse = 0.5 + 0.5 * Math.sin(now * 0.0105);
 
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
-    // Soft outer stroke for contrast.
-    ctx.lineWidth = 5;
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.28)";
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
-    ctx.stroke();
+    const strokeLine = () => {
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+    };
 
-    // Bright inner stroke with a subtle gradient.
+    // Warm ambient glow so the guide reads against any terrain color.
+    ctx.shadowColor = `rgba(255, 184, 88, ${(0.26 + pulse * 0.08).toFixed(3)})`;
+    ctx.shadowBlur = 14 + Math.min(10, dist * 0.03);
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = `rgba(255, 176, 70, ${(0.18 + pulse * 0.05).toFixed(3)})`;
+    strokeLine();
+
+    // Dark underlay keeps the bright core crisp.
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = "rgba(9, 13, 20, 0.42)";
+    strokeLine();
+
+    // Bright core gradient.
     const grad = ctx.createLinearGradient(x0, y0, x1, y1);
-    grad.addColorStop(0, "rgba(255, 240, 160, 0.95)");
-    grad.addColorStop(1, "rgba(255, 200, 90, 0.95)");
-    ctx.lineWidth = 2.2;
+    grad.addColorStop(0, "rgba(255, 248, 190, 0.96)");
+    grad.addColorStop(0.55, "rgba(255, 220, 126, 0.98)");
+    grad.addColorStop(1, "rgba(255, 163, 76, 0.98)");
+    ctx.lineWidth = 2.6;
     ctx.strokeStyle = grad;
+    strokeLine();
+
+    // Moving specular dash gives the line some directionality without feeling noisy.
+    if (dist > 18) {
+      ctx.lineWidth = 1.15;
+      ctx.strokeStyle = `rgba(255, 255, 255, ${(0.42 + pulse * 0.12).toFixed(3)})`;
+      ctx.setLineDash([8, 10]);
+      ctx.lineDashOffset = -((now * 0.045) % 18);
+      strokeLine();
+      ctx.setLineDash([]);
+      ctx.lineDashOffset = 0;
+    }
+
+    const startR = 3.2;
+    const endR = 4.4 + Math.min(1.8, dist * 0.015);
+
+    ctx.fillStyle = "rgba(9, 13, 20, 0.45)";
     ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
-    ctx.stroke();
+    ctx.arc(x0, y0, startR + 2.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255, 240, 176, 0.96)";
+    ctx.beginPath();
+    ctx.arc(x0, y0, startR, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = `rgba(255, 173, 84, ${(0.16 + pulse * 0.08).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(x1, y1, endR + 5 + pulse * 1.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(9, 13, 20, 0.5)";
+    ctx.beginPath();
+    ctx.arc(x1, y1, endR + 2.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255, 180, 82, 0.98)";
+    ctx.beginPath();
+    ctx.arc(x1, y1, endR, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255, 247, 212, 0.92)";
+    ctx.beginPath();
+    ctx.arc(x1 - ux * 1.2, y1 - uy * 1.2, Math.max(1.5, endR * 0.34), 0, Math.PI * 2);
+    ctx.fill();
+
+    if (dist > 10) {
+      const headLen = Math.max(9, Math.min(16, dist * 0.18));
+      const headHalfW = headLen * 0.42;
+      const bx = x1 - ux * headLen;
+      const by = y1 - uy * headLen;
+      const lx = bx - uy * headHalfW;
+      const ly = by + ux * headHalfW;
+      const rx = bx + uy * headHalfW;
+      const ry = by - ux * headHalfW;
+
+      ctx.fillStyle = "rgba(9, 13, 20, 0.42)";
+      ctx.beginPath();
+      ctx.moveTo(x1 + ux * 1.5, y1 + uy * 1.5);
+      ctx.lineTo(lx, ly);
+      ctx.lineTo(rx, ry);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(255, 196, 98, 0.96)";
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(lx, ly);
+      ctx.lineTo(rx, ry);
+      ctx.closePath();
+      ctx.fill();
+    }
 
     ctx.restore();
   }

@@ -199,7 +199,7 @@ export function installResearch(World) {
 
   World.prototype.getStructureStackLimit = function(ownerId, typeRaw) {
     const type = String(typeRaw || "").trim().toLowerCase();
-    if (type === "missile_silo" || type === "abm_launcher" || type === "airbase" || type === "coastal_rig") return 1;
+    if (type === "missile_silo" || type === "abm_launcher" || type === "radar_station" || type === "airbase" || type === "coastal_rig") return 1;
     const bonuses = this.getResearchBonuses(ownerId);
     return Math.max(1, (STRUCT_STACK_MAX | 0) + Math.max(0, Number(bonuses.stackLimitBonus) | 0));
   };

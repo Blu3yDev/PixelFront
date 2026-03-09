@@ -598,6 +598,9 @@ export function installAirborne(World) {
       }
 
       const phase = String(m.phase || "flight");
+      if (phase === "flight" || phase === "drop") {
+        this._maybeTriggerPlayerRadarAirborneAlert(m);
+      }
       if (phase === "flight") {
         const px = Number(m.planeX) || 0.5;
         const py = Number(m.planeY) || 0.5;

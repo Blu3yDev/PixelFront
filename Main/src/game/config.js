@@ -30,6 +30,7 @@ export const BUILD_COST = Object.freeze({
   research_lab: 750000,
   missile_silo: 1200000,
   abm_launcher: 750000,
+  radar_station: 1350000,
   airbase: 1500000
 });
 
@@ -43,6 +44,7 @@ export const STRUCT_BUILD_TIME_S = Object.freeze({
   research_lab: 12,
   missile_silo: 14,
   abm_launcher: 12,
+  radar_station: 15,
   airbase: 16
 });
 
@@ -59,6 +61,7 @@ export const STRUCT_COST_GROWTH = Object.freeze({
   research_lab: 1.34,
   missile_silo: 1.42,
   abm_launcher: 1.39,
+  radar_station: 1.43,
   airbase: 1.45
 });
 export const STRUCT_COST_LINEAR_STEP = 0.28; // +28% base cost per existing structure of same type
@@ -117,6 +120,10 @@ export const ABM_INTERCEPT_HYDROGEN_PENALTY = 0.18;
 export const ABM_MISSILE_SPEED_TILES_PER_S = 150;
 export const ABM_MISSILE_BASE_TIME_S = 0.85;
 
+// ===== Radar Station =====
+export const RADAR_STATION_RADIUS_TILES = 350;
+export const RADAR_STATION_ABM_PRECISION_BONUS = 0.16;
+
 // ===== Airbase / Airborne transport =====
 export const AIRBASE_TRANSPORT_BUILD_GOLD_COST = 4500000;
 export const AIRBASE_TRANSPORT_BUILD_TIME_S = 90;
@@ -167,6 +174,7 @@ export const RESOURCE_COST_BY_STRUCTURE = Object.freeze({
   research_lab: Object.freeze({ food: 0, steel: 350, oil: 0 }),
   missile_silo: Object.freeze({ food: 0, steel: 240, oil: 0 }),
   abm_launcher: Object.freeze({ food: 0, steel: 180, oil: 0 }),
+  radar_station: Object.freeze({ food: 0, steel: 500, oil: 0 }),
   airbase: Object.freeze({ food: 0, steel: 340, oil: 0 })
 });
 
@@ -180,6 +188,7 @@ export const RESOURCE_STEEL_COST_BY_STRUCTURE = Object.freeze({
   research_lab: 350,
   missile_silo: 240,
   abm_launcher: 180,
+  radar_station: 500,
   airbase: 340
 });
 

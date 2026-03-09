@@ -1,7 +1,7 @@
 ﻿// src/main.js
 import { createHUD } from "./ui.js";
 import { World, OWNER } from "./game/core/world.js";
-import { AIRBASE_LAUNCH_RADIUS_TILES, AIRBASE_TRANSPORT_BUILD_GOLD_COST, AIRBASE_TRANSPORT_BUILD_TIME_S, BIOME, BIOME_COLORS, DEBUG_ABM_TEST, DEBUG_MATCH_OUTCOME_TEST, MAP_MODE, MAX_ALLIES, SIM_DT_S, TRADE_DEAL_MAX_DURATION_MIN, TRADE_DEAL_MAX_RATE_PER_MIN, TRADE_DEAL_MIN_DURATION_MIN, TRADE_DEAL_MIN_RATE_PER_MIN, WORLD_SETUP, WORLD_SIZE_PRESET, WORLD_SIZE_PRESETS, WORLDGEN, attackCommitFromRatio } from "./game/config.js";
+import { AIRBASE_LAUNCH_RADIUS_TILES, AIRBASE_TRANSPORT_BUILD_GOLD_COST, AIRBASE_TRANSPORT_BUILD_TIME_S, BIOME, BIOME_COLORS, DEBUG_ABM_TEST, DEBUG_MATCH_OUTCOME_TEST, MAP_MODE, MAX_ALLIES, RADAR_STATION_RADIUS_TILES, SIM_DT_S, TRADE_DEAL_MAX_DURATION_MIN, TRADE_DEAL_MAX_RATE_PER_MIN, TRADE_DEAL_MIN_DURATION_MIN, TRADE_DEAL_MIN_RATE_PER_MIN, WORLD_SETUP, WORLD_SIZE_PRESET, WORLD_SIZE_PRESETS, WORLDGEN, attackCommitFromRatio } from "./game/config.js";
 import { Renderer } from "./render.js";
 import { PaintInput } from "./input.js";
 import { loadEarthData } from "./game/data/earthData.js";
@@ -352,6 +352,10 @@ const MAP_SOURCE = Object.freeze({
   EARTH: "earth",
   CUSTOM: "custom"
 });
+const FOG_OF_WAR_MODE = Object.freeze({
+  SIMPLE: "simple",
+  ADVANCED: "advanced"
+});
 const CUSTOM_MAPS_STORAGE_KEY = "pf-custom-maps-v1";
 const CUSTOM_MAP_EDITOR_SIZE_PRESETS = Object.freeze({
   [WORLD_SIZE_PRESET.SMALL]: Object.freeze({ width: 360, height: 180 }),
@@ -373,6 +377,7 @@ const DEFAULT_MATCH_CONFIG = Object.freeze({
   disableAbmLauncher: false,
   disableAirbase: false,
   disableDefencePost: false,
+  fogOfWar: FOG_OF_WAR_MODE.SIMPLE,
   playerGoldBoost: 1,
   playerTroopsBoost: 1
 });
@@ -2100,6 +2105,7 @@ function rebuildMultiplayerStructureCaches(worldRef) {
     }
   }
   worldRef._defencePostCacheReady = true;
+  if (typeof worldRef._markRadarCoverageDirty === "function") worldRef._markRadarCoverageDirty();
 }
 
 function rebuildMultiplayerBuildQueues(worldRef) {
@@ -4272,6 +4278,10 @@ async function downloadPublicLibraryMapToLocal(mapIdRaw, localNameRaw = "") {
 
 function sanitizeMatchConfig(next) {
   const src = (next && typeof next === "object") ? next : {};
+  const normalizeFogOfWarMode = (raw, fallback = DEFAULT_MATCH_CONFIG.fogOfWar) => {
+    const mode = String(raw || fallback || FOG_OF_WAR_MODE.SIMPLE).trim().toLowerCase();
+    return mode === FOG_OF_WAR_MODE.ADVANCED ? FOG_OF_WAR_MODE.ADVANCED : FOG_OF_WAR_MODE.SIMPLE;
+  };
   const presetRaw = String(src.sizePreset ?? DEFAULT_MATCH_CONFIG.sizePreset);
   const sizePreset = Object.prototype.hasOwnProperty.call(WORLD_SIZE_PRESETS, presetRaw)
     ? presetRaw
@@ -4319,6 +4329,7 @@ function sanitizeMatchConfig(next) {
     disableAbmLauncher: Boolean(src.disableAbmLauncher),
     disableAirbase: Boolean(src.disableAirbase),
     disableDefencePost: Boolean(src.disableDefencePost),
+    fogOfWar: normalizeFogOfWarMode(src.fogOfWar),
     playerGoldBoost: parseBoost(src.playerGoldBoost, DEFAULT_MATCH_CONFIG.playerGoldBoost),
     playerTroopsBoost: parseBoost(src.playerTroopsBoost, DEFAULT_MATCH_CONFIG.playerTroopsBoost)
   };
@@ -4348,6 +4359,17 @@ function saveMatchConfig(next) {
   } catch {
     // Ignore localStorage failures (private mode, quota, disabled storage).
   }
+}
+
+function getFogOfWarMode(matchConfig = null) {
+  const cfg = sanitizeMatchConfig(matchConfig || activeMatchConfig || DEFAULT_MATCH_CONFIG);
+  return String(cfg.fogOfWar || FOG_OF_WAR_MODE.SIMPLE).toLowerCase() === FOG_OF_WAR_MODE.ADVANCED
+    ? FOG_OF_WAR_MODE.ADVANCED
+    : FOG_OF_WAR_MODE.SIMPLE;
+}
+
+function isAdvancedFogOfWarEnabled(matchConfig = null) {
+  return getFogOfWarMode(matchConfig) === FOG_OF_WAR_MODE.ADVANCED;
 }
 
 function loadPlayerFlag() {
@@ -4538,6 +4560,7 @@ function structureTypeLabel(type) {
   const t = String(type || "").toLowerCase();
   if (t === "missile_silo") return "Missile Silo";
   if (t === "abm_launcher") return "ABM Launcher";
+  if (t === "radar_station") return "Radar Station";
   if (t === "airbase") return "Airbase";
   if (t === "defence_post") return "Defence Post";
   return "Structure";
@@ -4780,6 +4803,7 @@ function applyClientSettings(next, opts = {}) {
       showHeatmap: clientSettings.showHeatmap,
       nukeDestinationOverlay: clientSettings.nukeDestinationOverlay,
       politicalMapMode: clientSettings.politicalMapMode,
+      fogOfWarMode: getFogOfWarMode(),
       atmosphereEnabled: !clientSettings.disableAtmosphere,
       reduceMotion: clientSettings.reduceMotion
     });
@@ -6069,6 +6093,7 @@ async function initAndBoot(matchConfig = null, opts = null) {
       showHeatmap: effectiveClientSettings.showHeatmap,
       nukeDestinationOverlay: effectiveClientSettings.nukeDestinationOverlay,
       politicalMapMode: effectiveClientSettings.politicalMapMode,
+      fogOfWarMode: getFogOfWarMode(cfg),
       atmosphereEnabled: !effectiveClientSettings.disableAtmosphere,
       reduceMotion: effectiveClientSettings.reduceMotion
     });
@@ -6511,6 +6536,7 @@ function createMainMenuController(options = null) {
     aiCount: document.getElementById("mmCfgAiCount"),
     sizePreset: document.getElementById("mmCfgSizePreset"),
     difficulty: document.getElementById("mmCfgDifficulty"),
+    fogOfWar: document.getElementById("mmCfgFogOfWar"),
     mapMode: document.getElementById("mmCfgMapMode"),
     customMapId: document.getElementById("mmCfgCustomMap"),
     infiniteResources: document.getElementById("mmCfgInfiniteResources"),
@@ -9378,6 +9404,7 @@ function createMainMenuController(options = null) {
     if (matchInputs.aiCount) matchInputs.aiCount.value = cfg.aiCount ? String(cfg.aiCount) : "";
     if (matchInputs.sizePreset) matchInputs.sizePreset.value = cfg.sizePreset;
     if (matchInputs.difficulty) matchInputs.difficulty.value = cfg.difficulty;
+    if (matchInputs.fogOfWar) matchInputs.fogOfWar.value = getFogOfWarMode(cfg);
     if (matchInputs.mapMode) matchInputs.mapMode.value = String(cfg.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
     if (matchInputs.customMapId) matchInputs.customMapId.value = String(cfg.customMapId || "");
     if (matchInputs.infiniteResources) matchInputs.infiniteResources.checked = !!cfg.infiniteResources;
@@ -9414,6 +9441,7 @@ function createMainMenuController(options = null) {
       aiCount,
       sizePreset: matchInputs.sizePreset ? matchInputs.sizePreset.value : undefined,
       difficulty: matchInputs.difficulty ? matchInputs.difficulty.value : undefined,
+      fogOfWar: matchInputs.fogOfWar ? matchInputs.fogOfWar.value : undefined,
       mapMode: MAP_MODE.WORLD_MAP,
       mapSource,
       customMapId,
@@ -9449,13 +9477,14 @@ function createMainMenuController(options = null) {
     if (cfg.disableDefencePost) rules.push("Disable Defence Posts");
     const ruleText = rules.length ? rules.join(", ") : "Default rules";
     let modeText = "Political Earth";
+    const fogText = getFogOfWarMode(cfg) === FOG_OF_WAR_MODE.ADVANCED ? "Advanced FOW" : "Simple FOW";
     if (String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.EARTH) {
       modeText = "Earth";
     } else if (String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.CUSTOM) {
       const meta = findCustomMapMetaById(cfg.customMapId);
       modeText = meta ? `Custom (${meta.name})` : "Custom (Select map)";
     }
-    configSummary.textContent = `Mode: ${modeText} | Size: ${cfg.sizePreset} | Bots: ${botsText}${botsCapText} | Difficulty: ${cfg.difficulty.toUpperCase()} | ${ruleText}`;
+    configSummary.textContent = `Mode: ${modeText} | Size: ${cfg.sizePreset} | Bots: ${botsText}${botsCapText} | Difficulty: ${cfg.difficulty.toUpperCase()} | Fog: ${fogText} | ${ruleText}`;
   };
 
   const persistSettingsFromForm = () => {
@@ -11941,7 +11970,7 @@ function boot() {
   };
   const getResearchNodeGlyph = (nodeRaw) => {
     const source = String(nodeRaw?.name || "").trim();
-    const words = source.split(/\s+/).filter(Boolean).filter((word) => !/^(research|branch|tier)$/i.test(word));
+    const words = source.split(/\s+/).filter(Boolean).filter((word) => !/^(research|branch|tier|unlock)$/i.test(word));
     const initials = (words.length ? words : source.split(/\s+/).filter(Boolean))
       .slice(0, 2)
       .map((word) => String(word || "").replace(/[^A-Za-z0-9]/g, "").charAt(0).toUpperCase())
@@ -13119,6 +13148,7 @@ function boot() {
         research_lab: world.getBuildCost("research_lab", OWNER.PLAYER),
         missile_silo: world.getBuildCost("missile_silo", OWNER.PLAYER),
         abm_launcher: world.getBuildCost("abm_launcher", OWNER.PLAYER),
+        radar_station: world.getBuildCost("radar_station", OWNER.PLAYER),
         airbase: world.getBuildCost("airbase", OWNER.PLAYER),
         playerGold: p.gold || 0,
         playerResources,
@@ -13132,6 +13162,7 @@ function boot() {
           research_lab: world.getStructureResourceCost ? world.getStructureResourceCost("research_lab") : null,
           missile_silo: world.getStructureResourceCost ? world.getStructureResourceCost("missile_silo") : null,
           abm_launcher: world.getStructureResourceCost ? world.getStructureResourceCost("abm_launcher") : null,
+          radar_station: world.getStructureResourceCost ? world.getStructureResourceCost("radar_station") : null,
           airbase: world.getStructureResourceCost ? world.getStructureResourceCost("airbase") : null
         },
         oilUpkeep: {
@@ -13144,11 +13175,24 @@ function boot() {
           research_lab: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("research_lab") : 0,
           missile_silo: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("missile_silo") : 0,
           abm_launcher: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("abm_launcher") : 0,
+          radar_station: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("radar_station") : 0,
           airbase: world.getStructureOilUpkeepPerTick ? world.getStructureOilUpkeepPerTick("airbase") : 0
         }
       });
       if (typeof hud.setBuildLocks === "function") {
         hud.setBuildLocks({
+          airbase: {
+            locked: !researchBonuses.unlockAirbase,
+            reason: "Research Unlock Airbases to unlock Airbases."
+          },
+          abm_launcher: {
+            locked: !researchBonuses.unlockAbmLauncher,
+            reason: "Research Unlock ABM Launchers to unlock ABM Launchers."
+          },
+          radar_station: {
+            locked: !researchBonuses.unlockRadarStation,
+            reason: "Complete Research Radar Station in Military to unlock Radar Stations."
+          },
           missile_silo: {
             locked: !researchBonuses.unlockMissileSilo,
             reason: "Research Nuclear Research to unlock Missile Silos."
@@ -13394,6 +13438,7 @@ function buildMatchSummaryPayload(result, opts = {}) {
   let researchLabCount = 0;
   let missileSiloCount = 0;
   let abmCount = 0;
+  let radarCount = 0;
   let airbaseCount = 0;
   if (Array.isArray(world?.structures)) {
     for (let i = 0; i < world.structures.length; i++) {
@@ -13405,10 +13450,11 @@ function buildMatchSummaryPayload(result, opts = {}) {
       if (type === "research_lab") researchLabCount += ((st.count | 0) || 1);
       if (type === "missile_silo") missileSiloCount += ((st.count | 0) || 1);
       if (type === "abm_launcher") abmCount += ((st.count | 0) || 1);
+      if (type === "radar_station") radarCount += ((st.count | 0) || 1);
       if (type === "airbase") airbaseCount += ((st.count | 0) || 1);
     }
   }
-  const structuresText = `City ${cityCount} | Factory ${factoryCount} | Barracks ${barracksCount} | Defence ${defenceCount} | Port ${portCount} | Labs ${researchLabCount} | Silos ${missileSiloCount} | ABM ${abmCount} | Airbase ${airbaseCount}`;
+  const structuresText = `City ${cityCount} | Factory ${factoryCount} | Barracks ${barracksCount} | Defence ${defenceCount} | Port ${portCount} | Labs ${researchLabCount} | Silos ${missileSiloCount} | ABM ${abmCount} | Radar ${radarCount} | Airbase ${airbaseCount}`;
 
   const titleText = outcome === "win"
     ? (isTest ? "Victory Test" : "Victory")
@@ -13868,6 +13914,7 @@ function buildDebugOverlayText() {
     port: 0,
     missile_silo: 0,
     abm_launcher: 0,
+    radar_station: 0,
     airbase: 0
   };
   for (let i = 0; i < world.structures.length; i++) {
@@ -14015,7 +14062,7 @@ function buildDebugOverlayText() {
   lines.push(`      nations alive ${aliveNations}/${Math.max(0, world.nation.length - 1)} collapsed ${collapsedNations} | top ${ownerDebugName(topOwnerId)} ${dbgInt(Math.max(0, topOwnerLand))} | player land ${dbgInt(playerLand)} (${dbgNum(playerLandPct, 1)}%)`);
   lines.push(`Player gold ${fmtCompactLocal(player.gold || 0)} (${dbgSigned(player.goldPS || 0, 1)}/s) pop ${fmtCompactLocal(player.population || 0)}/${fmtCompactLocal(player.popCap || 0)} (${dbgSigned(player.popPS || 0, 1)}/s)`);
   lines.push(`       inf ${fmtCompactLocal(player.infantry || 0)}/${fmtCompactLocal(player.troopsCap || 0)} (${dbgSigned(player.infantryPS || 0, 1)}/s) atk ${dbgNum((player.attackRatio ?? 0) * 100, 1)}% mob ${dbgNum((player.mobilization ?? 0) * 100, 1)}% stab ${dbgNum(player.stabilityPct ?? ((player.stabilityFactor ?? 1) * 100), 1)}% we ${dbgNum(player.warExhaustionPct ?? ((player.warExhaustion ?? 0) * 100), 1)}%`);
-  lines.push(`Assets structures ${dbgInt(structCounts.total)} [cap ${structCounts.capital} city ${structCounts.city} fac ${structCounts.factory} bar ${structCounts.barracks} def ${structCounts.defence_post} port ${structCounts.port} silo ${structCounts.missile_silo} abm ${structCounts.abm_launcher} air ${structCounts.airbase}] player ${dbgInt(structCounts.player)}`);
+  lines.push(`Assets structures ${dbgInt(structCounts.total)} [cap ${structCounts.capital} city ${structCounts.city} fac ${structCounts.factory} bar ${structCounts.barracks} def ${structCounts.defence_post} port ${structCounts.port} silo ${structCounts.missile_silo} abm ${structCounts.abm_launcher} radar ${structCounts.radar_station} air ${structCounts.airbase}] player ${dbgInt(structCounts.player)}`);
   lines.push(`       ships ${shipCounts.total} [trade ${shipCounts.trade} war ${shipCounts.war} transport ${shipCounts.transport}] player ${shipCounts.player} [t ${shipCounts.playerTrade} w ${shipCounts.playerWar} tr ${shipCounts.playerTransport}]`);
   lines.push(`Ops total ${opCounts.total} player ${opCounts.player} focus ${world.focusOpId | 0} [neutral ${opCounts.neutral} war ${opCounts.war} burst ${opCounts.burst} burstWar ${opCounts.burstWar} other ${opCounts.other}]`);
   lines.push(`    attackPool player ${fmtCompactLocal(opCounts.playerAttackPool)} enemy ${fmtCompactLocal(opCounts.enemyAttackPool)} casualties ${fmtCompactLocal(opCounts.casualties)}`);
@@ -14216,7 +14263,8 @@ function bindInput() {
       return;
     }
 
-    const st = world.getStructureAt(cell.x, cell.y);
+    const st0 = world.getStructureAt(cell.x, cell.y);
+    const st = canPlayerSeeLandStructure(st0) ? st0 : null;
     if (st) {
       selectedStructureId = st.id;
       selectedShipId = null;
@@ -14478,12 +14526,36 @@ function refreshIntelUI() {
   }
 }
 
+function canPlayerSeeNation(targetId) {
+  const id = targetId | 0;
+  if (id <= 0) return false;
+  if (!isAdvancedFogOfWarEnabled()) return true;
+  if (id === OWNER.PLAYER) return true;
+  if (!world) return false;
+  if (typeof world._bordersTouch === "function" && world._bordersTouch(OWNER.PLAYER, id)) return true;
+  return !!world.isNationInRadarCoverage?.(OWNER.PLAYER, id);
+}
+
 function hasIntelAdjacency(targetId) {
   const id = targetId | 0;
   if (id <= 0) return false;
   if (id === OWNER.PLAYER) return true;
-  if (!world || typeof world._bordersTouch !== "function") return false;
-  return world._bordersTouch(OWNER.PLAYER, id);
+  if (!world) return false;
+  if (typeof world._bordersTouch === "function" && world._bordersTouch(OWNER.PLAYER, id)) return true;
+  return isAdvancedFogOfWarEnabled() && !!world.isNationInRadarCoverage?.(OWNER.PLAYER, id);
+}
+
+function canPlayerSeeLandStructure(st) {
+  if (!st || typeof st !== "object") return false;
+  if (!isAdvancedFogOfWarEnabled()) return true;
+  const ownerId = st.owner | 0;
+  if (ownerId <= OWNER.NONE || ownerId === OWNER.PLAYER) return true;
+  if (!world) return false;
+
+  const idx = ((st.y | 0) * (world.w | 0) + (st.x | 0)) | 0;
+  if (idx >= 0 && idx < (world.land?.length | 0) && !world.land[idx]) return true;
+
+  return canPlayerSeeNation(ownerId);
 }
 
 function buildIntelData(targetId) {
@@ -14511,23 +14583,31 @@ function buildIntelData(targetId) {
   const landPct = world.totalLand > 0 ? (landOwned / world.totalLand) * 100 : 0;
 
   const hasAdjacency = hasIntelAdjacency(id);
+  const radarCoverage = !!world?.isNationInRadarCoverage?.(OWNER.PLAYER, id);
+  const revealStructureCounts = isAdvancedFogOfWarEnabled()
+    ? canPlayerSeeNation(id)
+    : hasAdjacency;
+  const revealPopulationIntel = isAdvancedFogOfWarEnabled()
+    ? canPlayerSeeNation(id)
+    : (id === OWNER.PLAYER || hasAdjacency || radarCoverage);
 
   const counts = countStructuresByType(world, id);
   const structures = [
-    { type: "capital", label: "Capital", count: counts.capital || 0 },
-    { type: "city", label: "City", count: counts.city || 0 },
-    { type: "factory", label: "Factory", count: counts.factory || 0 },
-    { type: "barracks", label: "Barracks", count: counts.barracks || 0 },
-    { type: "defence_post", label: "Defence Post", count: counts.defence_post || 0 },
-    { type: "port", label: "Port", count: counts.port || 0 },
-    { type: "research_lab", label: "Research Lab", count: counts.research_lab || 0 },
-    { type: "missile_silo", label: "Missile Silo", count: counts.missile_silo || 0 },
-    { type: "abm_launcher", label: "ABM Launcher", count: counts.abm_launcher || 0 },
-    { type: "airbase", label: "Airbase", count: counts.airbase || 0 }
+    { type: "capital", label: "Capital", count: counts.capital || 0, countText: buildStructureEstimateText(counts.capital || 0, id, revealStructureCounts, 0x19c5a201) },
+    { type: "city", label: "City", count: counts.city || 0, countText: buildStructureEstimateText(counts.city || 0, id, revealStructureCounts, 0x2f6e2b1d) },
+    { type: "factory", label: "Factory", count: counts.factory || 0, countText: buildStructureEstimateText(counts.factory || 0, id, revealStructureCounts, 0x43d5f2a7) },
+    { type: "barracks", label: "Barracks", count: counts.barracks || 0, countText: buildStructureEstimateText(counts.barracks || 0, id, revealStructureCounts, 0x58bf1493) },
+    { type: "defence_post", label: "Defence Post", count: counts.defence_post || 0, countText: buildStructureEstimateText(counts.defence_post || 0, id, revealStructureCounts, 0x6c8f5e11) },
+    { type: "port", label: "Port", count: counts.port || 0, countText: buildStructureEstimateText(counts.port || 0, id, revealStructureCounts, 0x739a0c2d) },
+    { type: "research_lab", label: "Research Lab", count: counts.research_lab || 0, countText: buildStructureEstimateText(counts.research_lab || 0, id, revealStructureCounts, 0x841d3ab7) },
+    { type: "missile_silo", label: "Missile Silo", count: counts.missile_silo || 0, countText: buildStructureEstimateText(counts.missile_silo || 0, id, revealStructureCounts, 0x9a51cc41) },
+    { type: "abm_launcher", label: "ABM Launcher", count: counts.abm_launcher || 0, countText: buildStructureEstimateText(counts.abm_launcher || 0, id, revealStructureCounts, 0xaf4b8d63) },
+    { type: "radar_station", label: "Radar Station", count: counts.radar_station || 0, countText: buildStructureEstimateText(counts.radar_station || 0, id, revealStructureCounts, 0xb8a27f59) },
+    { type: "airbase", label: "Airbase", count: counts.airbase || 0, countText: buildStructureEstimateText(counts.airbase || 0, id, revealStructureCounts, 0xc31e7f95) }
   ];
 
-  const populationText = buildEstimateRangeText(n.population || 0, id, hasAdjacency, 0xA91C3D4E);
-  const infantryText = buildEstimateRangeText(n.infantry || 0, id, hasAdjacency, 0x5BD1E995);
+  const populationText = buildEstimateRangeText(n.population || 0, id, revealPopulationIntel, 0xA91C3D4E);
+  const infantryText = buildEstimateRangeText(n.infantry || 0, id, revealPopulationIntel, 0x5BD1E995);
 
   return {
     id,
@@ -14557,6 +14637,7 @@ function countStructuresByType(worldRef, ownerId) {
         research_lab: cached.research_lab || 0,
         missile_silo: cached.missile_silo || 0,
         abm_launcher: cached.abm_launcher || 0,
+        radar_station: cached.radar_station || 0,
         airbase: cached.airbase || 0
       };
     }
@@ -14572,6 +14653,7 @@ function countStructuresByType(worldRef, ownerId) {
     research_lab: 0,
     missile_silo: 0,
     abm_launcher: 0,
+    radar_station: 0,
     airbase: 0
   };
 
@@ -14600,6 +14682,27 @@ function buildEstimateRangeText(value, ownerId, revealExact, seedSalt) {
   let high = Math.max(low + 1, Math.floor(p * (1 + spread)));
 
   const step = p >= 1_000_000 ? 10_000 : p >= 100_000 ? 5_000 : p >= 10_000 ? 1_000 : p >= 1_000 ? 250 : 50;
+  low = roundTo(low, step);
+  high = roundTo(high, step);
+  if (high <= low) high = low + step;
+
+  return `${fmtCompactLocal(low)}-${fmtCompactLocal(high)}`;
+}
+
+function buildStructureEstimateText(value, ownerId, revealExact, seedSalt) {
+  const count = Math.max(0, Math.floor(Number(value) || 0));
+  if (revealExact) return fmtCompactLocal(count);
+
+  const bucket = Math.floor((world.time || 0) / 45);
+  const salt = (seedSalt >>> 0) || 0;
+  const seed = ((world.seed >>> 0) ^ (ownerId * 2654435761) ^ (bucket * 1013904223) ^ salt) >>> 0;
+  const spread = 0.45 + pseudo01(seed) * 0.35;
+  const uncertainty = Math.max(1, Math.ceil(Math.max(1, count) * spread));
+
+  let low = Math.max(0, count - Math.max(1, Math.floor(uncertainty * 0.55)));
+  let high = Math.max(low + 1, count + uncertainty);
+
+  const step = count >= 40 ? 5 : count >= 18 ? 2 : 1;
   low = roundTo(low, step);
   high = roundTo(high, step);
   if (high <= low) high = low + step;
@@ -15003,6 +15106,7 @@ function getSelectedStructure() {
     if (airborneLaunchMode && (airborneLaunchMode.airbaseId | 0) === sid) clearAirborneLaunchMode();
     return null;
   }
+  if (!canPlayerSeeLandStructure(st)) return null;
 
   const ownerId = st.owner | 0;
   const ownerName = ownerId === OWNER.PLAYER
@@ -15037,6 +15141,12 @@ function getSelectedStructure() {
         }
       }
     }
+    return view;
+  }
+
+  if (String(st.type || "") === "radar_station") {
+    view.desc = "Reveals nearby nations, detects incoming missiles and transport planes, and improves ABM accuracy inside its coverage.";
+    view.metaText = `Radar Radius: ${Math.max(1, Math.floor(Number(RADAR_STATION_RADIUS_TILES) || 1))} tiles`;
     return view;
   }
 

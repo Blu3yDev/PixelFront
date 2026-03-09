@@ -110,6 +110,7 @@ export function installStructures(World) {
     this._defencePostCacheReady = false;
     if (typeof this._markStructureCountCacheDirty === "function") this._markStructureCountCacheDirty();
     if (st.type === "coastal_rig" && Array.isArray(this._coastalRigStructures)) this._coastalRigStructures.push(st);
+    if (st.type === "radar_station" && typeof this._markRadarCoverageDirty === "function") this._markRadarCoverageDirty();
 
     // Occupy a 3x3 footprint for collision and stack selection.
     this._markStructureFootprint(id, st.x, st.y);

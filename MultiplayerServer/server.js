@@ -196,6 +196,7 @@ const DEFAULT_MATCH_CONFIG = Object.freeze({
   disableMissileSilo: false,
   disableAbmLauncher: false,
   disableDefencePost: false,
+  fogOfWar: "simple",
   playerGoldBoost: 1,
   playerTroopsBoost: 1
 });
@@ -646,6 +647,7 @@ function sanitizeMatchConfig(raw) {
     disableMissileSilo: !!src.disableMissileSilo,
     disableAbmLauncher: !!src.disableAbmLauncher,
     disableDefencePost: !!src.disableDefencePost,
+    fogOfWar: String(src.fogOfWar || DEFAULT_MATCH_CONFIG.fogOfWar).trim().toLowerCase() === "advanced" ? "advanced" : "simple",
     playerGoldBoost: parseBoost(src.playerGoldBoost, DEFAULT_MATCH_CONFIG.playerGoldBoost),
     playerTroopsBoost: parseBoost(src.playerTroopsBoost, DEFAULT_MATCH_CONFIG.playerTroopsBoost),
     worldWidth: toPositiveIntOrNull(src.worldWidth ?? src.width),
@@ -3225,6 +3227,7 @@ function shouldPushPostCommandFullSync(cmdRaw) {
     cmd === "launch_missile_warhead" ||
     cmd === "launch_airbase_transport" ||
     cmd === "declare_war" ||
+    cmd === "create_trade_deal" ||
     cmd === "request_trade_deal" ||
     cmd === "respond_trade_request" ||
     cmd === "cancel_trade_request" ||

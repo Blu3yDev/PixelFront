@@ -3973,6 +3973,10 @@ World.prototype._applyRiverWetlands = function(sea) {
           lastWarTarget: 0,
           lastAllianceTarget: 0,
           lastTransportTarget: 0,
+          lastBuildType: "",
+          lastBuildAt: -1,
+          buildTypeStreak: 0,
+          buildTypeCooldownUntil: Object.create(null),
           warIntentTarget: 0,
           warIntentUntil: 0,
           _lastAiStepAt: this.time

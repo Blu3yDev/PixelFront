@@ -562,7 +562,9 @@ export function installAI(World) {
       const allies = this._getActiveAlliesOf(A);
       if (!allies.length) return false;
       const alliedWithPlayer = allies.includes(OWNER.PLAYER);
-      const supportRollP = alliedWithPlayer ? Math.max(0.68, supportP) : supportP;
+      const supportRollP = alliedWithPlayer
+        ? Math.max(0.48, supportP * 0.78)
+        : (supportP * 0.88);
       if (supportRollP <= 0 || this._rng() >= supportRollP) return false;
 
       const joinMin = Math.max(0.95, Number(p.warJoinRatioMin ?? Number(p.warRatioMin ?? 1.0)));
@@ -600,7 +602,7 @@ export function installAI(World) {
           const their = this._aiStrength(B) + this._aiAllyStrength(B, 0.45);
           const ours = Math.max(1, Number(myStrength) || 0) + this._aiStrength(ally) * 0.38 + this._aiAllyStrength(A, 0.36);
           const ratio = ours / Math.max(1, their);
-          const joinNeed = helpingPlayer ? Math.max(0.88, joinMin - 0.06) : joinMin;
+          const joinNeed = helpingPlayer ? Math.max(0.94, joinMin - 0.02) : joinMin;
           if (ratio < joinNeed) continue;
 
           let score = 0;
@@ -608,7 +610,7 @@ export function installAI(World) {
           score += (this._warsByNation[B] | 0) * 0.08;
           if (this._bordersTouch(ally, B)) score += 0.16;
           if (!borderContact) score -= 0.10;
-          if (helpingPlayer) score += 0.24;
+          if (helpingPlayer) score += 0.12;
           if (B === OWNER.PLAYER) score += 0.05;
 
           if (score > bestScore) {
@@ -1687,6 +1689,180 @@ export function installAI(World) {
       return false;
     }
 
+  World.prototype._aiBuildReserveGold = function(id, type, persona = null, opts = null) {
+      const A = id | 0;
+      const p = persona || this._ai[A]?.persona || AI_PERSONAS[0];
+      const o = (opts && typeof opts === "object") ? opts : null;
+      const t = String(type || "");
+      const cost = Math.max(0, this.getBuildCost(t, A) | 0);
+      if (cost <= 0) return 0;
+
+      let reserveBase = Math.max(0, p.reserveGoldBase | 0);
+      let reserveFrac = Number.isFinite(Number(p.reserveFrac)) ? Number(p.reserveFrac) : 0.55;
+      const atWar = !!o?.atWar;
+      const urgent = !!o?.urgent;
+      const builtCore = Math.max(0, Number(o?.builtCore) || 0);
+      const firstFactory = t === "factory" && Math.max(0, Number(o?.factories) || 0) === 0;
+
+      if (builtCore < 2) {
+        reserveBase = 0;
+        reserveFrac = Math.min(reserveFrac, 0.10);
+      }
+      if (atWar) {
+        reserveBase = Math.min(reserveBase, Math.round(cost * 0.12));
+        reserveFrac = Math.min(reserveFrac, 0.18);
+      }
+      if (firstFactory) {
+        reserveBase = 0;
+        reserveFrac = 0;
+      }
+      if (t === "defence_post") {
+        reserveBase = Math.min(reserveBase, Math.round(cost * (atWar ? 0.05 : 0.10)));
+        reserveFrac = Math.min(reserveFrac, atWar ? 0.06 : 0.12);
+      } else if (t === "port" || t === "coastal_rig") {
+        reserveFrac = Math.min(reserveFrac, atWar ? 0.18 : 0.26);
+      } else if (t === "research_lab") {
+        reserveFrac = Math.min(reserveFrac, atWar ? 0.16 : 0.24);
+      }
+      if (urgent) {
+        reserveBase = Math.round(reserveBase * 0.45);
+        reserveFrac *= 0.60;
+      }
+
+      return Math.max(0, reserveBase + Math.round(cost * Math.max(0, reserveFrac)));
+    }
+
+  World.prototype._aiCanAffordPlannedBuild = function(id, type, reserveGold = 0) {
+      const A = id | 0;
+      const t = String(type || "");
+      const n = this.nation[A];
+      if (!n || !n.alive || n.collapsed) return false;
+
+      const cost = Math.max(0, this.getBuildCost(t, A) | 0);
+      if (cost <= 0) return false;
+      if ((Number(n.gold) || 0) < cost + Math.max(0, Number(reserveGold) || 0)) return false;
+
+      if (typeof this.canAffordResourceBundle === "function") {
+        const bundle = (typeof this.getStructureResourceCost === "function")
+          ? this.getStructureResourceCost(t)
+          : null;
+        if (bundle && !this.canAffordResourceBundle(A, bundle, "Construction").ok) return false;
+      }
+
+      return true;
+    }
+
+  World.prototype._aiBuildTypeCooldownRemaining = function(id, type) {
+      const A = id | 0;
+      const t = String(type || "");
+      const ai = this._ai[A];
+      if (!ai || !t) return 0;
+      const cooldowns = (ai.buildTypeCooldownUntil && typeof ai.buildTypeCooldownUntil === "object")
+        ? ai.buildTypeCooldownUntil
+        : null;
+      if (!cooldowns) return 0;
+      return Math.max(0, (Number(cooldowns[t]) || 0) - (Number(this.time) || 0));
+    }
+
+  World.prototype._aiSetBuildTypeCooldown = function(id, type, durationS = 0) {
+      const A = id | 0;
+      const t = String(type || "");
+      const ai = this._ai[A];
+      if (!ai || !t) return 0;
+      if (!ai.buildTypeCooldownUntil || typeof ai.buildTypeCooldownUntil !== "object") {
+        ai.buildTypeCooldownUntil = Object.create(null);
+      }
+      const until = (Number(this.time) || 0) + Math.max(0, Number(durationS) || 0);
+      ai.buildTypeCooldownUntil[t] = until;
+      return until;
+    }
+
+  World.prototype._aiBuildRepeatPenalty = function(id, type) {
+      const A = id | 0;
+      const t = String(type || "");
+      const ai = this._ai[A];
+      if (!ai || !t) return 0;
+      if (String(ai.lastBuildType || "") !== t) return 0;
+
+      const streak = Math.max(1, Number(ai.buildTypeStreak) || 1);
+      const age = Math.max(0, (Number(this.time) || 0) - (Number(ai.lastBuildAt) || 0));
+      const recency = Math.max(0, 1 - (age / 42));
+      return Math.min(3.4, streak * (0.42 + 0.26 * recency));
+    }
+
+  World.prototype._aiRecordBuildChoice = function(id, type) {
+      const A = id | 0;
+      const t = String(type || "");
+      const ai = this._ai[A];
+      if (!ai || !t) return;
+
+      if (String(ai.lastBuildType || "") === t) ai.buildTypeStreak = Math.max(1, (ai.buildTypeStreak | 0) + 1);
+      else ai.buildTypeStreak = 1;
+      ai.lastBuildType = t;
+      ai.lastBuildAt = Number(this.time) || 0;
+    }
+
+  World.prototype._aiTryExecuteBuildChoice = function(id, choiceRaw, contextRaw = null) {
+      const A = id | 0;
+      const ai = this._ai[A];
+      const n = this.nation[A];
+      if (!ai || !n || !n.alive || n.collapsed) return false;
+
+      const choice = (choiceRaw && typeof choiceRaw === "object") ? choiceRaw : null;
+      const ctx = (contextRaw && typeof contextRaw === "object") ? contextRaw : null;
+      const type = String(choice?.type || "");
+      if (!type) return false;
+
+      const existingCount = Math.max(
+        0,
+        Number(choice?.existingCount != null ? choice.existingCount : this._aiCountOwnedStructuresByType(A, type)) || 0
+      );
+      const allowStack = choice?.allowStack !== false;
+      const atWar = !!ctx?.atWar;
+      const econ = clamp01(Number(ctx?.persona?.econ ?? ai.persona?.econ ?? 0.5));
+      const urgent = !!choice?.urgent;
+      if (!choice?.force && this._aiBuildTypeCooldownRemaining(A, type) > 0 && !urgent) return false;
+
+      let ok = false;
+      if (allowStack && existingCount > 0) {
+        let stackP = 0.24 + (econ * 0.22) + Math.max(0, Number(choice?.stackBias) || 0);
+        if (type === "barracks" && atWar) stackP -= 0.22;
+        if (type === "defence_post" || type === "port") stackP = Math.min(stackP, 0.10);
+        if (type === "city" || type === "factory" || type === "research_lab") stackP += 0.08;
+        stackP = clamp01(stackP);
+        if (this._rng() < stackP) ok = this._aiTryStackStructure(A, type);
+      }
+
+      if (!ok && choice?.nearCapital) {
+        ok = this._aiTryBuildNearCapital(
+          A,
+          type,
+          Math.max(4, Number(choice.maxRadius) || 16),
+          String(choice.pref || "interior")
+        );
+      }
+      if (!ok) ok = this._aiTryBuildStructure(A, type, String(choice?.pref || "any"));
+
+      if (ok) {
+        this._aiRecordBuildChoice(A, type);
+        const successCooldown = urgent
+          ? (10 + this._rng() * 8)
+          : (type === "city" || type === "factory" || type === "barracks" || type === "research_lab")
+            ? (15 + this._rng() * 12)
+            : (22 + this._rng() * 16);
+        this._aiSetBuildTypeCooldown(A, type, successCooldown);
+        return true;
+      }
+
+      const failCooldown = choice?.pref === "coast"
+        ? (20 + this._rng() * 16)
+        : choice?.nearCapital
+          ? (12 + this._rng() * 10)
+          : (8 + this._rng() * 8);
+      this._aiSetBuildTypeCooldown(A, type, failCooldown);
+      return false;
+    }
+
   World.prototype._aiTradeDealCount = function(ownerId) {
       const A = ownerId | 0;
       if (A <= 0) return 0;
@@ -2619,16 +2795,26 @@ export function installAI(World) {
       const p = ai.persona || AI_PERSONAS[0];
       const atWar = this._anyWar(A);
 
+      const researchBonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(A) : null;
       const land = Math.max(0, this.landOwnedCount[A] | 0);
       const cities = this._cityCount[A] | 0;
       const fac = this._factoryCount[A] | 0;
       const barr = this._barracksCount[A] | 0;
+      const researchLabs = this._researchLabCount ? (this._researchLabCount[A] | 0) : 0;
       const ports = this._portCount[A] | 0;
+      const steel = Math.max(0, Number(n.steel) || 0);
+      const steelPS = Math.max(0, Number(n.steelPS) || 0);
       const oil = Math.max(0, Number(n.oil) || 0);
       const oilPS = Math.max(0, Number(n.oilPS) || 0);
+      const foodPS = Math.max(0, Number(n.foodPS) || 0);
+      const foodDemandPS = Math.max(0, Number(n.foodDemandPS) || 0);
+      const researchIncome = Math.max(0, Number(n.researchIncomePerDay) || 0);
+      const infantry = Math.max(0, Number(n.infantry) || 0);
+      const troopsCap = Math.max(1, Number(n.troopsCap) || infantry || 1);
       let defencePosts = 0;
       let missileSilos = 0;
       let abmLaunchers = 0;
+      let radarStations = 0;
       let airbases = 0;
       let coastalRigs = 0;
       {
@@ -2641,219 +2827,326 @@ export function installAI(World) {
           if (t === "defence_post") defencePosts += qty;
           else if (t === "missile_silo") missileSilos += qty;
           else if (t === "abm_launcher") abmLaunchers += qty;
+          else if (t === "radar_station") radarStations += qty;
           else if (t === "airbase") airbases += qty;
           else if (t === "coastal_rig") coastalRigs += qty;
         }
       }
+
       const myStr = this._aiStrength(A);
       const threat = this._aiStrongestNeighborThreat(A, myStr);
       const threatTol = Math.max(0.75, Number(p.threatTolerance ?? 1.05));
       const underThreat = threat.ratio > threatTol;
+      const builtCore = cities + fac + barr;
+      const buildContext = {
+        atWar,
+        builtCore,
+        factories: fac,
+        persona: p
+      };
 
-      // Hard priority: first factory ASAP (otherwise AI economy never ramps).
       if (fac === 0) {
-        const fc = this.getBuildCost("factory", A) | 0;
-        if (fc > 0 && n.gold >= fc) {
-          const okF = this._aiTryBuildStructure(A, "factory", "interior");
-          if (okF) return;
-        }
+        if (this._aiTryExecuteBuildChoice(A, {
+          type: "factory",
+          pref: "interior",
+          allowStack: false,
+          force: true,
+          urgent: true,
+          existingCount: fac
+        }, buildContext)) return;
       }
 
-      // Navy economy: establish at least one Port once we have some territory.
-      if (ports === 0 && land >= 320) {
-        const pc = this.getBuildCost("port", A) | 0;
-        if (pc > 0 && n.gold >= pc) {
-          const okP = this._aiTryBuildStructure(A, "port", "coast");
-          if (okP) return;
-        }
-      }
-
-      // Oil economy: once an AI has maritime or air logistics, it should sustain them.
-      {
-        let desiredRigs = 0;
-        if (ports > 0 || airbases > 0 || atWar) desiredRigs = 1;
-        if (ports >= 2 || airbases > 0) desiredRigs += 1;
-        if (land >= 7000) desiredRigs += 1;
-        if (atWar && (ports > 0 || airbases > 0)) desiredRigs += 1;
-        if (oil < 2200 || oilPS < 1.2) desiredRigs += 1;
-        desiredRigs = clampInt(desiredRigs, 0, 4);
-
-        if (coastalRigs < desiredRigs) {
-          const rc = this.getBuildCost("coastal_rig", A) | 0;
-          const reserve = Math.round(rc * (atWar ? 0.20 : 0.38));
-          const buildP = oil < 1800 ? 1.0 : atWar ? 0.72 : 0.48;
-          if (rc > 0 && n.gold >= (rc + reserve) && this._rng() < buildP) {
-            const okRig = this._aiTryBuildStructure(A, "coastal_rig", "any");
-            if (okRig) return;
-          }
-        }
-      }
-
-      // Early war ramp: if at war and no barracks yet, try to establish one.
       if (atWar && barr === 0) {
-        const bc = this.getBuildCost("barracks", A) | 0;
-        if (bc > 0 && n.gold >= bc) {
-          const okB = this._aiTryBuildStructure(A, "barracks", "border");
-          if (okB) return;
-        }
+        if (this._aiTryExecuteBuildChoice(A, {
+          type: "barracks",
+          pref: "border",
+          allowStack: false,
+          force: true,
+          urgent: true,
+          existingCount: barr
+        }, buildContext)) return;
       }
 
-      // Defensive response: place a Defence Post near the front when at war.
-      if (atWar) {
-        const desiredDefence = Math.max(1, Math.floor(land / 900));
-        if (defencePosts < desiredDefence) {
-          const dc = this.getBuildCost("defence_post", A) | 0;
-          if (dc > 0 && n.gold >= dc) {
-            const okD = this._aiTryBuildStructure(A, "defence_post", "border");
-            if (okD) return;
-          }
-        }
-      }
-
-      // ABM launchers: modest defensive layer, biased around the capital.
-      {
-        let desiredAbm = Math.max(1, Math.floor(land / 6500) + 1);
-        if (atWar || underThreat) desiredAbm += 1;
-        desiredAbm = clampInt(desiredAbm, 1, 4);
-        if (abmLaunchers < desiredAbm) {
-          const ac = this.getBuildCost("abm_launcher", A) | 0;
-          const reserve = Math.round(ac * (atWar ? 0.45 : 0.70));
-          if (ac > 0 && n.gold >= (ac + reserve)) {
-            const capPref = underThreat ? "any" : "interior";
-            const okNearCap =
-              this._aiTryBuildNearCapital(A, "abm_launcher", 14, capPref) ||
-              this._aiTryBuildStructure(A, "abm_launcher", capPref);
-            if (okNearCap) return;
-          }
-        }
-      }
-
-      // Missile silos: strategic build-up only after core economy/military basics.
-      {
-        const basicsOk = fac >= 1 && cities >= 1;
-        if (basicsOk) {
-          let desiredSilos = atWar
-            ? Math.max(1, Math.floor(land / 9000) + 1)
-            : Math.max(0, Math.floor(land / 13000));
-          if (!atWar && land >= 6500) desiredSilos = Math.max(desiredSilos, 1);
-          desiredSilos = clampInt(desiredSilos, 0, 3);
-          if (missileSilos < desiredSilos) {
-            const sc = this.getBuildCost("missile_silo", A) | 0;
-            const reserve = Math.round(sc * (atWar ? 0.50 : 0.90));
-            if (sc > 0 && n.gold >= (sc + reserve)) {
-              const pref = atWar ? "interior" : "any";
-              const okS =
-                this._aiTryBuildNearCapital(A, "missile_silo", 20, pref) ||
-                this._aiTryBuildStructure(A, "missile_silo", pref);
-              if (okS) return;
-            }
-          }
-        }
-      }
-
-      // Airbases: uncommon strategic support structure.
-      {
-        const basicsOk = fac >= 1 && cities >= 1 && barr >= 1;
-        if (basicsOk) {
-          let desiredAirbases = 0;
-          if (land >= 3600) desiredAirbases = 1;
-          if (atWar && land >= 14000) desiredAirbases = 2;
-          desiredAirbases = clampInt(desiredAirbases, 0, 2);
-
-          if (airbases < desiredAirbases) {
-            const ac = this.getBuildCost("airbase", A) | 0;
-            const reserve = Math.round(ac * (atWar ? 0.95 : 1.20));
-            let buildP = atWar ? 0.14 : 0.05;
-            if (underThreat) buildP *= 0.62;
-            if (ac > 0 && n.gold >= (ac + reserve) && this._rng() < buildP) {
-              const okAirbase =
-                this._aiTryBuildNearCapital(A, "airbase", 18, "interior") ||
-                this._aiTryBuildStructure(A, "airbase", "interior");
-              if (okAirbase) return;
-            }
-          }
-        }
-      }
-
-      // Targets scale with land; personality shifts the slope.
       let desiredCities = 1 + Math.floor(land / p.cityPerLand);
       let desiredFac = Math.floor(land / p.factoryPerLand);
       let desiredBarr = 1 + Math.floor(land / p.barracksPerLand);
+      const troopFill = clamp01(infantry / troopsCap);
+      const steelReserveNeed = 90 + (fac * 70) + (ports * 55) + (atWar ? 160 : 80);
+      const steelPressure = clamp01((steelReserveNeed - steel) / Math.max(100, steelReserveNeed));
+      const oilPressure = clamp01((2200 + (ports * 420) + (airbases * 520) + (atWar ? 950 : 0) - oil) / 3000);
+      const foodPressure = clamp01((foodDemandPS - foodPS) / Math.max(1, foodDemandPS + 2));
 
       if (n.popRatio > 0.82) desiredCities += 1;
+      if (foodPressure > 0.10 && land >= 500) desiredCities += 1;
       if (fac === 0) desiredFac = Math.max(desiredFac, 1);
+      if (steelPressure > 0.18 && land >= 900) desiredFac += 1;
       if (atWar) desiredBarr += 1;
-      if (atWar && n.infantry < (n.troopsCap || 0) * 0.55) desiredBarr += 1;
+      if (atWar && troopFill < 0.55) desiredBarr += 1;
+      if (underThreat && land >= 1400) desiredBarr += 1;
 
-      // Decide what to build next.
-      let pick = null;
-      const needs = [];
-      if (cities < desiredCities) needs.push({ t: "city", s: 3 + (desiredCities - cities) });
-      if (fac < desiredFac) needs.push({ t: "factory", s: 2.5 + (desiredFac - fac) });
-      if (barr < desiredBarr) needs.push({ t: "barracks", s: 2.7 + (desiredBarr - barr) });
+      const candidates = [];
+      const addCandidate = (type, score, pref = "any", extra = null) => {
+        if (!(score > 0.05)) return;
+        candidates.push({
+          type: String(type || ""),
+          score: Number(score) || 0,
+          pref,
+          ...(extra && typeof extra === "object" ? extra : {})
+        });
+      };
 
-      if (needs.length) {
-        // Weighted by urgency and personality.
-        for (const it of needs) {
-          const w = p.buildW[it.t] || 0.33;
-          it.s *= 0.75 + w * 0.9;
-          if (atWar && it.t === "barracks") it.s *= 1.2;
-          if (n.popRatio > 0.90 && it.t === "city") it.s *= 1.25;
-        }
-        needs.sort((a, b) => b.s - a.s);
-        pick = needs[0].t;
-      } else {
-        // If we're rich, keep building in-line with personality.
-        const cheapBuild = Math.max(1, Math.min(
-          this.getBuildCost("city", A),
-          this.getBuildCost("factory", A),
-          this.getBuildCost("barracks", A)
-        ));
-        if (n.gold > cheapBuild * 2.0) {
-          const r = this._rng();
-          const wC = p.buildW.city || 0.34;
-          const wF = p.buildW.factory || 0.33;
-          const wB = p.buildW.barracks || 0.33;
-          const sum = wC + wF + wB;
-          const rr = r * sum;
-          pick = rr < wC ? "city" : rr < wC + wF ? "factory" : "barracks";
+      const cityGap = Math.max(0, desiredCities - cities);
+      const factoryGap = Math.max(0, desiredFac - fac);
+      const barracksGap = Math.max(0, desiredBarr - barr);
+      if (cityGap > 0) {
+        let score = 3.0 + (cityGap * 1.45);
+        score += clamp01((n.popRatio - 0.72) / 0.28) * 1.45;
+        score += foodPressure * 0.85;
+        score *= 0.78 + ((p.buildW?.city || 0.33) * 0.95);
+        addCandidate("city", score, "interior", {
+          allowStack: true,
+          stackBias: 0.16,
+          existingCount: cities,
+          urgent: cityGap >= 2 || n.popRatio > 0.93
+        });
+      }
+
+      if (factoryGap > 0 || steelPressure > 0.20) {
+        let score = 2.8 + (factoryGap * 1.55);
+        score += steelPressure * 1.7;
+        score += clamp01((1.35 - steelPS) / 1.35) * 0.75;
+        score *= 0.78 + ((p.buildW?.factory || 0.33) * 0.95);
+        addCandidate("factory", score, "interior", {
+          allowStack: true,
+          stackBias: 0.20,
+          existingCount: fac,
+          urgent: fac === 0 || steelPressure > 0.55
+        });
+      }
+
+      if (barracksGap > 0 || atWar || underThreat) {
+        let score = 2.4 + (barracksGap * 1.40);
+        score += (1 - troopFill) * 1.4;
+        if (atWar) score += 1.25;
+        if (underThreat) score += 0.95;
+        score *= 0.78 + ((p.buildW?.barracks || 0.33) * 0.95);
+        addCandidate("barracks", score, atWar ? "border" : "any", {
+          allowStack: !atWar,
+          stackBias: atWar ? -0.20 : 0.02,
+          existingCount: barr,
+          urgent: atWar && troopFill < 0.62
+        });
+      }
+
+      let desiredPorts = 0;
+      if (land >= 320) desiredPorts = 1;
+      if (land >= 6800 && cities >= 3) desiredPorts += 1;
+      if (land >= 18000 && cities >= 6) desiredPorts += 1;
+      desiredPorts = clampInt(desiredPorts, 0, 3);
+      if (ports < desiredPorts) {
+        let score = 2.8 + ((desiredPorts - ports) * 1.55);
+        score += clamp01(Number(p.econ ?? 0.5)) * 0.35;
+        if (ports === 0) score += 0.55;
+        addCandidate("port", score, "coast", {
+          allowStack: false,
+          existingCount: ports,
+          urgent: ports === 0 && land >= 1200
+        });
+      }
+
+      let desiredRigs = 0;
+      if (ports > 0 || airbases > 0 || atWar) desiredRigs = 1;
+      if (ports >= 2 || airbases > 0) desiredRigs += 1;
+      if (land >= 7000) desiredRigs += 1;
+      if (atWar && (ports > 0 || airbases > 0)) desiredRigs += 1;
+      if (oil < 2200 || oilPS < 1.2) desiredRigs += 1;
+      desiredRigs = clampInt(desiredRigs, 0, 4);
+      if (coastalRigs < desiredRigs) {
+        let score = 2.9 + ((desiredRigs - coastalRigs) * 1.45);
+        score += oilPressure * 1.8;
+        if (oil < 1800) score += 0.65;
+        addCandidate("coastal_rig", score, "any", {
+          allowStack: false,
+          existingCount: coastalRigs,
+          urgent: oilPressure > 0.55 || (atWar && (ports > 0 || airbases > 0))
+        });
+      }
+
+      let desiredDefence = 0;
+      if (atWar) desiredDefence = Math.max(1, Math.floor(land / 900));
+      else if (underThreat) desiredDefence = Math.max(1, Math.floor(land / 1800));
+      desiredDefence = clampInt(desiredDefence, 0, 8);
+      if (defencePosts < desiredDefence) {
+        let score = 2.5 + ((desiredDefence - defencePosts) * 1.30);
+        if (atWar) score += 1.10;
+        if (underThreat) score += 0.75;
+        addCandidate("defence_post", score, "border", {
+          allowStack: false,
+          existingCount: defencePosts,
+          urgent: atWar || underThreat
+        });
+      }
+
+      let desiredLabs = 0;
+      if (land >= 2200 && cities >= 2 && fac >= 1) desiredLabs = 1;
+      if (land >= 8000 && cities >= 4 && fac >= 2) desiredLabs += 1;
+      if (land >= 18000 && cities >= 7 && fac >= 4) desiredLabs += 1;
+      if (atWar && underThreat) desiredLabs = Math.max(0, desiredLabs - 1);
+      desiredLabs = clampInt(desiredLabs, 0, 3);
+      if (researchLabs < desiredLabs) {
+        const rpPressure = clamp01(((0.45 + land / 6000) - researchIncome) / Math.max(0.5, 0.45 + land / 6000));
+        let score = 2.1 + ((desiredLabs - researchLabs) * 1.20);
+        score += rpPressure * 1.35;
+        score += clamp01(Number(p.econ ?? 0.5)) * 0.22;
+        if (atWar) score -= 0.45;
+        addCandidate("research_lab", score, "interior", {
+          allowStack: true,
+          stackBias: 0.12,
+          existingCount: researchLabs
+        });
+      }
+
+      if (researchBonuses?.unlockAbmLauncher) {
+        let desiredAbm = Math.max(underThreat ? 1 : 0, Math.floor(land / 6500));
+        if (atWar || underThreat) desiredAbm += 1;
+        if (missileSilos > 0) desiredAbm += 1;
+        desiredAbm = clampInt(desiredAbm, 0, 4);
+        if (abmLaunchers < desiredAbm) {
+          let score = 2.4 + ((desiredAbm - abmLaunchers) * 1.20);
+          if (atWar) score += 0.70;
+          if (underThreat) score += 1.00;
+          if (missileSilos > 0) score += 0.45;
+          addCandidate("abm_launcher", score, underThreat ? "any" : "interior", {
+            allowStack: false,
+            nearCapital: true,
+            maxRadius: 14,
+            existingCount: abmLaunchers,
+            urgent: underThreat
+          });
         }
       }
 
-      if (!pick) return;
-
-      const cost = this.getBuildCost(pick, A) | 0;
-      if (cost <= 0) return;
-
-      // Keep a reserve so AI doesn't go to 0 every time,
-      // but spend aggressively early so AIs actually get their first structures down.
-      let reserveBase = (p.reserveGoldBase | 0);
-      let reserveFrac = (p.reserveFrac != null) ? Number(p.reserveFrac) : 0.55;
-
-      const builtTotal = cities + fac + barr;
-      if (builtTotal < 2) { reserveBase = 0; reserveFrac = Math.min(reserveFrac, 0.10); }
-      if (atWar) { reserveBase = Math.min(reserveBase, Math.round(cost * 0.10)); reserveFrac = Math.min(reserveFrac, 0.18); }
-      if (pick === "factory" && fac === 0) { reserveBase = 0; reserveFrac = 0.0; }
-
-      const reserve = reserveBase + Math.round(cost * reserveFrac);
-      if (n.gold < cost + reserve) return;
-
-      // Prefer stacking sometimes (not always). This reduces wasted scan time and
-      // lets AIs densify like players, while still spreading out to new sites.
-      // Bias: more stacking for economy-leaning personas; less during active war.
-      const hasAny = (pick === "city") ? (cities > 0) : (pick === "factory") ? (fac > 0) : (barr > 0);
-      if (hasAny) {
-        let stackP = 0.35 + 0.25 * (Number(p.econ) || 0.5);
-        if (atWar && pick === "barracks") stackP = Math.max(0.18, stackP - 0.18);
-        if ((cities + fac + barr) < 3) stackP = Math.max(0.10, stackP - 0.22);
-        if (this._rng() < stackP) {
-          const okStack = this._aiTryStackStructure(A, pick);
-          if (okStack) return;
+      if (researchBonuses?.unlockRadarStation) {
+        let desiredRadar = 0;
+        if (land >= 5200 && (underThreat || abmLaunchers > 0 || missileSilos > 0)) desiredRadar = 1;
+        if (land >= 15000 && (atWar || abmLaunchers + missileSilos >= 3)) desiredRadar += 1;
+        desiredRadar = clampInt(desiredRadar, 0, 2);
+        if (radarStations < desiredRadar) {
+          let score = 2.2 + ((desiredRadar - radarStations) * 1.15);
+          if (underThreat) score += 0.80;
+          if (missileSilos > 0 || abmLaunchers > 0) score += 0.65;
+          addCandidate("radar_station", score, "interior", {
+            allowStack: false,
+            nearCapital: true,
+            maxRadius: 18,
+            existingCount: radarStations
+          });
         }
       }
 
-      const pref = pick === "barracks" ? (atWar ? "border" : "any") : "interior";
-      this._aiTryBuildStructure(A, pick, pref);
+      if (researchBonuses?.unlockMissileSilo && fac >= 1 && cities >= 1) {
+        let desiredSilos = atWar
+          ? Math.max(1, Math.floor(land / 9000) + 1)
+          : Math.max(0, Math.floor(land / 13000));
+        if (!atWar && land >= 6500) desiredSilos = Math.max(desiredSilos, 1);
+        desiredSilos = clampInt(desiredSilos, 0, 3);
+        if (missileSilos < desiredSilos) {
+          let score = 2.0 + ((desiredSilos - missileSilos) * 1.05);
+          if (atWar) score += 0.60;
+          if ((Number(n.gold) || 0) > 5_500_000) score += 0.50;
+          addCandidate("missile_silo", score, atWar ? "interior" : "any", {
+            allowStack: false,
+            nearCapital: true,
+            maxRadius: 20,
+            existingCount: missileSilos
+          });
+        }
+      }
+
+      if (researchBonuses?.unlockAirbase && fac >= 1 && cities >= 1 && barr >= 1) {
+        let desiredAirbases = 0;
+        if (land >= 3600) desiredAirbases = 1;
+        if (atWar && land >= 14000) desiredAirbases = 2;
+        desiredAirbases = clampInt(desiredAirbases, 0, 2);
+        if (airbases < desiredAirbases) {
+          let score = 1.8 + ((desiredAirbases - airbases) * 1.05);
+          if (atWar) score += 0.55;
+          score += oilPressure * 0.35;
+          addCandidate("airbase", score, "interior", {
+            allowStack: false,
+            nearCapital: true,
+            maxRadius: 18,
+            existingCount: airbases
+          });
+        }
+      }
+
+      if (candidates.length <= 0) {
+        const richEnough = (Number(n.gold) || 0) > Math.max(
+          this.getBuildCost("city", A) | 0,
+          this.getBuildCost("factory", A) | 0,
+          this.getBuildCost("barracks", A) | 0
+        ) * 2.1;
+        if (!richEnough) return;
+        addCandidate("city", 1.2 + (p.buildW?.city || 0.33), "interior", {
+          allowStack: true,
+          stackBias: 0.12,
+          existingCount: cities
+        });
+        addCandidate("factory", 1.2 + (p.buildW?.factory || 0.33), "interior", {
+          allowStack: true,
+          stackBias: 0.18,
+          existingCount: fac
+        });
+        addCandidate("barracks", 1.2 + (p.buildW?.barracks || 0.33), atWar ? "border" : "any", {
+          allowStack: !atWar,
+          stackBias: atWar ? -0.18 : 0,
+          existingCount: barr
+        });
+      }
+
+      const viable = [];
+      for (let i = 0; i < candidates.length; i++) {
+        const cand = candidates[i];
+        const reserve = this._aiBuildReserveGold(A, cand.type, p, {
+          ...buildContext,
+          urgent: !!cand.urgent
+        });
+        if (!this._aiCanAffordPlannedBuild(A, cand.type, reserve)) continue;
+
+        let score = Number(cand.score) || 0;
+        const cooldownLeft = this._aiBuildTypeCooldownRemaining(A, cand.type);
+        if (cooldownLeft > 0 && !cand.urgent) score -= Math.min(2.6, cooldownLeft * 0.14);
+        score -= this._aiBuildRepeatPenalty(A, cand.type);
+        if (String(ai.lastBuildType || "") && String(ai.lastBuildType || "") !== cand.type) score += 0.14;
+        if (score <= 0.12) continue;
+        viable.push({ ...cand, score });
+      }
+      if (viable.length <= 0) return;
+
+      viable.sort((a, b) => b.score - a.score);
+      const shortlist = [];
+      const bestScore = viable[0].score;
+      for (let i = 0; i < viable.length && shortlist.length < 4; i++) {
+        if (viable[i].score + 0.70 < bestScore) break;
+        shortlist.push(viable[i]);
+      }
+
+      while (shortlist.length > 0) {
+        let total = 0;
+        for (let i = 0; i < shortlist.length; i++) total += Math.max(0.05, shortlist[i].score);
+        let r = this._rng() * total;
+        let pickIndex = 0;
+        for (let i = 0; i < shortlist.length; i++) {
+          r -= Math.max(0.05, shortlist[i].score);
+          if (r <= 0) {
+            pickIndex = i;
+            break;
+          }
+        }
+        const choice = shortlist.splice(pickIndex, 1)[0];
+        if (choice && this._aiTryExecuteBuildChoice(A, choice, buildContext)) return;
+      }
     }
 
   World.prototype._aiStrategize = function(id) {

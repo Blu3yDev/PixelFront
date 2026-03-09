@@ -25,6 +25,8 @@ const OIL_UPKEEP_PRIORITY = Object.freeze({
   abm_launcher: 30,
   missile_silo: 40
 });
+const FOOD_SUPPORT_RESERVE_WINDOW_S = 300;
+const FOOD_SUPPORT_RESERVE_GRACE = 0.65;
 
 function clampStock(resourceKey, valueRaw) {
   const key = String(resourceKey || "").toLowerCase();
@@ -46,6 +48,13 @@ function fmtResourceName(resourceKey) {
 function normalizeResourceKey(resourceRaw) {
   const key = String(resourceRaw || "").trim().toLowerCase();
   return RESOURCE_KEYS.includes(key) ? key : "";
+}
+
+function clamp01(valueRaw) {
+  const value = Number(valueRaw) || 0;
+  if (value <= 0) return 0;
+  if (value >= 1) return 1;
+  return value;
 }
 
 export function installResources(World) {
@@ -150,6 +159,91 @@ export function installResources(World) {
       oilPS,
       foodDemandPS: demandPS
     };
+  };
+
+  World.prototype._updateNationFoodState = function(ownerId, dtRaw, consumeFood = false) {
+    const id = ownerId | 0;
+    const dt = Math.max(0, Number(dtRaw) || 0);
+    const n = this._ensureNationResourceState(id);
+    if (!n || !n.alive) return null;
+
+    this._recomputeNationResourceSnapshot(id);
+
+    const demandPS = Math.max(0, Number(n.foodDemandPS) || 0);
+    const demand = demandPS * dt;
+    const foodPS = Math.max(0, Number(n.foodPS) || 0);
+    const availableFood = Math.max(0, Number(n.food) || 0);
+
+    let stockCoverage = 1;
+    if (demand > 0.00001) {
+      const spendableFood = consumeFood
+        ? availableFood
+        : (availableFood + (foodPS * dt));
+      stockCoverage = clamp01(spendableFood / demand);
+    }
+
+    if (consumeFood && demand > 0.00001) {
+      const consumed = Math.min(availableFood, demand);
+      n.food = Math.max(0, availableFood - consumed);
+      stockCoverage = clamp01(consumed / demand);
+    }
+
+    const productionCoverage = demandPS > 0.00001
+      ? clamp01(foodPS / demandPS)
+      : 1;
+    const reserveCoverage = demandPS > 0.00001
+      ? clamp01(availableFood / Math.max(1, demandPS * FOOD_SUPPORT_RESERVE_WINDOW_S))
+      : 1;
+    const effectiveCoverage = clamp01(
+      stockCoverage * (
+        productionCoverage +
+        ((1 - productionCoverage) * reserveCoverage * FOOD_SUPPORT_RESERVE_GRACE)
+      )
+    );
+    const supplyRatio = demandPS > 0.00001
+      ? ((foodPS + 0.00001) / demandPS)
+      : 1;
+
+    n.foodSupport = effectiveCoverage;
+
+    let growthMul = 1;
+    let reinforceMul = 1;
+    if (effectiveCoverage >= 0.999 && productionCoverage >= 0.999) {
+      const bonus = Math.max(0, Math.min(1, supplyRatio - 1));
+      growthMul = 1 + bonus * 0.22;
+      reinforceMul = 1 + bonus * 0.18;
+    } else {
+      growthMul = RESOURCE_FOOD_GROWTH_MIN_MUL + (1 - RESOURCE_FOOD_GROWTH_MIN_MUL) * effectiveCoverage;
+      reinforceMul = RESOURCE_FOOD_REINFORCE_MIN_MUL + (1 - RESOURCE_FOOD_REINFORCE_MIN_MUL) * effectiveCoverage;
+    }
+
+    if (growthMul < RESOURCE_FOOD_GROWTH_MIN_MUL) growthMul = RESOURCE_FOOD_GROWTH_MIN_MUL;
+    if (growthMul > RESOURCE_FOOD_GROWTH_MAX_MUL) growthMul = RESOURCE_FOOD_GROWTH_MAX_MUL;
+    if (reinforceMul < RESOURCE_FOOD_REINFORCE_MIN_MUL) reinforceMul = RESOURCE_FOOD_REINFORCE_MIN_MUL;
+    if (reinforceMul > RESOURCE_FOOD_REINFORCE_MAX_MUL) reinforceMul = RESOURCE_FOOD_REINFORCE_MAX_MUL;
+
+    n.foodGrowthMul = growthMul;
+    n.foodReinforceMul = reinforceMul;
+
+    return {
+      demandPS,
+      stockCoverage,
+      productionCoverage,
+      reserveCoverage,
+      effectiveCoverage,
+      growthMul,
+      reinforceMul
+    };
+  };
+
+  World.prototype._refreshResourcePressure = function(dtRaw) {
+    const dt = Math.max(0, Number(dtRaw) || 0);
+    const nationCount = Math.max(1, this._nationCount | 0);
+    for (let id = 1; id <= nationCount; id++) {
+      const n = this._ensureNationResourceState(id);
+      if (!n || !n.alive) continue;
+      this._updateNationFoodState(id, dt, false);
+    }
   };
 
   World.prototype._grantResource = function(ownerId, resourceRaw, amountRaw) {
@@ -386,38 +480,7 @@ export function installResources(World) {
         : { demandPS: 0, support: 1 };
       n.oilDemandPS = Math.max(0, Number(oilStatus?.demandPS) || 0);
       n.oilSupport = Math.max(0, Math.min(1, Number(oilStatus?.support) || 0));
-
-      const demandPS = Math.max(0, Number(n.foodDemandPS) || 0);
-      const demand = demandPS * dt;
-      const availableFood = Math.max(0, Number(n.food) || 0);
-      const consumed = Math.min(availableFood, demand);
-      n.food = Math.max(0, availableFood - consumed);
-
-      const coverage = demand > 0.00001 ? (consumed / demand) : 1;
-      const supplyRatio = demandPS > 0.00001
-        ? ((Math.max(0, Number(n.foodPS) || 0) + 0.00001) / demandPS)
-        : 1;
-
-      n.foodSupport = Math.max(0, coverage);
-
-      let growthMul = 1;
-      let reinforceMul = 1;
-      if (coverage >= 0.999) {
-        const bonus = Math.max(0, Math.min(1, supplyRatio - 1));
-        growthMul = 1 + bonus * 0.22;
-        reinforceMul = 1 + bonus * 0.18;
-      } else {
-        growthMul = RESOURCE_FOOD_GROWTH_MIN_MUL + (1 - RESOURCE_FOOD_GROWTH_MIN_MUL) * coverage;
-        reinforceMul = RESOURCE_FOOD_REINFORCE_MIN_MUL + (1 - RESOURCE_FOOD_REINFORCE_MIN_MUL) * coverage;
-      }
-
-      if (growthMul < RESOURCE_FOOD_GROWTH_MIN_MUL) growthMul = RESOURCE_FOOD_GROWTH_MIN_MUL;
-      if (growthMul > RESOURCE_FOOD_GROWTH_MAX_MUL) growthMul = RESOURCE_FOOD_GROWTH_MAX_MUL;
-      if (reinforceMul < RESOURCE_FOOD_REINFORCE_MIN_MUL) reinforceMul = RESOURCE_FOOD_REINFORCE_MIN_MUL;
-      if (reinforceMul > RESOURCE_FOOD_REINFORCE_MAX_MUL) reinforceMul = RESOURCE_FOOD_REINFORCE_MAX_MUL;
-
-      n.foodGrowthMul = growthMul;
-      n.foodReinforceMul = reinforceMul;
+      this._updateNationFoodState(id, dt, true);
     }
   };
 

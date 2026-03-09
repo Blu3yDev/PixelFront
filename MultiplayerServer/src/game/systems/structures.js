@@ -108,6 +108,7 @@ export function installStructures(World) {
     this.structures.push(st);
     this._structureById.set(id, st);
     this._defencePostCacheReady = false;
+    if (st.type === "radar_station" && typeof this._markRadarCoverageDirty === "function") this._markRadarCoverageDirty();
 
     // Occupy a 3x3 footprint for collision and stack selection.
     this._markStructureFootprint(id, st.x, st.y);

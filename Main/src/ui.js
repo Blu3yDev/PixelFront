@@ -261,6 +261,7 @@ export function createHUD() {
     research_lab: "Generates Research Points and unlocks long-term national upgrades",
     missile_silo: "Builds and launches strategic warheads",
     abm_launcher: "Intercepts incoming missiles in a local radius",
+    radar_station: "Reveals nearby nations, detects missiles and transport planes, and improves ABM coverage",
     airbase: "Supports airborne operations and transport plane launches"
   };
 
@@ -286,6 +287,7 @@ export function createHUD() {
   const btnResearchLab = must("btnResearchLab");
   const btnMissileSilo = must("btnMissileSilo");
   const btnAbmLauncher = must("btnAbmLauncher");
+  const btnRadarStation = must("btnRadarStation");
   const btnAirbase = must("btnAirbase");
   const btnRegenerate = maybe("btnRegenerate");
 
@@ -763,6 +765,7 @@ export function createHUD() {
     research_lab: { el: btnResearchLab, name: "Research Lab", costEl: null },
     missile_silo: { el: btnMissileSilo, name: "Missile Silo", costEl: null },
     abm_launcher: { el: btnAbmLauncher, name: "ABM Launcher", costEl: null },
+    radar_station: { el: btnRadarStation, name: "Radar Station", costEl: null },
     airbase: { el: btnAirbase, name: "Airbase", costEl: null }
   };
 
@@ -824,6 +827,7 @@ export function createHUD() {
     { el: btnResearchLab, type: "research_lab" },
     { el: btnMissileSilo, type: "missile_silo" },
     { el: btnAbmLauncher, type: "abm_launcher" },
+    { el: btnRadarStation, type: "radar_station" },
     { el: btnAirbase, type: "airbase" }
   ];
 
@@ -844,7 +848,7 @@ export function createHUD() {
   }
 
   // Keep the latest costs in UI to show in the build-mode label.
-  const lastBuildCosts = { city: 0, factory: 0, barracks: 0, defence_post: 0, port: 0, coastal_rig: 0, research_lab: 0, missile_silo: 0, abm_launcher: 0, airbase: 0 };
+  const lastBuildCosts = { city: 0, factory: 0, barracks: 0, defence_post: 0, port: 0, coastal_rig: 0, research_lab: 0, missile_silo: 0, abm_launcher: 0, radar_station: 0, airbase: 0 };
   let lastPlayerGold = 0;
   const lastBuildResourceCosts = {
     city: { food: 0, steel: 0, oil: 0 },
@@ -856,9 +860,10 @@ export function createHUD() {
     research_lab: { food: 0, steel: 0, oil: 0 },
     missile_silo: { food: 0, steel: 0, oil: 0 },
     abm_launcher: { food: 0, steel: 0, oil: 0 },
+    radar_station: { food: 0, steel: 0, oil: 0 },
     airbase: { food: 0, steel: 0, oil: 0 }
   };
-  const lastBuildOilUpkeep = { city: 0, factory: 0, barracks: 0, defence_post: 0, port: 0, coastal_rig: 0, research_lab: 0, missile_silo: 0, abm_launcher: 0, airbase: 0 };
+  const lastBuildOilUpkeep = { city: 0, factory: 0, barracks: 0, defence_post: 0, port: 0, coastal_rig: 0, research_lab: 0, missile_silo: 0, abm_launcher: 0, radar_station: 0, airbase: 0 };
   let lastPlayerResources = { food: 0, steel: 0, oil: 0 };
   const buildLockState = Object.create(null);
   for (const key of Object.keys(buildBtnMeta)) {
@@ -1202,7 +1207,7 @@ export function createHUD() {
     let sig = `${String(data.name || "Nation Intel")}|${String(data.meta || "")}|${Math.max(0, Math.floor(Number(data.landOwned) || 0))}|${Number.isFinite(Number(data.landPct)) ? Number(data.landPct).toFixed(1) : ""}|${Math.max(0, Math.floor(Number(data.gold) || 0))}|${String(data.populationText || "0")}|${typeof data.infantryText === "string" ? data.infantryText : Math.max(0, Math.floor(Number(data.infantry) || 0))}|${structs.length}|`;
     for (let i = 0; i < structs.length; i++) {
       const s = structs[i];
-      sig += `${String(s?.type || "")}:${Math.max(0, Math.floor(Number(s?.count) || 0))}|`;
+      sig += `${String(s?.type || "")}:${String(s?.countText || Math.max(0, Math.floor(Number(s?.count) || 0)))}|`;
     }
     if (panelRef.dataSig === sig) return;
     panelRef.dataSig = sig;
@@ -1234,6 +1239,7 @@ export function createHUD() {
       research_lab: "/Structures/research_lab.png",
       missile_silo: "/Structures/missile_silo.png",
       abm_launcher: "/Structures/abm_launcher.png",
+      radar_station: "/Structures/radar_station.png",
       airbase: "/Structures/airbase.png"
     };
 
@@ -1242,6 +1248,7 @@ export function createHUD() {
     for (const s of structs) {
       const type = String(s?.type || "");
       const count = Math.max(0, Math.floor(Number(s?.count) || 0));
+      const countText = String(s?.countText || fmtCompact(count));
       liveTypes.add(type);
 
       let itemRef = panelRef.structItems.get(type);
@@ -1257,10 +1264,10 @@ export function createHUD() {
         panelRef.structItems.set(type, itemRef);
       }
 
-      itemRef.item.className = "intelStruct" + (count <= 0 ? " isZero" : "");
+      itemRef.item.className = "intelStruct" + (!s?.countText && count <= 0 ? " isZero" : "");
       itemRef.img.src = iconFor[type] || "";
       itemRef.img.title = s?.label ? String(s.label) : "";
-      itemRef.val.textContent = fmtCompact(count);
+      itemRef.val.textContent = countText;
       frag.appendChild(itemRef.item);
     }
 
@@ -1910,7 +1917,7 @@ export function createHUD() {
     clearBuildMode: () => setBuildMode(null),
 
     // Update build costs displayed on the build buttons and in the build-mode label.
-    // Expects: { city, factory, barracks, defence_post, port, coastal_rig, research_lab, missile_silo, abm_launcher, airbase, playerGold, playerResources, resourceCosts, oilUpkeep }
+    // Expects: { city, factory, barracks, defence_post, port, coastal_rig, research_lab, missile_silo, abm_launcher, radar_station, airbase, playerGold, playerResources, resourceCosts, oilUpkeep }
     setBuildCosts: (m) => {
       const obj = m || {};
       lastPlayerGold = Math.max(0, Math.floor(Number(obj.playerGold) || 0));

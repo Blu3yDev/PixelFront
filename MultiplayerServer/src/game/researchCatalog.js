@@ -1,7 +1,7 @@
 const HUMAN_START_RESEARCH_POINTS = 42;
 const AI_START_RESEARCH_POINTS = 28;
 const RESEARCH_POINTS_PER_LAB_PER_DAY = 2.5;
-const RESEARCH_POINTS_PER_CITY_PER_DAY = 0.2;
+const RESEARCH_POINTS_PER_CITY_PER_DAY = 0.1;
 
 const BRANCH_META = Object.freeze({
   economy: Object.freeze({
@@ -48,12 +48,15 @@ const ECONOMY_NODES = Object.freeze([
 
 const MILITARY_NODES = Object.freeze([
   makeNode("military", 1, "mil_barracks_i", "Barracks I", "Sharpen barracks output and early infantry readiness.", "+7% Infantry production boost.", 34, 60, [], { barracksRegenMul: 0.07 }),
+  makeNode("military", 1, "mil_unlock_abm_launchers", "Unlock ABM Launchers", "Authorize anti-ballistic missile launcher deployment for homeland defence.", "Unlock ABM Launchers.", 54, 82, [], { unlockAbmLauncher: true }),
   makeNode("military", 1, "mil_fortifications_i", "Fortifications I", "Improve defensive effectiveness around Defence Posts.", "+7% Defence Post boost.", 36, 62, [], { defencePostMul: 0.07 }),
   makeNode("military", 1, "mil_field_medicine_i", "Field Medicine I", "Recover a portion of battlefield losses back into Infantry.", "Recover 4% of casualties back into Infantry.", 44, 72, [], { casualtyRecoveryFrac: 0.04 }),
+  makeNode("military", 1, "mil_unlock_airbases", "Unlock Airbases", "Authorize national airbase construction for long-range airborne operations.", "Unlock Airbases.", 52, 78, [], { unlockAirbase: true }),
   makeNode("military", 1, "mil_nuclear_research", "Nuclear Research", "Establish the strategic program needed to build Missile Silos.", "Unlock Missile Silos.", 56, 84, [], { unlockMissileSilo: true }),
   makeNode("military", 2, "mil_barracks_ii", "Barracks II", "Raise infantry throughput with improved training cycles.", "+10% Infantry production boost.", 76, 108, ["mil_barracks_i"], { barracksRegenMul: 0.10 }),
   makeNode("military", 2, "mil_fortifications_ii", "Fortifications II", "Reinforce defensive construction standards and coverage.", "+10% Defence Post boost.", 80, 108, ["mil_fortifications_i"], { defencePostMul: 0.10 }),
   makeNode("military", 2, "mil_field_medicine_ii", "Field Medicine II", "Improve casualty retention and recovery during conflict.", "Recover 7% of casualties back into Infantry.", 88, 114, ["mil_field_medicine_i"], { casualtyRecoveryFrac: 0.07 }),
+  makeNode("military", 2, "mil_research_radar_station", "Research Radar Station", "Develop long-range battlefield radar to reveal nearby nations and tighten ABM targeting.", "Unlock Radar Stations.", 132, 146, [], { unlockRadarStation: true }),
   makeNode("military", 2, "mil_atomic_bombs", "Atomic Bombs", "Operationalize smaller strategic warheads for your silos.", "Unlock Atomic Bombs.", 108, 130, ["mil_nuclear_research"], { unlockAtomic: true }),
   makeNode("military", 3, "mil_barracks_iii", "Barracks III", "Maximize infantry throughput with advanced barracks doctrine.", "+13% Infantry production boost.", 120, 150, ["mil_barracks_ii"], { barracksRegenMul: 0.13 }),
   makeNode("military", 3, "mil_fortifications_iii", "Fortifications III", "Finalize hardened national defensive positions.", "+13% Defence Post boost.", 124, 152, ["mil_fortifications_ii"], { defencePostMul: 0.13 }),
@@ -182,6 +185,9 @@ export function createResearchBonusAccumulator() {
     barracksRegenMul: 0,
     defencePostMul: 0,
     casualtyRecoveryFrac: 0,
+    unlockAirbase: false,
+    unlockAbmLauncher: false,
+    unlockRadarStation: false,
     unlockMissileSilo: false,
     unlockAtomic: false,
     unlockHydrogen: false,
@@ -205,6 +211,9 @@ export function mergeResearchBonuses(targetRaw, bonusRaw) {
   if (bonus.barracksRegenMul) target.barracksRegenMul += Number(bonus.barracksRegenMul) || 0;
   if (bonus.defencePostMul) target.defencePostMul += Number(bonus.defencePostMul) || 0;
   if (bonus.casualtyRecoveryFrac) target.casualtyRecoveryFrac += Number(bonus.casualtyRecoveryFrac) || 0;
+  if (bonus.unlockAirbase) target.unlockAirbase = true;
+  if (bonus.unlockAbmLauncher) target.unlockAbmLauncher = true;
+  if (bonus.unlockRadarStation) target.unlockRadarStation = true;
   if (bonus.unlockMissileSilo) target.unlockMissileSilo = true;
   if (bonus.unlockAtomic) target.unlockAtomic = true;
   if (bonus.unlockHydrogen) target.unlockHydrogen = true;

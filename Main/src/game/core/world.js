@@ -6,6 +6,8 @@ import {
   ABM_MISSILE_BASE_TIME_S,
   ABM_MISSILE_SPEED_TILES_PER_S,
   ABM_RADIUS_TILES,
+  RADAR_STATION_ABM_PRECISION_BONUS,
+  RADAR_STATION_RADIUS_TILES,
   AI_WAR_DECLARED_ATTACK_DELAY_S,
   ABM_RELOAD_S,
   ALLIANCE_DURATION_S,
@@ -90,6 +92,7 @@ const STRUCTURE_COUNT_CACHE_TYPES = Object.freeze([
   "research_lab",
   "missile_silo",
   "abm_launcher",
+  "radar_station",
   "airbase"
 ]);
 
@@ -248,6 +251,9 @@ export class World {
     this._activeSiloBuildIds = new Set();
     this._activeAirbaseBuildIds = new Set();
     this._activeStructureBuildIds = new Set();
+    this._radarCoverageVersion = 1;
+    this._radarStationCacheByOwner = new Map();
+    this._radarNationCoverageCacheByOwner = new Map();
     this.airborneMissions = [];
     this._nextAirborneMissionId = 1;
 
@@ -933,6 +939,7 @@ export class World {
     this._warEventCooldownUntil.fill(0);
     this._tradeShipCount.fill(0);
     this._structAt.fill(0);
+    this._markRadarCoverageDirty();
     this._ownerTilePos.fill(-1);
     for (let i = 0; i <= this._nationCount; i++) this._ownerTiles[i].length = 0;
     if (typeof this._resetPixelDirtyBounds === "function") this._resetPixelDirtyBounds();
@@ -1586,6 +1593,114 @@ export class World {
     return this._labelPos[ownerId] || null;
   }
 
+  _markRadarCoverageDirty() {
+    this._radarCoverageVersion = ((this._radarCoverageVersion | 0) + 1) | 0;
+    if ((this._radarCoverageVersion | 0) <= 0) this._radarCoverageVersion = 1;
+    if (!this._radarStationCacheByOwner || typeof this._radarStationCacheByOwner.clear !== "function") {
+      this._radarStationCacheByOwner = new Map();
+    } else {
+      this._radarStationCacheByOwner.clear();
+    }
+    if (!this._radarNationCoverageCacheByOwner || typeof this._radarNationCoverageCacheByOwner.clear !== "function") {
+      this._radarNationCoverageCacheByOwner = new Map();
+    } else {
+      this._radarNationCoverageCacheByOwner.clear();
+    }
+  }
+
+  getRadarCoverageVersion() {
+    return Math.max(1, this._radarCoverageVersion | 0);
+  }
+
+  _ensureRadarStationCache(ownerId) {
+    const owner = ownerId | 0;
+    if (owner <= 0 || owner > (this._nationCount | 0)) {
+      return { version: this.getRadarCoverageVersion(), stations: [] };
+    }
+
+    const version = this.getRadarCoverageVersion();
+    if (!this._radarStationCacheByOwner || typeof this._radarStationCacheByOwner.get !== "function") {
+      this._radarStationCacheByOwner = new Map();
+    }
+    const cached = this._radarStationCacheByOwner.get(owner);
+    if (cached && (cached.version | 0) === version) return cached;
+
+    const radiusTiles = Math.max(1, Number(RADAR_STATION_RADIUS_TILES) || 1);
+    const stations = [];
+    const structures = Array.isArray(this.structures) ? this.structures : [];
+    for (let i = 0; i < structures.length; i++) {
+      const st = structures[i];
+      if (!st || (st.owner | 0) !== owner) continue;
+      if (String(st.type || "") !== "radar_station") continue;
+      if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(st)) continue;
+      stations.push({
+        id: st.id | 0,
+        x: (st.x | 0) + 0.5,
+        y: (st.y | 0) + 0.5,
+        radiusTiles
+      });
+    }
+
+    const next = { version, stations };
+    this._radarStationCacheByOwner.set(owner, next);
+    return next;
+  }
+
+  getRadarCoverageStations(ownerId) {
+    return this._ensureRadarStationCache(ownerId).stations;
+  }
+
+  getRadarCoverageNationIds(ownerId) {
+    const owner = ownerId | 0;
+    if (owner <= 0 || owner > (this._nationCount | 0)) return new Set();
+
+    const ownerVersion = this.ownerVersion | 0;
+    const radarVersion = this.getRadarCoverageVersion();
+    if (!this._radarNationCoverageCacheByOwner || typeof this._radarNationCoverageCacheByOwner.get !== "function") {
+      this._radarNationCoverageCacheByOwner = new Map();
+    }
+    const cached = this._radarNationCoverageCacheByOwner.get(owner);
+    if (cached && (cached.ownerVersion | 0) === ownerVersion && (cached.radarVersion | 0) === radarVersion) {
+      return cached.nationIds;
+    }
+
+    const nationIds = new Set([owner]);
+    const stations = this._ensureRadarStationCache(owner).stations;
+    for (let i = 0; i < stations.length; i++) {
+      const station = stations[i];
+      const covered = this._collectOwnersInCircle(station.x, station.y, station.radiusTiles);
+      for (const nationIdRaw of covered.keys()) {
+        const nationId = nationIdRaw | 0;
+        if (nationId > OWNER.NONE) nationIds.add(nationId);
+      }
+    }
+
+    const next = { ownerVersion, radarVersion, nationIds };
+    this._radarNationCoverageCacheByOwner.set(owner, next);
+    return nationIds;
+  }
+
+  isNationInRadarCoverage(ownerId, targetId) {
+    const target = targetId | 0;
+    if (target <= OWNER.NONE) return false;
+    return this.getRadarCoverageNationIds(ownerId).has(target);
+  }
+
+  isPointInRadarCoverage(ownerId, xRaw, yRaw) {
+    const px = Number(xRaw);
+    const py = Number(yRaw);
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return false;
+    const stations = this._ensureRadarStationCache(ownerId).stations;
+    for (let i = 0; i < stations.length; i++) {
+      const station = stations[i];
+      const dx = px - station.x;
+      const dy = py - station.y;
+      const radius = Math.max(0, Number(station.radiusTiles) || 0);
+      if ((dx * dx) + (dy * dy) <= (radius * radius)) return true;
+    }
+    return false;
+  }
+
   _markStructureCountCacheDirty() {
     this._structureCountCacheDirty = true;
   }
@@ -1797,6 +1912,33 @@ export class World {
       }
     }
     return out;
+  }
+
+  _maybeTriggerPlayerRadarNukeAlert(flight) {
+    if (!flight || (flight.owner | 0) === OWNER.PLAYER) return;
+    if (flight.radarDetectedByPlayer) return;
+    const pos = this._flightPointAtAge(flight, Number(flight.ageS) || 0);
+    if (!pos || !this.isPointInRadarCoverage(OWNER.PLAYER, pos.x, pos.y)) return;
+    flight.radarDetectedByPlayer = true;
+    this._pushEvent(`Radar Station detected a nearby ${String(flight.label || title(flight.type) || "missile")}.`, {
+      kind: "radar_detection",
+      from: flight.owner | 0,
+      to: OWNER.PLAYER
+    });
+  }
+
+  _maybeTriggerPlayerRadarAirborneAlert(mission) {
+    if (!mission || (mission.owner | 0) === OWNER.PLAYER) return;
+    if (mission.radarDetectedByPlayer) return;
+    const phase = String(mission.phase || "flight");
+    if (phase !== "flight" && phase !== "drop") return;
+    if (!this.isPointInRadarCoverage(OWNER.PLAYER, Number(mission.planeX), Number(mission.planeY))) return;
+    mission.radarDetectedByPlayer = true;
+    this._pushEvent("Radar Station detected a nearby Transport Plane.", {
+      kind: "radar_detection",
+      from: mission.owner | 0,
+      to: OWNER.PLAYER
+    });
   }
 
   _getMissileSiloById(structId) {
@@ -2759,6 +2901,7 @@ export class World {
 
         d.pendingCount = Math.max(0, (d.pendingCount | 0) - 1);
         const ownerId = st.owner | 0;
+        if (String(st.type || "") === "radar_station") this._markRadarCoverageDirty();
         if (ownerId > 0 && typeof this._recomputeNationEconomySnapshot === "function") {
           this._recomputeNationEconomySnapshot(ownerId);
         }
@@ -2998,7 +3141,10 @@ export class World {
         const hydroPenalty = bestTargetKind === "nuke" && String(bestTargetType || "") === "hydrogen"
           ? Math.max(0, Number(ABM_INTERCEPT_HYDROGEN_PENALTY) || 0)
           : 0;
-        const interceptChance = clamp01(baseChance - hydroPenalty);
+        let interceptChance = clamp01(baseChance - hydroPenalty);
+        if (this.isPointInRadarCoverage(st.owner | 0, lx, ly)) {
+          interceptChance = clamp01(interceptChance + Math.max(0, Number(RADAR_STATION_ABM_PRECISION_BONUS) || 0));
+        }
         const willHit = this._rng() < interceptChance;
         const speed = this._getAbmHomingSpeedTilesPerS();
         const sx = (st.x | 0) + 0.5;
@@ -3159,6 +3305,8 @@ export class World {
         continue;
       }
 
+      if (!isAbm) this._maybeTriggerPlayerRadarNukeAlert(f);
+
       f.ageS = Math.max(0, Number(f.ageS) || 0) + step;
       const duration = Math.max(0.05, Number(f.durationS) || 0.05);
       if (f.ageS + 0.00001 < duration) continue;
@@ -3252,6 +3400,7 @@ export class World {
     const newO = newOwner | 0;
     if (oldO === newO) return;
     const type = String(st.type || "");
+    if (type === "radar_station") this._markRadarCoverageDirty();
     if (type === "missile_silo") {
       this._clearMissileSiloState(st);
     } else if (type === "airbase") {
@@ -3274,6 +3423,7 @@ export class World {
     if (!st) return;
     this._defencePostCacheReady = false;
     this._markStructureCountCacheDirty();
+    if (String(st.type || "") === "radar_station") this._markRadarCoverageDirty();
     if (String(st.type || "") === "coastal_rig" && Array.isArray(this._coastalRigStructures) && this._coastalRigStructures.length > 0) {
       const idx = this._coastalRigStructures.indexOf(st);
       if (idx >= 0) this._coastalRigStructures.splice(idx, 1);
@@ -3360,9 +3510,20 @@ placeStructure(type, ownerId, x, y) {
   const idx = iy * this.w + ix;
   const nat = this.nation[oid];
   if (!nat || !nat.alive) return { ok: false, reason: "Invalid owner." };
-  if (t === "missile_silo") {
+  if (t === "missile_silo" || t === "abm_launcher" || t === "radar_station" || t === "airbase") {
     const bonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(oid) : null;
-    if (!bonuses?.unlockMissileSilo) return { ok: false, reason: "Research Nuclear Research to unlock Missile Silos." };
+    if (t === "missile_silo" && !bonuses?.unlockMissileSilo) {
+      return { ok: false, reason: "Research Nuclear Research to unlock Missile Silos." };
+    }
+    if (t === "abm_launcher" && !bonuses?.unlockAbmLauncher) {
+      return { ok: false, reason: "Research Unlock ABM Launchers to unlock ABM Launchers." };
+    }
+    if (t === "radar_station" && !bonuses?.unlockRadarStation) {
+      return { ok: false, reason: "Complete Research Radar Station in Military to unlock Radar Stations." };
+    }
+    if (t === "airbase" && !bonuses?.unlockAirbase) {
+      return { ok: false, reason: "Research Unlock Airbases to unlock Airbases." };
+    }
   }
 
   if (t === "coastal_rig") {
@@ -3403,6 +3564,7 @@ placeStructure(type, ownerId, x, y) {
       if (stHere.type === t) {
         if (t === "missile_silo") return { ok: false, reason: "Missile Silo cannot be stacked." };
         if (t === "abm_launcher") return { ok: false, reason: "ABM Launcher cannot be stacked." };
+        if (t === "radar_station") return { ok: false, reason: "Radar Station cannot be stacked." };
         if (t === "airbase") return { ok: false, reason: "Airbase cannot be stacked." };
         if (t === "coastal_rig") return { ok: false, reason: "Coastal Rig cannot be stacked." };
         const cur = this._structureTotalCount(stHere);

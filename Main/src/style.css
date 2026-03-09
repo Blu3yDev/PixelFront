@@ -4983,6 +4983,7 @@ body {
   --mm-card-bg: linear-gradient(170deg, rgba(18, 18, 18, 0.88) 0%, rgba(4, 4, 4, 0.84) 100%);
   --mm-card-border: rgba(255, 255, 255, 0.2);
   --mm-track-shift: 0%;
+  --mm-footer-control-size: 44px;
 }
 
 #mainMenu::before {
@@ -5165,6 +5166,37 @@ body {
   gap: 12px;
   width: min(86vw, 390px);
   transition: transform 240ms ease, opacity 240ms ease;
+}
+
+.mainMenuPanelHome .mainMenuButtons .mainMenuBtn {
+  opacity: 0;
+  animation-duration: 620ms;
+  animation-timing-function: cubic-bezier(0.2, 0.78, 0.16, 1);
+  animation-fill-mode: both;
+}
+
+.mainMenuPanelHome .mainMenuButtons .mainMenuBtn:nth-child(odd) {
+  animation-name: mmButtonSlideInLeft;
+}
+
+.mainMenuPanelHome .mainMenuButtons .mainMenuBtn:nth-child(even) {
+  animation-name: mmButtonSlideInRight;
+}
+
+.mainMenuPanelHome .mainMenuButtons .mainMenuBtn:nth-child(1) {
+  animation-delay: 220ms;
+}
+
+.mainMenuPanelHome .mainMenuButtons .mainMenuBtn:nth-child(2) {
+  animation-delay: 300ms;
+}
+
+.mainMenuPanelHome .mainMenuButtons .mainMenuBtn:nth-child(3) {
+  animation-delay: 380ms;
+}
+
+.mainMenuPanelHome .mainMenuButtons .mainMenuBtn:nth-child(4) {
+  animation-delay: 460ms;
 }
 
 #mainMenu.isHomeLeaving .mainMenuPanelHome .mainMenuButtons,
@@ -6084,8 +6116,8 @@ body {
 }
 
 .mainMenuFlagPreview {
-  width: 56px;
-  height: 56px;
+  width: var(--mm-footer-control-size);
+  height: var(--mm-footer-control-size);
   border-radius: 999px;
   border: 2px solid rgba(255, 255, 255, 0.82);
   background: rgba(0, 0, 0, 0.6);
@@ -6096,7 +6128,7 @@ body {
 
 .mainMenuNameInput {
   width: min(58vw, 224px);
-  height: 44px;
+  height: var(--mm-footer-control-size);
   border-radius: 12px;
   border: 2px solid rgba(255, 255, 255, 0.85);
   background: rgba(0, 0, 0, 0.74);
@@ -6547,7 +6579,12 @@ body {
   display: grid;
   place-items: center;
   padding: 0;
+  --mm-quick-btn-tilt: -4deg;
   transition: transform 120ms ease, opacity 120ms ease;
+}
+
+.mainMenuQuickBtn:nth-child(even) {
+  --mm-quick-btn-tilt: 4deg;
 }
 
 #mmLibraryBtn {
@@ -6602,7 +6639,7 @@ body {
   background: transparent;
   border: 0;
   box-shadow: none;
-  transform: scale(1.03);
+  transform: rotate(var(--mm-quick-btn-tilt)) scale(1.03);
 }
 
 .mainMenuStatus {
@@ -8424,6 +8461,28 @@ body {
   }
 }
 
+@keyframes mmButtonSlideInLeft {
+  0% {
+    opacity: 0;
+    transform: translateX(-58px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes mmButtonSlideInRight {
+  0% {
+    opacity: 0;
+    transform: translateX(58px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 @keyframes mmFooterFade {
   0% { opacity: 0; }
   100% { opacity: 1; }
@@ -9717,9 +9776,14 @@ body {
   .mainMenuTitle,
   .mainMenuVersion,
   .mainMenuDeck,
+  .mainMenuBtn,
   .mainMenuStatus,
   .mainMenuFooter {
     animation: none !important;
+  }
+  .mainMenuPanelHome .mainMenuButtons .mainMenuBtn {
+    opacity: 1 !important;
+    transform: none !important;
   }
   .mainMenuTrack {
     transition: none !important;

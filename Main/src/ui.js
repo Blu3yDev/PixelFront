@@ -302,6 +302,7 @@ export function createHUD() {
   let cbDeclareWar = null;
   let cbSendWarship = null;
   let cbAttack = null;
+  let cbReinforce = null;
   let cbMakePeace = null;
   let cbRequestAlly = null;
   let cbTrade = null;
@@ -1719,7 +1720,9 @@ export function createHUD() {
           const enemyCasualties = Math.max(0, Math.floor(Number(it?.enemyCasualties) || 0));
           const casualties = Math.max(0, Math.floor(Number(it?.casualties) || 0));
           const expansionOnly = !!it?.expansionOnly;
-          sig += `${it?.id ?? 0}:${String(it?.opTitle || "")}:${troops}:${enemyTroops}:${enemyCasualties}:${casualties}:${expansionOnly ? 1 : 0}|`;
+          const canReinforce = !!it?.canReinforce;
+          const defenderId = it?.defenderId ?? 0;
+          sig += `${it?.id ?? 0}:${String(it?.opTitle || "")}:${troops}:${enemyTroops}:${enemyCasualties}:${casualties}:${expansionOnly ? 1 : 0}:${canReinforce ? 1 : 0}:${defenderId}|`;
         }
       }
       if (sig === dockOpsRenderSig) return;
@@ -1804,7 +1807,7 @@ export function createHUD() {
               rowE.className = "dockOpRow";
               const eLabel = document.createElement("div");
               eLabel.className = "dockOpLabel";
-              eLabel.textContent = "Enemy Counterattack Infantry";
+              eLabel.textContent = "Enemy Active Attack Infantry";
               const eVal = document.createElement("div");
               eVal.className = "dockOpValue isEnemyAttack";
               eVal.textContent = fmtCompact(enemyTroops);
@@ -1835,6 +1838,20 @@ export function createHUD() {
               entry.appendChild(rowE);
               entry.appendChild(rowD);
               entry.appendChild(rowC);
+
+              if (it?.canReinforce) {
+                const actions = document.createElement("div");
+                actions.className = "dockOpActions";
+                const reinforceBtn = document.createElement("button");
+                reinforceBtn.type = "button";
+                reinforceBtn.className = "btn subtle dockOpAction";
+                reinforceBtn.textContent = "Reinforce";
+                reinforceBtn.addEventListener("click", () => {
+                  if (cbReinforce) cbReinforce(it);
+                });
+                actions.appendChild(reinforceBtn);
+                entry.appendChild(actions);
+              }
             }
             details.appendChild(entry);
           }
@@ -2311,6 +2328,7 @@ export function createHUD() {
     onDeclareWar: (cb) => (cbDeclareWar = cb),
     onSendWarship: (cb) => (cbSendWarship = cb),
     onAttack: (cb) => (cbAttack = cb),
+    onReinforce: (cb) => (cbReinforce = cb),
     onMakePeace: (cb) => (cbMakePeace = cb),
     onRequestAlly: (cb) => (cbRequestAlly = cb),
     onTrade: (cb) => (cbTrade = cb),

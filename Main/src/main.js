@@ -287,51 +287,51 @@ const MATCH_CONFIG_STORAGE_KEY = "pf-main-menu-match-config-v1";
 const MATCH_DIFFICULTY_PROFILES = Object.freeze({
   easy: Object.freeze({
     playerStart: 1.9,
-    aiStart: 0.52,
+    aiStart: 0.48,
     playerIncomeOpen: 1.68,
     playerIncomeLate: 1.42,
-    aiIncomeOpen: 0.5,
-    aiIncomeLate: 0.7,
-    aiAttackMul: 0.62,
+    aiIncomeOpen: 0.46,
+    aiIncomeLate: 0.66,
+    aiAttackMul: 0.58,
     aiMobShift: -0.18,
-    economyRampS: 340,
-    aiWarGraceS: 132
+    economyRampS: 380,
+    aiWarGraceS: 150
   }),
   normal: Object.freeze({
     playerStart: 1.28,
-    aiStart: 0.80,
+    aiStart: 0.72,
     playerIncomeOpen: 1.28,
     playerIncomeLate: 1.08,
-    aiIncomeOpen: 0.74,
-    aiIncomeLate: 0.94,
-    aiAttackMul: 0.84,
-    aiMobShift: -0.07,
-    economyRampS: 420,
-    aiWarGraceS: 96
+    aiIncomeOpen: 0.66,
+    aiIncomeLate: 0.86,
+    aiAttackMul: 0.76,
+    aiMobShift: -0.10,
+    economyRampS: 500,
+    aiWarGraceS: 126
   }),
   hard: Object.freeze({
     playerStart: 0.94,
-    aiStart: 1.1,
+    aiStart: 0.98,
     playerIncomeOpen: 1.0,
     playerIncomeLate: 0.86,
-    aiIncomeOpen: 0.98,
-    aiIncomeLate: 1.24,
-    aiAttackMul: 1.12,
-    aiMobShift: 0.08,
-    economyRampS: 450,
-    aiWarGraceS: 48
+    aiIncomeOpen: 0.88,
+    aiIncomeLate: 1.10,
+    aiAttackMul: 1.00,
+    aiMobShift: 0.03,
+    economyRampS: 540,
+    aiWarGraceS: 84
   }),
   brutal: Object.freeze({
     playerStart: 0.8,
-    aiStart: 1.24,
+    aiStart: 1.10,
     playerIncomeOpen: 0.9,
     playerIncomeLate: 0.72,
-    aiIncomeOpen: 1.08,
-    aiIncomeLate: 1.46,
-    aiAttackMul: 1.28,
-    aiMobShift: 0.14,
-    economyRampS: 520,
-    aiWarGraceS: 24
+    aiIncomeOpen: 0.98,
+    aiIncomeLate: 1.28,
+    aiAttackMul: 1.14,
+    aiMobShift: 0.09,
+    economyRampS: 620,
+    aiWarGraceS: 54
   })
 });
 const MATCH_DIFFICULTY_DEFAULTS = Object.freeze({
@@ -12792,6 +12792,26 @@ function boot() {
     refreshAllUI();
   });
 
+  hud.onReinforce((item) => {
+    if (!canPlayerIssueOrders()) return;
+    const defenderId = item?.defenderId | 0;
+    if (defenderId <= 0 || defenderId === OWNER.PLAYER) {
+      hud.setOpMessage("Invalid reinforce target.");
+      return;
+    }
+    const res = world.startBurstAttack(OWNER.PLAYER, defenderId);
+    if (isQueuedActionResult(res)) {
+      hud.setOpMessage("Reinforcement queued...");
+    } else if (!res?.ok) {
+      hud.setOpMessage(res?.reason || "Unable to reinforce attack.");
+    } else {
+      const clash = Math.max(0, Math.floor(Number(res.collided) || 0));
+      const clashText = clash > 0 ? ` Clash: ${fmtCompactLocal(clash)} lost per side.` : "";
+      hud.setOpMessage(`Attack reinforced (+${fmtCompactLocal(res.committed || 0)} troops).${clashText}`);
+    }
+    refreshAllUI();
+  });
+
   hud.onRegenerate(() => {
     triggerActiveMatchRegenerate();
   });
@@ -15663,20 +15683,7 @@ function refreshOpUI(quick = false) {
   const enemyCounterattackPressure = (nationId) => {
     const id = nationId | 0;
     if (id <= 0 || id === OWNER.PLAYER) return 0;
-
-    const fromEnemyOps = Math.max(0, Math.floor(Number(enemyAttackPoolsByNation.get(id) || 0)));
-    if (fromEnemyOps > 0) return fromEnemyOps;
-
-    const enemy = world.nation[id];
-    if (!enemy?.alive) return 0;
-
-    const rel = world.getRelation(OWNER.PLAYER, id);
-    if (!rel?.warActive) return 0;
-    if (!world._bordersTouch(OWNER.PLAYER, id)) return 0;
-
-    const commitRatio = attackCommitFromRatio(enemy.attackRatio ?? 0.2);
-    const estimated = Math.max(0, Math.floor((Number(enemy.infantry) || 0) * commitRatio));
-    return estimated;
+    return Math.max(0, Math.floor(Number(enemyAttackPoolsByNation.get(id) || 0)));
   };
 
   const hasPlayerOps = ops.length > 0;
@@ -15723,8 +15730,11 @@ function refreshOpUI(quick = false) {
       dockOps.push({
         id: op.id,
         title: `War of ${defName}`,
+        opTitle: `War of ${defName}`,
         groupKey: `war:${op.defender | 0}`,
         groupTitle: `War of ${defName}`,
+        defenderId: op.defender | 0,
+        canReinforce: true,
         attackingTroops: Math.max(0, Number(op.attackPool) || 0),
         enemyAttackingTroops: enemyCounterattackPressure(op.defender | 0),
         enemyCasualties: Math.max(0, Number(op.enemyCasualties) || 0),
@@ -15740,8 +15750,11 @@ function refreshOpUI(quick = false) {
       dockOps.push({
         id: op.id,
         title: `War of ${defName}`,
+        opTitle: `War of ${defName}`,
         groupKey: `war:${op.defender | 0}`,
         groupTitle: `War of ${defName}`,
+        defenderId: op.defender | 0,
+        canReinforce: true,
         attackingTroops: Math.max(0, Number(op.attackPool) || 0),
         enemyAttackingTroops: enemyCounterattackPressure(op.defender | 0),
         enemyCasualties: Math.max(0, Number(op.enemyCasualties) || 0),
@@ -15778,7 +15791,7 @@ function refreshOpUI(quick = false) {
   });
 
   hud.renderOpList(list, world.focusOpId);
-  if (!quick && hud.renderDockOperations) hud.renderDockOperations(dockOps);
+  if (hud.renderDockOperations) hud.renderDockOperations(dockOps);
 
   if (!quick) {
     const f = finalizeSelection();

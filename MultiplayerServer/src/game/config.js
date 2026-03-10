@@ -265,7 +265,8 @@ export const WARSHIP_RAID_LOOT_WARSHIP_GOLD = 500;
 export const WARSHIP_LAUNCH_GOLD_COST = 500000;
 export const WAR_EVENT_COOLDOWN_S = 0.65;
 
-export const TRANSPORT_MAX_ACTIVE = 2;
+// Set to 0 to disable the active transport cap.
+export const TRANSPORT_MAX_ACTIVE = 0;
 export const TRANSPORT_SPEED_CPS = 6.3;
 export const TRANSPORT_HP = 60;
 // Beachhead: claim landing tile + up to 4 neighbors (if neutral land + infantry cost available).

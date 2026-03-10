@@ -2481,6 +2481,17 @@ body {
   gap: 4px;
 }
 
+.dockOpActions {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 4px;
+}
+
+.dockOpAction {
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
 .dockOpName {
   font-size: 12px;
   color: rgba(224, 231, 244, 0.90);

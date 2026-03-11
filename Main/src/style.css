@@ -4014,6 +4014,39 @@ body {
   gap: 8px;
 }
 
+.selectedCustomPanel {
+  margin-top: 10px;
+}
+
+.selectedTradeControl {
+  display: grid;
+  gap: 8px;
+}
+
+.selectedTradeLabel {
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(244, 222, 165, 0.88);
+}
+
+.selectedTradeSelect {
+  width: 100%;
+  min-height: 38px;
+  border-radius: 8px;
+  border: 1px solid rgba(176, 151, 96, 0.45);
+  background: rgba(18, 17, 13, 0.86);
+  color: rgba(246, 240, 224, 0.98);
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.selectedTradeInfo {
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(214, 204, 183, 0.88);
+}
+
 .selectedProgress {
   margin-top: 10px;
   display: grid;
@@ -10219,8 +10252,7 @@ html[data-ui-short="true"] #sideHud > section.panel {
   padding: 10px !important;
 }
 
-html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #hud:has(#leaderboard .lbPanel:not([hidden])) #sideHud,
-html[data-ui-viewport="phone"] #hud:has(#leaderboard .lbPanel:not([hidden])) #sideHud {
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #hud:has(#leaderboard .lbPanel:not([hidden])) #sideHud {
   left: calc(var(--pf-safe-left) + 8px);
   right: calc(var(--pf-safe-right) + 8px);
   top: min(340px, calc(var(--spawn-progress-clearance) + var(--pf-safe-top) + 34vh));
@@ -11196,4 +11228,1797 @@ html[data-ui-viewport="phone"] #hud .intelPanel {
   .researchNodeTierBadge {
     font-size: 18px;
   }
+}
+
+/* ===== Small-screen HUD hardening (phone + iPad portrait + short height) ===== */
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"],
+html[data-ui-viewport="phone"],
+html[data-ui-short="true"] {
+  --pf-mobile-dock-rail-w: clamp(92px, 20vw, 120px);
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #topHud .iconBtn,
+html[data-ui-viewport="phone"] #topHud .iconBtn,
+html[data-ui-short="true"] #topHud .iconBtn {
+  min-width: 42px;
+  min-height: 42px;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #events,
+html[data-ui-viewport="phone"] #events,
+html[data-ui-short="true"] #events {
+  display: grid !important;
+  grid-template-columns: var(--pf-mobile-dock-rail-w) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  column-gap: 8px;
+  row-gap: 6px;
+  min-height: 176px;
+  max-height: min(36vh, 340px);
+  padding: 8px !important;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #events .eventsHeader,
+html[data-ui-viewport="phone"] #events .eventsHeader,
+html[data-ui-short="true"] #events .eventsHeader {
+  display: contents;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #events .dockTabs,
+html[data-ui-viewport="phone"] #events .dockTabs,
+html[data-ui-short="true"] #events .dockTabs {
+  grid-column: 1;
+  grid-row: 1 / span 3;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
+  padding-right: 4px;
+  border-right: 1px solid rgba(170, 194, 230, 0.28);
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #events .dockTabs .tabBtn,
+html[data-ui-viewport="phone"] #events .dockTabs .tabBtn,
+html[data-ui-short="true"] #events .dockTabs .tabBtn {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 8px !important;
+  white-space: normal;
+  line-height: 1.1;
+  text-align: center;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #events .eventsBtns,
+html[data-ui-viewport="phone"] #events .eventsBtns,
+html[data-ui-short="true"] #events .eventsBtns {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #events #eventsBody,
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #events #dipBody,
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #events #opsBody,
+html[data-ui-viewport="phone"] #events #eventsBody,
+html[data-ui-viewport="phone"] #events #dipBody,
+html[data-ui-viewport="phone"] #events #opsBody,
+html[data-ui-short="true"] #events #eventsBody,
+html[data-ui-short="true"] #events #dipBody,
+html[data-ui-short="true"] #events #opsBody {
+  grid-column: 2;
+  grid-row: 2;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #events #eventsScopeControls,
+html[data-ui-viewport="phone"] #events #eventsScopeControls,
+html[data-ui-short="true"] #events #eventsScopeControls {
+  grid-column: 2;
+  grid-row: 3;
+  margin-top: 0;
+  padding-top: 6px;
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #events.isCollapsed,
+html[data-ui-viewport="phone"] #events.isCollapsed,
+html[data-ui-short="true"] #events.isCollapsed {
+  min-height: 0;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #sideHud,
+html[data-ui-viewport="phone"] #sideHud,
+html[data-ui-short="true"] #sideHud {
+  max-height: min(40vh, 360px);
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #sideHud > section.panel,
+html[data-ui-viewport="phone"] #sideHud > section.panel,
+html[data-ui-short="true"] #sideHud > section.panel {
+  min-width: 0;
+  overflow: auto;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #structureBar,
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #quickLaunchBar,
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #tradesLaunchBar,
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #researchLaunchBar,
+html[data-ui-viewport="phone"] #structureBar,
+html[data-ui-viewport="phone"] #quickLaunchBar,
+html[data-ui-viewport="phone"] #tradesLaunchBar,
+html[data-ui-viewport="phone"] #researchLaunchBar,
+html[data-ui-short="true"] #structureBar,
+html[data-ui-short="true"] #quickLaunchBar,
+html[data-ui-short="true"] #tradesLaunchBar,
+html[data-ui-short="true"] #researchLaunchBar {
+  overflow: hidden;
+  padding: 7px 8px !important;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #structureBar .barButtons,
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #quickLaunchBar .barButtons,
+html[data-ui-viewport="phone"] #structureBar .barButtons,
+html[data-ui-viewport="phone"] #quickLaunchBar .barButtons,
+html[data-ui-short="true"] #structureBar .barButtons,
+html[data-ui-short="true"] #quickLaunchBar .barButtons {
+  gap: 6px !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #structureBar .structureBtn,
+html[data-ui-viewport="phone"] #structureBar .structureBtn,
+html[data-ui-short="true"] #structureBar .structureBtn {
+  flex: 0 0 clamp(84px, 22vw, 118px);
+  min-height: 54px;
+  min-width: clamp(84px, 22vw, 118px) !important;
+  padding: 6px 8px !important;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #quickLaunchBar .quickLaunchBtn,
+html[data-ui-viewport="phone"] #quickLaunchBar .quickLaunchBtn,
+html[data-ui-short="true"] #quickLaunchBar .quickLaunchBtn {
+  flex: 0 0 clamp(104px, 27vw, 158px);
+  min-width: clamp(104px, 27vw, 158px) !important;
+  min-height: 42px;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #structureBar .buildName,
+html[data-ui-viewport="phone"] #structureBar .buildName,
+html[data-ui-short="true"] #structureBar .buildName {
+  font-size: 11px !important;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] #structureBar .buildCost,
+html[data-ui-viewport="phone"] #structureBar .buildCost,
+html[data-ui-short="true"] #structureBar .buildCost {
+  font-size: 10px !important;
+}
+
+/* ===== Compact battlefield pass (laptop + tablet landscape + short screens) ===== */
+@media (max-width: 1366px), (max-height: 860px) {
+  :root {
+    --pf-compact-shell-gap: 8px;
+    --pf-compact-stack-h: 116px;
+    --pf-compact-events-top: calc(var(--spawn-progress-clearance) + var(--pf-safe-top) + 304px);
+  }
+
+  #leaderboard {
+    left: calc(var(--pf-safe-left) + var(--pf-compact-shell-gap));
+    top: calc(var(--spawn-progress-clearance) + var(--pf-safe-top) + 4px);
+  }
+
+  #leaderboard .lbPanel {
+    width: min(300px, calc(var(--pf-vw) - var(--pf-safe-left) - var(--pf-safe-right) - 90px));
+    max-height: min(30vh, 246px);
+    overflow: auto;
+  }
+
+  #sideHud {
+    right: calc(var(--pf-safe-right) + var(--pf-compact-shell-gap));
+    top: calc(var(--spawn-progress-clearance) + var(--pf-safe-top) + 4px);
+    width: min(242px, calc(var(--pf-vw) - var(--pf-safe-left) - var(--pf-safe-right) - 14px));
+    max-height: min(50vh, 390px);
+    gap: 7px;
+    padding-right: 1px;
+  }
+
+  #sideHud > section.panel {
+    padding: 8px !important;
+  }
+
+  #sideHud > section.panel .panelTitle,
+  #operationsCard .panelTitle,
+  #selectedCard .panelTitle {
+    margin-bottom: 6px;
+    font-size: 11px !important;
+  }
+
+  #sideHud .statRow dt,
+  #operationsCard .opLabel,
+  #selectedCard .selectedDesc,
+  #selectedCard .selectedMeta {
+    font-size: 12px !important;
+    line-height: 1.2;
+  }
+
+  #sideHud .statRow dd,
+  #operationsCard .opValue,
+  #selectedCard .selectedName {
+    font-size: 14px !important;
+  }
+
+  #events {
+    left: calc(var(--pf-safe-left) + var(--pf-compact-shell-gap));
+    right: auto;
+    top: var(--pf-compact-events-top);
+    bottom: calc(var(--pf-safe-bottom) + var(--pf-compact-stack-h));
+    width: clamp(176px, 27vw, 320px);
+    max-height: none;
+    min-height: 0;
+    padding: 6px 7px !important;
+    display: grid !important;
+    grid-template-columns: 84px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 5px;
+  }
+
+  #events .eventsHeader {
+    display: contents;
+  }
+
+  #events .dockTabs {
+    grid-column: 1;
+    grid-row: 1 / span 3;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
+    min-width: 0;
+    padding-right: 4px;
+    border-right: 1px solid rgba(170, 194, 230, 0.24);
+  }
+
+  #events .eventsBtns {
+    grid-column: 2;
+    grid-row: 1;
+    display: flex;
+    justify-content: flex-end;
+    align-items: flex-start;
+  }
+
+  #events #eventsBody,
+  #events #dipBody,
+  #events #opsBody {
+    grid-column: 2;
+    grid-row: 2;
+    min-height: 0;
+    overflow: auto;
+    padding-right: 1px;
+  }
+
+  #events #eventsScopeControls {
+    grid-column: 2;
+    grid-row: 3;
+    margin-top: 0;
+    padding-top: 4px;
+    gap: 4px;
+  }
+
+  #events.isCollapsed {
+    top: var(--pf-compact-events-top);
+    bottom: auto;
+    width: 88px !important;
+    min-height: 0;
+    grid-template-columns: 1fr !important;
+    grid-template-rows: auto !important;
+  }
+
+  #events.isCollapsed .dockTabs {
+    grid-column: 1;
+    grid-row: 1;
+    border-right: 0;
+    padding-right: 0;
+  }
+
+  #events.isCollapsed .eventsBtns {
+    display: none !important;
+  }
+
+  #events .dockTabs .tabBtn {
+    min-height: 28px;
+    padding: 4px 6px !important;
+    font-size: 11px;
+    white-space: normal;
+    line-height: 1.08;
+  }
+
+  #events #eventsScopeControls {
+    margin-top: 0;
+    padding-top: 4px;
+    gap: 4px;
+  }
+
+  #events .eventsScopeBtn {
+    min-height: 24px;
+    padding: 3px 6px;
+    font-size: 10px;
+  }
+
+  #events .eventRow {
+    font-size: 10.5px;
+    padding: 4px 6px;
+  }
+
+  #structureBar,
+  #quickLaunchBar,
+  #tradesLaunchBar,
+  #researchLaunchBar {
+    padding: 6px 8px !important;
+    gap: 6px !important;
+    max-height: none;
+  }
+
+  #structureBar {
+    bottom: calc(var(--pf-safe-bottom) + 6px) !important;
+    min-height: 50px;
+    max-height: 50px;
+  }
+
+  #quickLaunchBar,
+  #tradesLaunchBar,
+  #researchLaunchBar {
+    bottom: calc(var(--pf-safe-bottom) + 56px) !important;
+    min-height: 38px;
+    max-height: 38px;
+  }
+
+  #quickLaunchBar {
+    width: clamp(210px, 31vw, 360px);
+  }
+
+  #tradesLaunchBar,
+  #researchLaunchBar {
+    width: clamp(112px, 13vw, 150px);
+  }
+
+  #structureBar .barTitle,
+  #quickLaunchBar .barTitle,
+  #tradesLaunchBar .barTitle,
+  #researchLaunchBar .barTitle {
+    font-size: 12px !important;
+  }
+
+  #structureBar .barSub,
+  #quickLaunchBar .barSub,
+  #tradesLaunchBar .barSub,
+  #researchLaunchBar .barSub {
+    font-size: 10px !important;
+    line-height: 1.1;
+  }
+
+  #structureBar .barButtons,
+  #quickLaunchBar .barButtons {
+    gap: 5px !important;
+  }
+
+  #structureBar .structureBtn {
+    min-width: 70px !important;
+    min-height: 44px;
+    padding: 5px 7px !important;
+    gap: 1px !important;
+  }
+
+  #quickLaunchBar .quickLaunchBtn,
+  #tradesLaunchBar .quickLaunchBtn,
+  #researchLaunchBar .quickLaunchBtn {
+    min-height: 30px;
+    min-width: 84px !important;
+    padding: 4px 6px !important;
+    font-size: 10px !important;
+  }
+
+  #structureBar .buildName {
+    font-size: 10.5px !important;
+    letter-spacing: 0;
+  }
+
+  #structureBar .buildCost {
+    font-size: 9px !important;
+    line-height: 1.05;
+  }
+
+  #gameDate {
+    min-width: 190px;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
+  .researchPanel {
+    width: min(980px, calc(100vw - 8px));
+    max-height: calc(100vh - 10px);
+    padding: 8px;
+    gap: 7px;
+  }
+
+  .researchTitle {
+    font-size: clamp(18px, 2.1vw, 28px);
+  }
+
+  .researchSubtitle {
+    font-size: 10px;
+    line-height: 1.2;
+  }
+
+  .researchMetricStrip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .researchMetricCard,
+  .researchQueueNote,
+  .researchStat {
+    padding: 6px;
+    border-radius: 10px;
+  }
+
+  .researchMetricValue {
+    font-size: 14px;
+  }
+
+  .researchTabBtn {
+    min-height: 34px;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+
+  .researchWorkspace {
+    gap: 10px;
+  }
+}
+
+/* ===== Phone portrait battlefield layout ===== */
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] {
+  --pf-phone-gap: 6px;
+  --pf-phone-build-row-h: 54px;
+  --pf-phone-action-row-h: 44px;
+  --pf-phone-util-w: clamp(88px, 22vw, 108px);
+  --pf-phone-action-gap: 6px;
+  --pf-phone-build-bottom: calc(var(--pf-safe-bottom) + var(--pf-phone-gap));
+  --pf-phone-action-bottom: calc(var(--pf-phone-build-bottom) + var(--pf-phone-build-row-h) + var(--pf-phone-gap));
+  --pf-phone-events-bottom: calc(var(--pf-phone-action-bottom) + var(--pf-phone-action-row-h) + var(--pf-phone-gap));
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #leaderboard {
+  left: calc(var(--pf-safe-left) + var(--pf-phone-gap));
+  top: calc(var(--spawn-progress-clearance) + var(--pf-safe-top) + 4px);
+  gap: 6px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #leaderboard .lbPanel {
+  width: min(230px, calc(var(--pf-vw) - var(--pf-safe-left) - var(--pf-safe-right) - 66px));
+  max-height: min(24vh, 170px);
+  overflow: auto;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #leaderboard #topHud {
+  width: 50px;
+  padding: 4px;
+  gap: 6px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #leaderboard #topHud .btn {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #leaderboard #topHud .topTimer {
+  font-size: 12px;
+  padding: 4px 1px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #gameDate {
+  min-width: 170px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #sideHud,
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #hud:has(#leaderboard .lbPanel:not([hidden])) #sideHud {
+  left: auto !important;
+  right: calc(var(--pf-safe-right) + var(--pf-phone-gap)) !important;
+  top: calc(var(--spawn-progress-clearance) + var(--pf-safe-top) + 40px) !important;
+  bottom: auto !important;
+  width: min(170px, 44vw) !important;
+  max-height: min(44vh, 300px) !important;
+  display: grid !important;
+  gap: 5px;
+  overflow: auto;
+  padding-right: 1px;
+  z-index: 24;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #sideHud > section.panel {
+  flex: none;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+  padding: 6px !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #sideHud > section.panel:first-child .objective {
+  display: none;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #sideHud .panelTitle {
+  margin-bottom: 5px;
+  font-size: 10.5px !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #sideHud .statRow dt,
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #sideHud .opLabel,
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #sideHud .selectedMeta {
+  font-size: 11px !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #sideHud .statRow dd,
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #sideHud .opValue {
+  font-size: 13px !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #operationsCard .hint,
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #operationsCard #opMsg {
+  display: none !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #operationsCard .opRow {
+  margin-bottom: 4px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #operationsCard .slider {
+  margin: 0 0 6px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #operationsCard .opRow.split {
+  margin: 4px 0 0;
+  gap: 6px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #events {
+  left: calc(var(--pf-safe-left) + var(--pf-phone-gap)) !important;
+  right: auto !important;
+  top: calc(var(--spawn-progress-clearance) + var(--pf-safe-top) + 232px) !important;
+  bottom: calc(var(--pf-phone-action-bottom) + var(--pf-phone-action-row-h) + 6px) !important;
+  width: clamp(164px, 46vw, 240px) !important;
+  max-height: none !important;
+  min-height: 0;
+  grid-template-columns: 78px minmax(0, 1fr) !important;
+  padding: 5px !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #events .dockTabs .tabBtn {
+  min-height: 28px;
+  padding: 3px 5px !important;
+  font-size: 10px;
+  line-height: 1.05;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #events .eventsBtns .btn {
+  min-height: 26px;
+  padding: 3px 6px !important;
+  font-size: 10px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #events .eventRow {
+  font-size: 10px;
+  padding: 3px 5px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #events .eventsScopeBtn {
+  min-height: 22px;
+  padding: 2px 5px;
+  font-size: 9px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #events.isCollapsed {
+  top: calc(var(--spawn-progress-clearance) + var(--pf-safe-top) + 232px) !important;
+  bottom: auto !important;
+  width: 82px !important;
+  grid-template-columns: 1fr !important;
+  grid-template-rows: auto !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #events.isCollapsed .eventsBtns {
+  display: none !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #events.isCollapsed .dockTabs {
+  grid-column: 1;
+  grid-row: 1;
+  border-right: 0;
+  padding-right: 0;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #structureBar {
+  left: calc(var(--pf-safe-left) + var(--pf-phone-gap)) !important;
+  right: calc(var(--pf-safe-right) + var(--pf-phone-gap)) !important;
+  width: auto !important;
+  max-width: none !important;
+  transform: none !important;
+  bottom: var(--pf-phone-build-bottom) !important;
+  min-height: var(--pf-phone-build-row-h);
+  max-height: var(--pf-phone-build-row-h);
+  padding: 4px 6px !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 4px !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #structureBar .barLeft {
+  display: none !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #structureBar .barButtons {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 4px !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 1px;
+  justify-content: flex-start !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #structureBar .structureBtn {
+  flex: 0 0 auto;
+  min-width: 82px !important;
+  min-height: 40px;
+  padding: 4px 6px !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #structureBar .buildName {
+  font-size: 10px !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #structureBar .buildCost {
+  font-size: 9px !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #quickLaunchBar,
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #tradesLaunchBar,
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #researchLaunchBar {
+  bottom: var(--pf-phone-action-bottom) !important;
+  min-height: var(--pf-phone-action-row-h);
+  max-height: var(--pf-phone-action-row-h);
+  padding: 4px 6px !important;
+  transform: none !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #quickLaunchBar {
+  left: calc(var(--pf-safe-left) + var(--pf-phone-gap)) !important;
+  right: calc(
+    var(--pf-safe-right) +
+    var(--pf-phone-gap) +
+    (var(--pf-phone-util-w) * 2) +
+    (var(--pf-phone-action-gap) * 2)
+  ) !important;
+  width: auto !important;
+  max-width: none !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #tradesLaunchBar {
+  left: auto !important;
+  right: calc(
+    var(--pf-safe-right) +
+    var(--pf-phone-gap) +
+    var(--pf-phone-util-w) +
+    var(--pf-phone-action-gap)
+  ) !important;
+  width: var(--pf-phone-util-w) !important;
+  max-width: none !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #researchLaunchBar {
+  left: auto !important;
+  right: calc(var(--pf-safe-right) + var(--pf-phone-gap)) !important;
+  width: var(--pf-phone-util-w) !important;
+  max-width: none !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #quickLaunchBar .barButtons {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 4px !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  justify-content: flex-start !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #quickLaunchBar .quickLaunchBtn {
+  min-width: 76px !important;
+  min-height: 34px;
+  padding: 5px 6px !important;
+  font-size: 10px !important;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #tradesLaunchBar .quickLaunchBtn,
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] #researchLaunchBar .quickLaunchBtn {
+  min-width: 0 !important;
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 4px !important;
+  font-size: 11px !important;
+}
+
+/* ===== Research layout: canvas-first on tablet/mobile ===== */
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchPanel,
+html[data-ui-viewport="phone"] .researchPanel,
+html[data-ui-short="true"] .researchPanel {
+  width: calc(var(--pf-vw) - var(--pf-safe-left) - var(--pf-safe-right) - 8px) !important;
+  max-height: calc(var(--pf-vh) - var(--pf-safe-top) - var(--pf-safe-bottom) - 10px) !important;
+  padding: 8px !important;
+  gap: 8px !important;
+  grid-template-rows: auto auto minmax(0, 1fr) !important;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchTopBar,
+html[data-ui-viewport="phone"] .researchTopBar,
+html[data-ui-short="true"] .researchTopBar {
+  gap: 8px;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchTopBar .btn,
+html[data-ui-viewport="phone"] .researchTopBar .btn,
+html[data-ui-short="true"] .researchTopBar .btn {
+  min-height: 34px;
+  padding: 6px 10px !important;
+  font-size: 11px !important;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchHeroBar,
+html[data-ui-short="true"] .researchHeroBar {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) clamp(170px, 28vw, 230px);
+  gap: 8px;
+  padding: 8px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="landscape"] .researchHeroBar {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  gap: 8px;
+  padding: 8px;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchMetricStrip,
+html[data-ui-viewport="phone"] .researchMetricStrip,
+html[data-ui-short="true"] .researchMetricStrip {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchMetricCard,
+html[data-ui-viewport="phone"] .researchMetricCard,
+html[data-ui-short="true"] .researchMetricCard {
+  padding: 7px;
+  border-radius: 10px;
+  gap: 4px;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchMetricValue,
+html[data-ui-viewport="phone"] .researchMetricValue,
+html[data-ui-short="true"] .researchMetricValue {
+  font-size: 16px;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchLabCallout,
+html[data-ui-viewport="phone"][data-ui-orientation="landscape"] .researchLabCallout,
+html[data-ui-short="true"] .researchLabCallout {
+  padding: 8px;
+  gap: 6px;
+  min-height: 0;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchTabs,
+html[data-ui-viewport="phone"] .researchTabs,
+html[data-ui-short="true"] .researchTabs {
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchTabBtn,
+html[data-ui-viewport="phone"] .researchTabBtn,
+html[data-ui-short="true"] .researchTabBtn {
+  min-height: 36px;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchWorkspace,
+html[data-ui-short="true"] .researchWorkspace {
+  grid-template-columns: minmax(0, 1fr) clamp(196px, 32vw, 248px) !important;
+  gap: 8px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="landscape"] .researchWorkspace {
+  grid-template-columns: minmax(0, 1fr) 216px !important;
+  gap: 8px;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchTreePanel,
+html[data-ui-viewport="phone"] .researchTreePanel,
+html[data-ui-short="true"] .researchTreePanel {
+  padding: 8px;
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchTreeViewport,
+html[data-ui-short="true"] .researchTreeViewport {
+  min-height: min(58vh, 560px);
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="landscape"] .researchTreeViewport {
+  min-height: min(62vh, 520px);
+}
+
+html[data-ui-viewport="tablet"][data-ui-orientation="portrait"] .researchDetailPanel,
+html[data-ui-viewport="phone"][data-ui-orientation="landscape"] .researchDetailPanel,
+html[data-ui-short="true"] .researchDetailPanel {
+  min-width: 0;
+  max-height: none;
+  overflow: auto;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] .researchHeroBar {
+  display: grid !important;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  padding: 6px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] .researchLabCallout {
+  display: none;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] .researchWorkspace {
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] .researchTreeViewport {
+  min-height: min(56vh, 500px);
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] .researchDetailPanel {
+  max-height: min(26vh, 220px);
+  overflow: auto;
+}
+
+/* ===== Authoritative Mobile/Tablet Redesign: Trade + Research ===== */
+html[data-ui-viewport="tablet"],
+html[data-ui-viewport="phone"],
+html[data-ui-short="true"] {
+  --pf-modal-pad-tight: 8px;
+  --pf-modal-gap-tight: 8px;
+  --pf-modal-radius-tight: 12px;
+  --pf-modal-btn-h: 34px;
+}
+
+html[data-ui-viewport="tablet"] #tradeModal,
+html[data-ui-viewport="phone"] #tradeModal,
+html[data-ui-short="true"] #tradeModal,
+html[data-ui-viewport="tablet"] #researchModal,
+html[data-ui-viewport="phone"] #researchModal,
+html[data-ui-short="true"] #researchModal {
+  padding:
+    calc(var(--pf-safe-top) + 6px)
+    calc(var(--pf-safe-right) + 6px)
+    calc(var(--pf-safe-bottom) + 6px)
+    calc(var(--pf-safe-left) + 6px);
+}
+
+html[data-ui-viewport="tablet"] .tradePanel,
+html[data-ui-viewport="phone"] .tradePanel,
+html[data-ui-short="true"] .tradePanel {
+  width: calc(var(--pf-vw) - var(--pf-safe-left) - var(--pf-safe-right) - 12px) !important;
+  max-height: calc(var(--pf-vh) - var(--pf-safe-top) - var(--pf-safe-bottom) - 12px) !important;
+  min-height: 0;
+  padding: var(--pf-modal-pad-tight) !important;
+  gap: var(--pf-modal-gap-tight);
+  border-radius: var(--pf-modal-radius-tight);
+}
+
+html[data-ui-viewport="tablet"] .tradeHeader,
+html[data-ui-viewport="phone"] .tradeHeader,
+html[data-ui-short="true"] .tradeHeader {
+  gap: 8px;
+  align-items: flex-start;
+}
+
+html[data-ui-viewport="tablet"] .tradeTitle,
+html[data-ui-viewport="phone"] .tradeTitle,
+html[data-ui-short="true"] .tradeTitle {
+  font-size: clamp(18px, 2.6vw, 28px);
+  letter-spacing: 0.02em;
+}
+
+html[data-ui-viewport="tablet"] .tradeSubtitle,
+html[data-ui-viewport="phone"] .tradeSubtitle,
+html[data-ui-short="true"] .tradeSubtitle {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+html[data-ui-viewport="tablet"] .tradeHeader .btn,
+html[data-ui-viewport="phone"] .tradeHeader .btn,
+html[data-ui-short="true"] .tradeHeader .btn {
+  min-height: var(--pf-modal-btn-h);
+  padding: 6px 10px !important;
+  font-size: 11px !important;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceStripSection,
+html[data-ui-viewport="tablet"] .tradeSurfaceCard,
+html[data-ui-viewport="phone"] .tradeResourceStripSection,
+html[data-ui-viewport="phone"] .tradeSurfaceCard,
+html[data-ui-short="true"] .tradeResourceStripSection,
+html[data-ui-short="true"] .tradeSurfaceCard {
+  padding: 8px;
+  border-radius: 10px;
+}
+
+html[data-ui-viewport="tablet"] .tradeSectionTitle,
+html[data-ui-viewport="phone"] .tradeSectionTitle,
+html[data-ui-short="true"] .tradeSectionTitle {
+  font-size: 10px;
+  letter-spacing: 0.09em;
+}
+
+html[data-ui-viewport="tablet"] .tradeSectionCaption,
+html[data-ui-viewport="phone"] .tradeSectionCaption,
+html[data-ui-short="true"] .tradeSectionCaption {
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+html[data-ui-viewport="tablet"] .tradeTabs,
+html[data-ui-viewport="phone"] .tradeTabs,
+html[data-ui-short="true"] .tradeTabs {
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"] .tradeTabBtn,
+html[data-ui-viewport="phone"] .tradeTabBtn,
+html[data-ui-short="true"] .tradeTabBtn {
+  min-height: var(--pf-modal-btn-h);
+  padding: 5px 8px;
+  border-radius: 10px;
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"] .tradeTabLabel,
+html[data-ui-viewport="phone"] .tradeTabLabel,
+html[data-ui-short="true"] .tradeTabLabel {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+html[data-ui-viewport="tablet"] .tradeTabCount,
+html[data-ui-viewport="phone"] .tradeTabCount,
+html[data-ui-short="true"] .tradeTabCount {
+  min-width: 24px;
+  min-height: 20px;
+  padding: 2px 7px;
+  font-size: 10px;
+}
+
+html[data-ui-viewport="tablet"] .tradeView,
+html[data-ui-viewport="phone"] .tradeView,
+html[data-ui-short="true"] .tradeView {
+  padding: 8px;
+  gap: 8px;
+  border-radius: 10px;
+}
+
+html[data-ui-viewport="tablet"] .tradeBoardLayout,
+html[data-ui-viewport="phone"] .tradeBoardLayout,
+html[data-ui-short="true"] .tradeBoardLayout {
+  grid-template-columns: 1fr !important;
+  gap: 8px;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceStrip,
+html[data-ui-short="true"] .tradeResourceStrip {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 8px;
+}
+
+html[data-ui-viewport="phone"] .tradeResourceStrip {
+  grid-template-columns: 1fr !important;
+  gap: 7px;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceRow,
+html[data-ui-viewport="phone"] .tradeResourceRow,
+html[data-ui-short="true"] .tradeResourceRow {
+  padding: 8px;
+  gap: 8px;
+  border-radius: 10px;
+}
+
+html[data-ui-viewport="tablet"] .tradeResIcon,
+html[data-ui-viewport="phone"] .tradeResIcon,
+html[data-ui-short="true"] .tradeResIcon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceLabel,
+html[data-ui-viewport="phone"] .tradeResourceLabel,
+html[data-ui-short="true"] .tradeResourceLabel {
+  font-size: 12px;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceValue,
+html[data-ui-viewport="phone"] .tradeResourceValue,
+html[data-ui-short="true"] .tradeResourceValue {
+  font-size: 17px;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceValueLabel,
+html[data-ui-viewport="phone"] .tradeResourceValueLabel,
+html[data-ui-short="true"] .tradeResourceValueLabel {
+  font-size: 9px;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceStats,
+html[data-ui-short="true"] .tradeResourceStats {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
+html[data-ui-viewport="phone"] .tradeResourceStats {
+  grid-template-columns: 1fr !important;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceStat,
+html[data-ui-viewport="phone"] .tradeResourceStat,
+html[data-ui-short="true"] .tradeResourceStat {
+  padding: 7px 8px;
+  gap: 3px;
+  border-radius: 9px;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceStatLabel,
+html[data-ui-viewport="phone"] .tradeResourceStatLabel,
+html[data-ui-short="true"] .tradeResourceStatLabel {
+  font-size: 9px;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceStatValue,
+html[data-ui-viewport="phone"] .tradeResourceStatValue,
+html[data-ui-short="true"] .tradeResourceStatValue {
+  font-size: 11px;
+}
+
+html[data-ui-viewport="tablet"] .tradeField,
+html[data-ui-viewport="phone"] .tradeField,
+html[data-ui-short="true"] .tradeField {
+  gap: 4px;
+  font-size: 11px;
+}
+
+html[data-ui-viewport="tablet"] .tradeFieldSet,
+html[data-ui-viewport="phone"] .tradeFieldSet,
+html[data-ui-short="true"] .tradeFieldSet {
+  padding: 7px;
+  gap: 6px;
+  border-radius: 9px;
+}
+
+html[data-ui-viewport="tablet"] .tradeFieldRow,
+html[data-ui-short="true"] .tradeFieldRow {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
+html[data-ui-viewport="phone"] .tradeFieldRow {
+  grid-template-columns: 1fr !important;
+}
+
+html[data-ui-viewport="tablet"] .tradeInput,
+html[data-ui-viewport="phone"] .tradeInput,
+html[data-ui-short="true"] .tradeInput {
+  min-height: var(--pf-modal-btn-h);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+html[data-ui-viewport="tablet"] .tradeCreateBtn,
+html[data-ui-viewport="phone"] .tradeCreateBtn,
+html[data-ui-short="true"] .tradeCreateBtn {
+  min-height: 36px;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+}
+
+html[data-ui-viewport="tablet"] .tradeDealRow,
+html[data-ui-viewport="phone"] .tradeDealRow,
+html[data-ui-short="true"] .tradeDealRow {
+  padding: 10px 10px 10px 12px;
+  gap: 9px;
+  border-radius: 10px;
+}
+
+html[data-ui-viewport="tablet"] .tradeDealMain,
+html[data-ui-viewport="phone"] .tradeDealMain,
+html[data-ui-short="true"] .tradeDealMain,
+html[data-ui-viewport="tablet"] .tradeFlowPair,
+html[data-ui-viewport="phone"] .tradeFlowPair,
+html[data-ui-short="true"] .tradeFlowPair {
+  grid-template-columns: 1fr !important;
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"] .tradeDealTitle,
+html[data-ui-viewport="phone"] .tradeDealTitle,
+html[data-ui-short="true"] .tradeDealTitle {
+  font-size: 12px;
+}
+
+html[data-ui-viewport="tablet"] .tradeDealMeta,
+html[data-ui-viewport="phone"] .tradeDealMeta,
+html[data-ui-short="true"] .tradeDealMeta,
+html[data-ui-viewport="tablet"] .tradeDealRoute,
+html[data-ui-viewport="phone"] .tradeDealRoute,
+html[data-ui-short="true"] .tradeDealRoute {
+  font-size: 10px;
+}
+
+html[data-ui-viewport="tablet"] .tradeDealMetric,
+html[data-ui-viewport="phone"] .tradeDealMetric,
+html[data-ui-short="true"] .tradeDealMetric {
+  padding: 6px 7px;
+}
+
+html[data-ui-viewport="tablet"] .tradeDealMetricValue,
+html[data-ui-viewport="phone"] .tradeDealMetricValue,
+html[data-ui-short="true"] .tradeDealMetricValue {
+  font-size: 11px;
+}
+
+html[data-ui-viewport="tablet"] .tradeDealAction,
+html[data-ui-viewport="phone"] .tradeDealAction,
+html[data-ui-short="true"] .tradeDealAction {
+  min-height: 32px;
+  padding: 6px 9px;
+  font-size: 11px;
+}
+
+html[data-ui-viewport="tablet"] .researchPanel,
+html[data-ui-viewport="phone"] .researchPanel,
+html[data-ui-short="true"] .researchPanel {
+  width: calc(var(--pf-vw) - var(--pf-safe-left) - var(--pf-safe-right) - 12px) !important;
+  max-height: calc(var(--pf-vh) - var(--pf-safe-top) - var(--pf-safe-bottom) - 12px) !important;
+  min-height: 0;
+  padding: var(--pf-modal-pad-tight) !important;
+  gap: var(--pf-modal-gap-tight) !important;
+  grid-template-rows: auto auto auto minmax(0, 1fr) !important;
+}
+
+html[data-ui-viewport="tablet"] .researchTopBar,
+html[data-ui-viewport="phone"] .researchTopBar,
+html[data-ui-short="true"] .researchTopBar {
+  gap: 8px;
+}
+
+html[data-ui-viewport="tablet"] .researchTitle,
+html[data-ui-viewport="phone"] .researchTitle,
+html[data-ui-short="true"] .researchTitle {
+  font-size: clamp(20px, 2.8vw, 30px);
+  letter-spacing: 0.02em;
+}
+
+html[data-ui-viewport="tablet"] .researchSubtitle,
+html[data-ui-viewport="phone"] .researchSubtitle,
+html[data-ui-short="true"] .researchSubtitle {
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+html[data-ui-viewport="tablet"] .researchTopBar .btn,
+html[data-ui-viewport="phone"] .researchTopBar .btn,
+html[data-ui-short="true"] .researchTopBar .btn {
+  min-height: var(--pf-modal-btn-h);
+  padding: 6px 10px !important;
+  font-size: 11px !important;
+}
+
+html[data-ui-viewport="tablet"] .researchHeroBar,
+html[data-ui-short="true"] .researchHeroBar {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) clamp(170px, 28vw, 220px);
+  gap: 7px;
+  padding: 7px;
+}
+
+html[data-ui-viewport="phone"] .researchHeroBar {
+  display: grid !important;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  padding: 6px;
+}
+
+html[data-ui-viewport="tablet"] .researchMetricStrip,
+html[data-ui-viewport="phone"] .researchMetricStrip,
+html[data-ui-short="true"] .researchMetricStrip {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"] .researchMetricCard,
+html[data-ui-viewport="phone"] .researchMetricCard,
+html[data-ui-short="true"] .researchMetricCard {
+  padding: 6px;
+  border-radius: 9px;
+  gap: 3px;
+}
+
+html[data-ui-viewport="tablet"] .researchMetricValue,
+html[data-ui-viewport="phone"] .researchMetricValue,
+html[data-ui-short="true"] .researchMetricValue {
+  font-size: 15px;
+}
+
+html[data-ui-viewport="phone"] .researchLabCallout {
+  display: none;
+}
+
+html[data-ui-viewport="tablet"] .researchLabCallout,
+html[data-ui-short="true"] .researchLabCallout {
+  padding: 7px;
+  gap: 5px;
+}
+
+html[data-ui-viewport="tablet"] .researchTabs,
+html[data-ui-viewport="phone"] .researchTabs,
+html[data-ui-short="true"] .researchTabs {
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"] .researchTabBtn,
+html[data-ui-viewport="phone"] .researchTabBtn,
+html[data-ui-short="true"] .researchTabBtn {
+  min-height: 34px;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+html[data-ui-viewport="tablet"] .researchWorkspace,
+html[data-ui-short="true"] .researchWorkspace {
+  grid-template-columns: minmax(0, 1fr) clamp(190px, 30vw, 240px) !important;
+  gap: 8px;
+}
+
+html[data-ui-viewport="phone"] .researchWorkspace {
+  grid-template-columns: 1fr !important;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+
+html[data-ui-viewport="tablet"] .researchTreePanel,
+html[data-ui-viewport="phone"] .researchTreePanel,
+html[data-ui-short="true"] .researchTreePanel {
+  padding: 7px;
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"] .researchTreePanelHead,
+html[data-ui-viewport="phone"] .researchTreePanelHead,
+html[data-ui-short="true"] .researchTreePanelHead {
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"] .researchLegend,
+html[data-ui-viewport="phone"] .researchLegend,
+html[data-ui-short="true"] .researchLegend {
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"] .researchLegendItem,
+html[data-ui-viewport="phone"] .researchLegendItem,
+html[data-ui-short="true"] .researchLegendItem {
+  font-size: 10px;
+}
+
+html[data-ui-viewport="tablet"] .researchTreeViewport,
+html[data-ui-short="true"] .researchTreeViewport {
+  min-height: min(60vh, 540px);
+}
+
+html[data-ui-viewport="phone"] .researchTreeViewport {
+  min-height: min(52vh, 440px);
+}
+
+html[data-ui-viewport="tablet"] .researchDetailPanel,
+html[data-ui-viewport="phone"] .researchDetailPanel,
+html[data-ui-short="true"] .researchDetailPanel {
+  min-width: 0;
+  max-height: none;
+  overflow: auto;
+}
+
+html[data-ui-viewport="phone"] .researchDetailPanel {
+  max-height: min(28vh, 230px);
+}
+
+html[data-ui-viewport="tablet"] .researchDetailCard,
+html[data-ui-viewport="phone"] .researchDetailCard,
+html[data-ui-short="true"] .researchDetailCard {
+  padding: 8px;
+  gap: 7px;
+  border-radius: 10px;
+}
+
+html[data-ui-viewport="tablet"] .researchInfoHeader,
+html[data-ui-viewport="phone"] .researchInfoHeader,
+html[data-ui-short="true"] .researchInfoHeader {
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+}
+
+html[data-ui-viewport="tablet"] .researchInfoIconShell,
+html[data-ui-viewport="phone"] .researchInfoIconShell,
+html[data-ui-short="true"] .researchInfoIconShell {
+  width: 40px;
+  height: 40px;
+}
+
+html[data-ui-viewport="tablet"] .researchInfoName,
+html[data-ui-viewport="phone"] .researchInfoName,
+html[data-ui-short="true"] .researchInfoName {
+  font-size: 16px;
+}
+
+html[data-ui-viewport="tablet"] .researchInfoStatus,
+html[data-ui-viewport="phone"] .researchInfoStatus,
+html[data-ui-short="true"] .researchInfoStatus,
+html[data-ui-viewport="tablet"] .researchInfoDesc,
+html[data-ui-viewport="phone"] .researchInfoDesc,
+html[data-ui-short="true"] .researchInfoDesc {
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+html[data-ui-viewport="tablet"] .researchInfoMeta,
+html[data-ui-short="true"] .researchInfoMeta {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+html[data-ui-viewport="phone"] .researchInfoMeta {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+html[data-ui-viewport="tablet"] .researchStat,
+html[data-ui-viewport="phone"] .researchStat,
+html[data-ui-short="true"] .researchStat {
+  min-height: 28px;
+  padding: 6px 8px;
+}
+
+html[data-ui-viewport="tablet"] .researchStatLabel,
+html[data-ui-viewport="phone"] .researchStatLabel,
+html[data-ui-short="true"] .researchStatLabel {
+  font-size: 10px;
+}
+
+html[data-ui-viewport="tablet"] .researchStatValue,
+html[data-ui-viewport="phone"] .researchStatValue,
+html[data-ui-short="true"] .researchStatValue {
+  font-size: 12px;
+}
+
+html[data-ui-viewport="tablet"] .researchActionBtn,
+html[data-ui-viewport="phone"] .researchActionBtn,
+html[data-ui-short="true"] .researchActionBtn {
+  min-height: 34px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+/* ===== Authoritative Mobile/Tablet pass: Trade + Side HUD + Vertical Events ===== */
+html[data-ui-viewport="tablet"],
+html[data-ui-viewport="phone"],
+html[data-ui-short="true"] {
+  --pf-compact-bottom-stack: calc(
+    var(--pf-mobile-utility-row, 48px) +
+    var(--pf-mobile-quick-row, 64px) +
+    var(--pf-mobile-structure-row, 88px)
+  );
+  --pf-events-rail-w: clamp(108px, 14vw, 124px);
+  --pf-sidehud-w: clamp(176px, 26vw, 248px);
+  --pf-events-top-offset: clamp(264px, 38vh, 336px);
+}
+
+html[data-ui-viewport="phone"][data-ui-orientation="portrait"] {
+  --pf-events-top-offset: clamp(206px, 33vh, 262px);
+  --pf-sidehud-w: clamp(158px, 44vw, 208px);
+}
+
+/* Trade only: keep compact controls/buttons across tablet + phone */
+html[data-ui-viewport="tablet"] .tradePanel,
+html[data-ui-viewport="phone"] .tradePanel,
+html[data-ui-short="true"] .tradePanel {
+  width: min(1060px, calc(var(--pf-vw) - var(--pf-safe-left) - var(--pf-safe-right) - 10px)) !important;
+  max-height: calc(var(--pf-vh) - var(--pf-safe-top) - var(--pf-safe-bottom) - 8px) !important;
+  padding: 10px !important;
+  gap: 9px !important;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto !important;
+}
+
+html[data-ui-viewport="tablet"] .tradeTitle,
+html[data-ui-viewport="phone"] .tradeTitle,
+html[data-ui-short="true"] .tradeTitle {
+  font-size: clamp(22px, 3.2vw, 30px);
+  line-height: 1;
+}
+
+html[data-ui-viewport="tablet"] .tradeSubtitle,
+html[data-ui-viewport="phone"] .tradeSubtitle,
+html[data-ui-short="true"] .tradeSubtitle {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.24;
+  color: rgba(232, 239, 249, 0.86);
+}
+
+html[data-ui-viewport="tablet"] .tradeHeader .btn,
+html[data-ui-viewport="phone"] .tradeHeader .btn,
+html[data-ui-short="true"] .tradeHeader .btn {
+  min-height: 36px;
+  padding: 7px 11px !important;
+  font-size: 12px !important;
+}
+
+html[data-ui-viewport="tablet"] .tradeSectionTitle,
+html[data-ui-viewport="phone"] .tradeSectionTitle,
+html[data-ui-short="true"] .tradeSectionTitle {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+html[data-ui-viewport="tablet"] .tradeSectionCaption,
+html[data-ui-viewport="phone"] .tradeSectionCaption,
+html[data-ui-short="true"] .tradeSectionCaption {
+  font-size: 11px;
+  line-height: 1.3;
+  color: rgba(226, 236, 248, 0.8);
+}
+
+html[data-ui-viewport="tablet"] .tradeTabBtn,
+html[data-ui-viewport="phone"] .tradeTabBtn,
+html[data-ui-short="true"] .tradeTabBtn,
+html[data-ui-viewport="tablet"] .tradeInput,
+html[data-ui-viewport="phone"] .tradeInput,
+html[data-ui-short="true"] .tradeInput,
+html[data-ui-viewport="tablet"] .tradeCreateBtn,
+html[data-ui-viewport="phone"] .tradeCreateBtn,
+html[data-ui-short="true"] .tradeCreateBtn {
+  min-height: 34px;
+}
+
+html[data-ui-viewport="tablet"] .tradeTabLabel,
+html[data-ui-viewport="phone"] .tradeTabLabel,
+html[data-ui-short="true"] .tradeTabLabel {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+html[data-ui-viewport="tablet"] .tradeTabCount,
+html[data-ui-viewport="phone"] .tradeTabCount,
+html[data-ui-short="true"] .tradeTabCount {
+  min-width: 26px;
+  min-height: 22px;
+  font-size: 11px;
+}
+
+html[data-ui-viewport="tablet"] .tradeView,
+html[data-ui-viewport="phone"] .tradeView,
+html[data-ui-short="true"] .tradeView {
+  padding: 10px;
+  gap: 10px;
+}
+
+html[data-ui-viewport="tablet"] .tradeBoardLayout,
+html[data-ui-viewport="phone"] .tradeBoardLayout,
+html[data-ui-short="true"] .tradeBoardLayout {
+  grid-template-columns: 1fr !important;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+}
+
+html[data-ui-viewport="tablet"] .tradeComposerCard,
+html[data-ui-viewport="tablet"] .tradeBoardFeed,
+html[data-ui-viewport="phone"] .tradeComposerCard,
+html[data-ui-viewport="phone"] .tradeBoardFeed,
+html[data-ui-short="true"] .tradeComposerCard,
+html[data-ui-short="true"] .tradeBoardFeed {
+  overflow: visible !important;
+}
+
+html[data-ui-viewport="tablet"] .tradeSendStack,
+html[data-ui-viewport="phone"] .tradeSendStack,
+html[data-ui-short="true"] .tradeSendStack {
+  overflow: visible;
+  padding-right: 0;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceStrip,
+html[data-ui-short="true"] .tradeResourceStrip {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
+html[data-ui-viewport="phone"] .tradeResourceStrip {
+  grid-template-columns: 1fr !important;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceLabel,
+html[data-ui-viewport="phone"] .tradeResourceLabel,
+html[data-ui-short="true"] .tradeResourceLabel {
+  font-size: 13px;
+}
+
+html[data-ui-viewport="tablet"] .tradeResourceValue,
+html[data-ui-viewport="phone"] .tradeResourceValue,
+html[data-ui-short="true"] .tradeResourceValue {
+  font-size: 19px;
+}
+
+html[data-ui-viewport="tablet"] .tradeField,
+html[data-ui-viewport="phone"] .tradeField,
+html[data-ui-short="true"] .tradeField {
+  font-size: 12px;
+  color: rgba(228, 236, 249, 0.88);
+}
+
+html[data-ui-viewport="tablet"] .tradeInput,
+html[data-ui-viewport="phone"] .tradeInput,
+html[data-ui-short="true"] .tradeInput {
+  min-height: 34px;
+  font-size: 13px;
+}
+
+html[data-ui-viewport="tablet"] .tradeInput:disabled,
+html[data-ui-viewport="phone"] .tradeInput:disabled,
+html[data-ui-short="true"] .tradeInput:disabled {
+  opacity: 1;
+  color: rgba(224, 233, 247, 0.86);
+  background: rgba(10, 14, 20, 0.72);
+}
+
+html[data-ui-viewport="tablet"] .tradeDealEmpty,
+html[data-ui-viewport="phone"] .tradeDealEmpty,
+html[data-ui-short="true"] .tradeDealEmpty {
+  font-size: 12px;
+  color: rgba(210, 224, 244, 0.84);
+}
+
+html[data-ui-viewport="tablet"] .tradeDealTitle,
+html[data-ui-viewport="phone"] .tradeDealTitle,
+html[data-ui-short="true"] .tradeDealTitle {
+  font-size: 13px;
+}
+
+html[data-ui-viewport="tablet"] .tradeDealMeta,
+html[data-ui-viewport="phone"] .tradeDealMeta,
+html[data-ui-short="true"] .tradeDealMeta,
+html[data-ui-viewport="tablet"] .tradeDealRoute,
+html[data-ui-viewport="phone"] .tradeDealRoute,
+html[data-ui-short="true"] .tradeDealRoute {
+  font-size: 11px;
+}
+
+/* Right-side cards: never run out of viewport; internal scroll when needed */
+html[data-ui-viewport="tablet"] #sideHud,
+html[data-ui-viewport="phone"] #sideHud,
+html[data-ui-short="true"] #sideHud,
+html[data-ui-viewport="tablet"] #hud:has(#leaderboard .lbPanel:not([hidden])) #sideHud,
+html[data-ui-viewport="phone"] #hud:has(#leaderboard .lbPanel:not([hidden])) #sideHud,
+html[data-ui-short="true"] #hud:has(#leaderboard .lbPanel:not([hidden])) #sideHud {
+  left: auto !important;
+  right: calc(var(--pf-safe-right) + 6px) !important;
+  top: calc(var(--spawn-progress-clearance) + var(--pf-safe-top) + 6px) !important;
+  bottom: calc(var(--pf-safe-bottom) + var(--pf-compact-bottom-stack) + 8px) !important;
+  width: var(--pf-sidehud-w) !important;
+  max-height: none !important;
+  display: grid !important;
+  gap: 6px !important;
+  overflow: auto;
+  padding-right: 1px;
+  z-index: 25;
+}
+
+html[data-ui-viewport="tablet"] #sideHud > section.panel,
+html[data-ui-viewport="phone"] #sideHud > section.panel,
+html[data-ui-short="true"] #sideHud > section.panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px !important;
+}
+
+html[data-ui-viewport="tablet"] #sideHud .panelTitle,
+html[data-ui-viewport="phone"] #sideHud .panelTitle,
+html[data-ui-short="true"] #sideHud .panelTitle {
+  margin-bottom: 4px;
+  font-size: 10.5px !important;
+}
+
+html[data-ui-viewport="tablet"] #sideHud .statRow dt,
+html[data-ui-viewport="phone"] #sideHud .statRow dt,
+html[data-ui-short="true"] #sideHud .statRow dt,
+html[data-ui-viewport="tablet"] #sideHud .opLabel,
+html[data-ui-viewport="phone"] #sideHud .opLabel,
+html[data-ui-short="true"] #sideHud .opLabel,
+html[data-ui-viewport="tablet"] #sideHud .selectedDesc,
+html[data-ui-viewport="phone"] #sideHud .selectedDesc,
+html[data-ui-short="true"] #sideHud .selectedDesc,
+html[data-ui-viewport="tablet"] #sideHud .selectedMeta,
+html[data-ui-viewport="phone"] #sideHud .selectedMeta,
+html[data-ui-short="true"] #sideHud .selectedMeta {
+  font-size: 10.5px !important;
+  line-height: 1.2;
+}
+
+html[data-ui-viewport="tablet"] #sideHud .statRow dd,
+html[data-ui-viewport="phone"] #sideHud .statRow dd,
+html[data-ui-short="true"] #sideHud .statRow dd,
+html[data-ui-viewport="tablet"] #sideHud .opValue,
+html[data-ui-viewport="phone"] #sideHud .opValue,
+html[data-ui-short="true"] #sideHud .opValue,
+html[data-ui-viewport="tablet"] #sideHud .selectedName,
+html[data-ui-viewport="phone"] #sideHud .selectedName,
+html[data-ui-short="true"] #sideHud .selectedName {
+  font-size: 12.5px !important;
+}
+
+html[data-ui-viewport="phone"] #sideHud > section.panel:first-child .objective {
+  display: none;
+}
+
+/* Events dock: clone top-left control card shell on small screens */
+html[data-ui-viewport="tablet"] #events,
+html[data-ui-viewport="phone"] #events,
+html[data-ui-short="true"] #events {
+  left: calc(var(--pf-safe-left) + 6px) !important;
+  right: auto !important;
+  top: calc(var(--spawn-progress-clearance) + var(--pf-safe-top) + var(--pf-events-top-offset)) !important;
+  bottom: auto !important;
+  width: var(--pf-events-rail-w) !important;
+  max-height: none !important;
+  min-height: 0;
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 6px !important;
+  border: 1px solid var(--pf-hud-border-soft, rgba(255, 255, 255, 0.22)) !important;
+  border-radius: 12px !important;
+  background: var(--pf-hud-surface-soft, rgba(8, 12, 18, 0.60)) !important;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34) !important;
+  backdrop-filter: blur(10px);
+  z-index: 25;
+}
+
+html[data-ui-viewport="tablet"] #events .eventsHeader,
+html[data-ui-viewport="phone"] #events .eventsHeader,
+html[data-ui-short="true"] #events .eventsHeader {
+  display: contents;
+}
+
+html[data-ui-viewport="tablet"] #events .dockTabs,
+html[data-ui-viewport="phone"] #events .dockTabs,
+html[data-ui-short="true"] #events .dockTabs {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+  padding-right: 0;
+  border-right: 0;
+}
+
+html[data-ui-viewport="tablet"] #events .dockTabs .tabBtn,
+html[data-ui-viewport="phone"] #events .dockTabs .tabBtn,
+html[data-ui-short="true"] #events .dockTabs .tabBtn {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 6px !important;
+  font-size: 11px;
+  line-height: 1.08;
+  text-align: center;
+  white-space: nowrap;
+}
+
+html[data-ui-viewport="tablet"] #events .eventsBtns,
+html[data-ui-viewport="phone"] #events .eventsBtns,
+html[data-ui-short="true"] #events .eventsBtns {
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: stretch;
+  gap: 8px;
+}
+
+html[data-ui-viewport="tablet"] #events .eventsBtns .btn,
+html[data-ui-viewport="phone"] #events .eventsBtns .btn,
+html[data-ui-short="true"] #events .eventsBtns .btn {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 6px !important;
+  font-size: 11px;
+}
+
+html[data-ui-viewport="tablet"] #events #eventsBody,
+html[data-ui-viewport="tablet"] #events #dipBody,
+html[data-ui-viewport="tablet"] #events #opsBody,
+html[data-ui-viewport="phone"] #events #eventsBody,
+html[data-ui-viewport="phone"] #events #dipBody,
+html[data-ui-viewport="phone"] #events #opsBody,
+html[data-ui-short="true"] #events #eventsBody,
+html[data-ui-short="true"] #events #dipBody,
+html[data-ui-short="true"] #events #opsBody {
+  display: none !important;
+}
+
+html[data-ui-viewport="tablet"] #events #eventsScopeControls,
+html[data-ui-viewport="phone"] #events #eventsScopeControls,
+html[data-ui-short="true"] #events #eventsScopeControls {
+  display: none !important;
+}
+
+html[data-ui-viewport="tablet"] #events.isCollapsed,
+html[data-ui-viewport="phone"] #events.isCollapsed,
+html[data-ui-short="true"] #events.isCollapsed {
+  top: calc(var(--spawn-progress-clearance) + var(--pf-safe-top) + var(--pf-events-top-offset)) !important;
+  bottom: auto !important;
+  width: var(--pf-events-rail-w) !important;
+  display: flex !important;
+  flex-direction: column;
+}
+
+html[data-ui-viewport="tablet"] #events.isCollapsed .dockTabs,
+html[data-ui-viewport="phone"] #events.isCollapsed .dockTabs,
+html[data-ui-short="true"] #events.isCollapsed .dockTabs {
+  display: flex !important;
+}
+
+html[data-ui-viewport="tablet"] #events.isCollapsed .eventsBtns,
+html[data-ui-viewport="phone"] #events.isCollapsed .eventsBtns,
+html[data-ui-short="true"] #events.isCollapsed .eventsBtns {
+  display: flex !important;
+}
+
+html[data-ui-viewport="tablet"] #events.isCollapsed #eventsBody,
+html[data-ui-viewport="tablet"] #events.isCollapsed #dipBody,
+html[data-ui-viewport="tablet"] #events.isCollapsed #opsBody,
+html[data-ui-viewport="tablet"] #events.isCollapsed #eventsScopeControls,
+html[data-ui-viewport="phone"] #events.isCollapsed #eventsBody,
+html[data-ui-viewport="phone"] #events.isCollapsed #dipBody,
+html[data-ui-viewport="phone"] #events.isCollapsed #opsBody,
+html[data-ui-viewport="phone"] #events.isCollapsed #eventsScopeControls,
+html[data-ui-short="true"] #events.isCollapsed #eventsBody,
+html[data-ui-short="true"] #events.isCollapsed #dipBody,
+html[data-ui-short="true"] #events.isCollapsed #opsBody,
+html[data-ui-short="true"] #events.isCollapsed #eventsScopeControls {
+  display: none !important;
 }

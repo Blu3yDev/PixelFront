@@ -1,15 +1,40 @@
 // FILE: src/game/systems/navy.js
 
-import { OWNER, TRADE_EVENT_COOLDOWN_S, TRADE_SHIP_HP, TRADE_SHIP_MAX_OUTGOING, TRADE_SHIP_RESPAWN_S, TRADE_SHIP_REWARD_GOLD, TRADE_SHIP_SPEED_CPS, TRADE_TRAIL_FADE_S, TRADE_TRAIL_MAX_POINTS, TRADE_TRAIL_POINT_SPACING, TRADE_TRIP_STEPS_MAX, TRADE_TRIP_STEPS_MIN, TRADE_WANDER_MAX_S, TRADE_WANDER_MIN_S, TRANSPORT_SPEED_CPS, WARSHIP_CHASE_TILES, WARSHIP_DETECT_TILES, WARSHIP_DPS, WARSHIP_HP, WARSHIP_LAUNCH_GOLD_COST, WARSHIP_MAX_ACTIVE, WARSHIP_RAID_LOOT_TRADE_GOLD, WARSHIP_RAID_LOOT_TRANSPORT_GOLD, WARSHIP_RAID_LOOT_WARSHIP_GOLD, WARSHIP_RANGE_TILES, WARSHIP_SPEED_CPS, WAR_EVENT_COOLDOWN_S } from "../config.js";
+import { OWNER, PORT_TRADE_COOLDOWN_S, PORT_TRADE_REWARD_BASE_GOLD, PORT_TRADE_REWARD_MAX_GOLD, PORT_TRADE_REWARD_PER_PIXEL, TRADE_EVENT_COOLDOWN_S, TRADE_SHIP_HP, TRADE_SHIP_MAX_OUTGOING, TRADE_SHIP_RESPAWN_S, TRADE_SHIP_REWARD_GOLD, TRADE_SHIP_SPEED_CPS, TRADE_TRAIL_FADE_S, TRADE_TRAIL_MAX_POINTS, TRADE_TRAIL_POINT_SPACING, TRADE_TRIP_STEPS_MAX, TRADE_TRIP_STEPS_MIN, TRADE_WANDER_MAX_S, TRADE_WANDER_MIN_S, TRANSPORT_SPEED_CPS, WARSHIP_CHASE_TILES, WARSHIP_DETECT_TILES, WARSHIP_DPS, WARSHIP_HP, WARSHIP_LAUNCH_GOLD_COST, WARSHIP_MAX_ACTIVE, WARSHIP_RAID_LOOT_TRADE_GOLD, WARSHIP_RAID_LOOT_TRANSPORT_GOLD, WARSHIP_RAID_LOOT_WARSHIP_GOLD, WARSHIP_RANGE_TILES, WARSHIP_SPEED_CPS, WAR_EVENT_COOLDOWN_S } from "../config.js";
 import { clamp01, clamp8, clampInt, fbm01, hash01, lerp, mulberry32, noise2, ridgeFbm01, smoothstep01, title } from "../utils.js";
 
 export function installNavy(World) {
+  const NAVY_PATH_CACHE_MAX = 640;
   const _navySetStepOut = (out, x, y) => {
     if (!out) return { x, y };
     out.x = x | 0;
     out.y = y | 0;
     return out;
   };
+  const _navySetHidden = (obj, key, value) => {
+    if (!obj || typeof obj !== "object") return value;
+    const desc = Object.getOwnPropertyDescriptor(obj, key);
+    if (!desc) {
+      Object.defineProperty(obj, key, {
+        value,
+        writable: true,
+        configurable: true,
+        enumerable: false
+      });
+      return value;
+    }
+    obj[key] = value;
+    return value;
+  };
+  const _navyFormatCooldown = (secondsRaw) => {
+    const total = Math.max(0, Math.ceil(Number(secondsRaw) || 0));
+    const mins = (total / 60) | 0;
+    const secs = total % 60;
+    return mins > 0
+      ? `${mins}:${String(secs).padStart(2, "0")}`
+      : `${secs}s`;
+  };
+  const _navyPathCacheKey = (sx, sy, gx, gy, compId) => `${compId | 0}:${sx | 0},${sy | 0}>${gx | 0},${gy | 0}`;
 
   World.prototype._tickNavy = function(dt) {
       if (!(dt > 0)) return;
@@ -19,6 +44,8 @@ export function installNavy(World) {
         const idx = idxRaw | 0;
         const last = (ships.length - 1) | 0;
         if (idx < 0 || idx > last) return;
+        const removed = ships[idx];
+        if (removed) this._navyOnShipRemoved(removed);
         if (idx !== last) ships[idx] = ships[last];
         ships.pop();
       };
@@ -43,6 +70,31 @@ export function installNavy(World) {
         const kind = String(s.kind || "");
 
         if (kind === "trade") {
+          if ((s.sourcePortId | 0) > 0) {
+            const sourcePort = this._structureById && typeof this._structureById.get === "function"
+              ? this._structureById.get(s.sourcePortId | 0)
+              : null;
+            const targetOwnerId = s.targetOwnerId | 0;
+            const targetPort = this._structureById && typeof this._structureById.get === "function"
+              ? this._structureById.get(s.targetPortId | 0)
+              : null;
+            const allied = targetOwnerId > 0 && typeof this.getRelation === "function"
+              ? !!this.getRelation(A, targetOwnerId)?.allied
+              : false;
+            if (!sourcePort || (sourcePort.owner | 0) !== A || String(sourcePort.type || "") !== "port" || !allied) {
+              removeShipAt(i);
+              continue;
+            }
+            if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(sourcePort)) {
+              removeShipAt(i);
+              continue;
+            }
+            if (!targetPort || String(targetPort.type || "") !== "port" || (targetPort.owner | 0) !== targetOwnerId) {
+              removeShipAt(i);
+              continue;
+            }
+          }
+
           s.speed = TRADE_SHIP_SPEED_CPS;
           if (s.mode !== "toPort" && s.mode !== "wander") this._navyAssignTradeTrip(s);
 
@@ -56,6 +108,21 @@ export function installNavy(World) {
           if (!arrived) continue;
 
           if (s.mode === "toPort") {
+            if ((s.sourcePortId | 0) > 0) {
+              const reward = Math.max(0, Math.round(Number(s.tradeRewardGold) || 0));
+              const completedSourcePort = this._structureById && typeof this._structureById.get === "function"
+                ? this._structureById.get(s.sourcePortId | 0)
+                : null;
+              n.gold += reward;
+              if (completedSourcePort && String(completedSourcePort.type || "") === "port") this._navyCompletePortTrade(completedSourcePort);
+              if (A === OWNER.PLAYER && this.time >= this._tradeEventCooldownUntil[A]) {
+                this._tradeEventCooldownUntil[A] = this.time + TRADE_EVENT_COOLDOWN_S;
+                this._pushEvent(`Trade route completed (+${Math.round(reward)} Gold).`);
+              }
+              removeShipAt(i);
+              continue;
+            }
+
             // Trip complete: payout, then despawn and respawn after a cooldown (per-port-slot ship).
             const researchBonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(A) : null;
             const rewardMul = 1 + Math.max(0, Number(researchBonuses?.tradeShipRewardMul) || 0);
@@ -84,6 +151,7 @@ export function installNavy(World) {
             s.tx = destNow.x | 0;
             s.ty = destNow.y | 0;
             s.wanderUntil = 0;
+            this._navyClearShipRoute(s);
             s.nx = null; s.ny = null; s.seg = 0;
             continue;
           }
@@ -117,6 +185,7 @@ export function installNavy(World) {
 
           s.tx = t.x | 0;
           s.ty = t.y | 0;
+          this._navyClearShipRoute(s);
           s.nx = null; s.ny = null; s.seg = 0;
           continue;
         }
@@ -428,7 +497,7 @@ export function installNavy(World) {
           this._warEventCooldownUntil[OWNER.PLAYER] = this.time + WAR_EVENT_COOLDOWN_S;
 
           if (s.kind === "trade") {
-          this._navySetTradeSlotCooldown(victimOwner, s.portKey, TRADE_SHIP_RESPAWN_S);
+            if ((s.sourcePortId | 0) <= 0) this._navySetTradeSlotCooldown(victimOwner, s.portKey, TRADE_SHIP_RESPAWN_S);
             if (victimOwner === OWNER.PLAYER) this._pushEvent(`Your trade ship was sunk.`);
             else this._pushEvent(`Enemy trade ship sunk (+${loot} Gold).`);
           } else if (s.kind === "transport") {
@@ -443,53 +512,64 @@ export function installNavy(World) {
         removeShipAt(i);
       }
 
-      // ---- Spawn trade ships (1 Port-slot = 1 Trade Ship; no global cap) ----
-      // Build per-port slots and ensure each slot maintains one trade ship (after cooldown).
-      const shipsByKey = this._navyTickShipsByKey || (this._navyTickShipsByKey = new Set());
-      shipsByKey.clear();
-      const tradeSpawnCounts = this._navyTickTradeSpawnCounts || (this._navyTickTradeSpawnCounts = new Int32Array(this._nationCount + 1));
-      tradeSpawnCounts.fill(0);
-      for (let i = 0; i < ships.length; i++) {
-        const s = ships[i];
-        if (!s || s.kind !== "trade") continue;
-        if (s.portKey) shipsByKey.add(String(s.portKey));
-        const ownerId = s.owner | 0;
-        if (ownerId > 0 && ownerId < tradeSpawnCounts.length) tradeSpawnCounts[ownerId] = (tradeSpawnCounts[ownerId] | 0) + 1;
-      }
-
-      for (let id = 1; id <= this._nationCount; id++) {
+      // ---- AI-managed allied port trade launches ----
+      // Player ports are now manual. AI ports periodically launch one trade ship per port when an allied port is reachable.
+      for (let id = 2; id <= this._nationCount; id++) {
         const nat = this.nation[id];
-        if (!nat || !nat.alive) continue;
+        if (!nat || !nat.alive || nat.collapsed) continue;
+        const manualNation =
+          !!nat.isHuman ||
+          nat.isAiControlled === false ||
+          (this._humanNationIds instanceof Set && this._humanNationIds.has(id));
+        if (manualNation) continue;
 
         const ports = this._portsByOwner[id] || [];
         if (!ports.length) continue;
 
+        let activeCount = 0;
+        if (TRADE_SHIP_MAX_OUTGOING > 0) {
+          activeCount = this._tradeShipCount ? (this._tradeShipCount[id] | 0) : 0;
+          if (activeCount <= 0) {
+            for (let i = 0; i < ships.length; i++) {
+              const ship = ships[i];
+              if (ship && ship.kind === "trade" && ((ship.owner | 0) === id)) activeCount++;
+            }
+          }
+        }
+
         for (let p = 0; p < ports.length; p++) {
           const st = ports[p];
           if (!st) continue;
-          if (TRADE_SHIP_MAX_OUTGOING > 0 && (tradeSpawnCounts[id] | 0) >= TRADE_SHIP_MAX_OUTGOING) break;
+          if (TRADE_SHIP_MAX_OUTGOING > 0 && activeCount >= TRADE_SHIP_MAX_OUTGOING) break;
+          if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(st)) continue;
 
-          const c = ((st.count | 0) > 0 ? (st.count | 0) : 1) | 0;
-          for (let slot = 0; slot < c; slot++) {
-            if (TRADE_SHIP_MAX_OUTGOING > 0 && (tradeSpawnCounts[id] | 0) >= TRADE_SHIP_MAX_OUTGOING) break;
-            const baseKey = String(st.id || ((st.x | 0) + "," + (st.y | 0)));
-            let slotKeys = st._navySlotKeys;
-            if (!Array.isArray(slotKeys) || slotKeys.length < c || String(st._navySlotKeyBase || "") !== baseKey) {
-              slotKeys = new Array(c);
-              for (let k = 0; k < c; k++) slotKeys[k] = `${baseKey}:${k}`;
-              st._navySlotKeys = slotKeys;
-              st._navySlotKeyBase = baseKey;
-            }
-            const key = slotKeys[slot];
-            if (shipsByKey.has(key)) continue;
-            if (!this._navyCanSpawnTradeForSlot(id, key)) continue;
+          const d = this._navyGetPortTradeRecord(st, true);
+          if (!d || (d.activeShipId | 0) > 0) continue;
+          if ((Number(d.cooldownUntil) || 0) > now) continue;
+          if (now < (Number(d.aiRetryAt) || 0)) continue;
 
-            const ok = this._navySpawnTradeShipFromPortSlot(id, st, slot, key);
-            if (ok && ok.ok) {
-              shipsByKey.add(key);
-              tradeSpawnCounts[id] = (tradeSpawnCounts[id] | 0) + 1;
+          let bestOwnerId = 0;
+          let bestDistance = Number.POSITIVE_INFINITY;
+          for (let oid = 1; oid <= this._nationCount; oid++) {
+            if ((oid | 0) === id) continue;
+            const rel = (typeof this.getRelation === "function") ? this.getRelation(id, oid) : null;
+            if (!rel?.allied) continue;
+            const partner = this._navyFindBestPortTradePartner(id, st, oid);
+            if (!partner) continue;
+            if ((partner.distancePx | 0) < bestDistance) {
+              bestDistance = partner.distancePx | 0;
+              bestOwnerId = oid | 0;
             }
           }
+
+          if (bestOwnerId <= 0) {
+            d.aiRetryAt = now + 18 + (this._navyRng() * 24);
+            continue;
+          }
+
+          const res = this.startPortTrade(st.id | 0, id, bestOwnerId, { silent: true });
+          d.aiRetryAt = now + (res?.ok ? (16 + (this._navyRng() * 18)) : (10 + (this._navyRng() * 12)));
+          if (res?.ok && TRADE_SHIP_MAX_OUTGOING > 0) activeCount++;
         }
       }
 
@@ -645,6 +725,155 @@ export function installNavy(World) {
       }
 
       return { ok: false, reason: "Ship not found." };
+    }
+
+  World.prototype._navyEnsurePortTradeData = function(st) {
+      if (!st || typeof st !== "object") return null;
+      if (!st.data || typeof st.data !== "object") st.data = {};
+      let d = st.data.portTrade;
+      if (!d || typeof d !== "object") d = st.data.portTrade = {};
+      d.activeShipId = Math.max(0, d.activeShipId | 0);
+      d.targetOwnerId = Math.max(0, d.targetOwnerId | 0);
+      d.targetPortId = Math.max(0, d.targetPortId | 0);
+      d.distancePx = Math.max(0, Number(d.distancePx) || 0);
+      d.routeDistancePx = Math.max(0, Number(d.routeDistancePx) || 0);
+      d.rewardGold = Math.max(0, Number(d.rewardGold) || 0);
+      d.startedAt = Math.max(0, Number(d.startedAt) || 0);
+      d.lastCompletedAt = Math.max(0, Number(d.lastCompletedAt) || 0);
+      d.cooldownUntil = Math.max(0, Number(d.cooldownUntil) || 0);
+      d.aiRetryAt = Math.max(0, Number(d.aiRetryAt) || 0);
+      return d;
+    }
+
+  World.prototype._navyClearPortTradeState = function(st) {
+      const d = this._navyEnsurePortTradeData(st);
+      if (!d) return null;
+      d.activeShipId = 0;
+      d.targetOwnerId = 0;
+      d.targetPortId = 0;
+      d.distancePx = 0;
+      d.routeDistancePx = 0;
+      d.rewardGold = 0;
+      d.startedAt = 0;
+      d.lastCompletedAt = Math.max(0, Number(this.time) || 0);
+      return d;
+    }
+
+  World.prototype._navyCompletePortTrade = function(st) {
+      const d = this._navyEnsurePortTradeData(st);
+      if (!d) return null;
+      d.activeShipId = 0;
+      d.targetOwnerId = 0;
+      d.targetPortId = 0;
+      d.distancePx = 0;
+      d.routeDistancePx = 0;
+      d.rewardGold = 0;
+      d.startedAt = 0;
+      d.lastCompletedAt = Math.max(0, Number(this.time) || 0);
+      d.cooldownUntil = d.lastCompletedAt + Math.max(0, Number(PORT_TRADE_COOLDOWN_S) || 0);
+      d.aiRetryAt = Math.max(Number(d.aiRetryAt) || 0, d.cooldownUntil);
+      return d;
+    }
+
+  World.prototype._navyGetPortTradeRecord = function(st, pruneStale = true) {
+      const d = this._navyEnsurePortTradeData(st);
+      if (!d) return null;
+      if (!pruneStale || (d.activeShipId | 0) <= 0) return d;
+      const ship = (typeof this.getShipById === "function")
+        ? this.getShipById(d.activeShipId | 0)
+        : null;
+      if (!ship || String(ship.kind || "") !== "trade" || ((ship.sourcePortId | 0) !== (st.id | 0))) {
+        this._navyClearPortTradeState(st);
+      }
+      return this._navyEnsurePortTradeData(st);
+    }
+
+  World.prototype._navyOnShipRemoved = function(ship) {
+      if (!ship || String(ship.kind || "") !== "trade") return;
+      const portId = ship.sourcePortId | 0;
+      if (!portId) return;
+      const st = this._structureById && typeof this._structureById.get === "function"
+        ? this._structureById.get(portId)
+        : null;
+      if (!st || String(st.type || "") !== "port") return;
+      const d = this._navyGetPortTradeRecord(st, false);
+      if (!d || ((d.activeShipId | 0) !== (ship.id | 0))) return;
+      this._navyClearPortTradeState(st);
+    }
+
+  World.prototype._navyClearShipRoute = function(ship) {
+      if (!ship || typeof ship !== "object") return;
+      _navySetHidden(ship, "_route", null);
+      _navySetHidden(ship, "_routePos", 0);
+      _navySetHidden(ship, "_routeGoalX", ship.tx | 0);
+      _navySetHidden(ship, "_routeGoalY", ship.ty | 0);
+    }
+
+  World.prototype._navyPathCacheGet = function(x, y, tx, ty, compId = 0) {
+      const cache = this._navyPathCache;
+      if (!(cache instanceof Map) || cache.size <= 0) return null;
+      const key = _navyPathCacheKey(x, y, tx, ty, compId);
+      const route = cache.get(key);
+      if (!Array.isArray(route) || route.length <= 0) return null;
+      cache.delete(key);
+      cache.set(key, route);
+      return route;
+    }
+
+  World.prototype._navyPathCacheSet = function(x, y, tx, ty, compId = 0, route = null) {
+      if (!Array.isArray(route) || route.length <= 0) return route;
+      let cache = this._navyPathCache;
+      if (!(cache instanceof Map)) cache = this._navyPathCache = new Map();
+      const key = _navyPathCacheKey(x, y, tx, ty, compId);
+      if (cache.has(key)) cache.delete(key);
+      cache.set(key, route);
+      while (cache.size > NAVY_PATH_CACHE_MAX) {
+        const oldest = cache.keys().next();
+        if (oldest.done) break;
+        cache.delete(oldest.value);
+      }
+      return route;
+    }
+
+  World.prototype._navySetShipRoute = function(ship, route) {
+      if (!ship || typeof ship !== "object") return null;
+      const arr = (Array.isArray(route) && route.length > 0) ? route : null;
+      _navySetHidden(ship, "_route", arr);
+      _navySetHidden(ship, "_routePos", 0);
+      _navySetHidden(ship, "_routeGoalX", ship.tx | 0);
+      _navySetHidden(ship, "_routeGoalY", ship.ty | 0);
+      return arr;
+    }
+
+  World.prototype._navyConsumeRouteStep = function(ship, compId = 0, out = null) {
+      if (!ship || typeof ship !== "object") return null;
+      const route = Array.isArray(ship._route) ? ship._route : null;
+      if (!route || route.length <= 0) return null;
+      const wantComp = compId | 0;
+      const w = this.w | 0;
+      let pos = Math.max(0, ship._routePos | 0);
+      while (pos < route.length) {
+        const idx = route[pos] | 0;
+        const nx = (idx % w) | 0;
+        const ny = ((idx / w) | 0);
+        if ((Math.abs(nx - (ship.cx | 0)) + Math.abs(ny - (ship.cy | 0))) !== 1) {
+          this._navyClearShipRoute(ship);
+          return null;
+        }
+        if (!this._navyIsWater(nx, ny)) {
+          this._navyClearShipRoute(ship);
+          return null;
+        }
+        if (wantComp && ((this._navyWaterCompAt(nx, ny) | 0) !== wantComp)) {
+          this._navyClearShipRoute(ship);
+          return null;
+        }
+        _navySetHidden(ship, "_routePos", pos + 1);
+        if ((pos + 1) >= route.length) _navySetHidden(ship, "_route", null);
+        return _navySetStepOut(out, nx, ny);
+      }
+      this._navyClearShipRoute(ship);
+      return null;
     }
 
     // Spawn a warship at a water spawn tile (usually adjacent to a Port) and send it toward a water target.
@@ -1126,6 +1355,85 @@ export function installNavy(World) {
       return _navySetStepOut(out, (cur % w) | 0, ((cur / w) | 0));
     }
 
+  World.prototype._navyBuildWaterPath = function(x, y, tx, ty, compId = 0) {
+      const sx = x | 0, sy = y | 0;
+      const gx = tx | 0, gy = ty | 0;
+      const w = this.w | 0, h = this.h | 0;
+      if (sx < 0 || sy < 0 || gx < 0 || gy < 0 || sx >= w || sy >= h || gx >= w || gy >= h) return null;
+      if (sx === gx && sy === gy) return [];
+      if (!this._navyIsWater(sx, sy) || !this._navyIsWater(gx, gy)) return null;
+
+      const cached = this._navyPathCacheGet(sx, sy, gx, gy, compId);
+      if (cached) return cached;
+
+      const start = (sy * w + sx) | 0;
+      const goal = (gy * w + gx) | 0;
+      const wantComp = compId | 0;
+      const comp = this._waterComp;
+      if (wantComp) {
+        if (!comp || (comp[start] | 0) !== wantComp || (comp[goal] | 0) !== wantComp) return null;
+      }
+
+      const n = (w * h) | 0;
+      const q = this._floodQ;
+      let stamp = this._visitStamp;
+      if (!stamp || stamp.length !== n) stamp = this._visitStamp = new Uint32Array(n);
+      let mark = (this._visitTick = (this._visitTick + 1) >>> 0) || 1;
+      if (mark === 0) {
+        stamp.fill(0);
+        mark = 1;
+        this._visitTick = 1;
+      }
+
+      let prev = this._navyPathPrev;
+      if (!prev || prev.length !== n) prev = this._navyPathPrev = new Int32Array(n);
+
+      let qh = 0, qt = 0;
+      q[qt++] = start;
+      stamp[start] = mark;
+      prev[start] = -1;
+
+      const land = this.land;
+      while (qh < qt) {
+        const idx = q[qh++] | 0;
+        if (idx === goal) break;
+
+        const cx = (idx % w) | 0;
+        const cy = ((idx / w) | 0);
+
+        const tryPush = (ni) => {
+          if (stamp[ni] === mark) return;
+          if (land[ni]) return;
+          if (wantComp && comp && ((comp[ni] | 0) !== wantComp)) return;
+          stamp[ni] = mark;
+          prev[ni] = idx;
+          q[qt++] = ni;
+        };
+
+        if (cx > 0) tryPush((idx - 1) | 0);
+        if (cx < w - 1) tryPush((idx + 1) | 0);
+        if (cy > 0) tryPush((idx - w) | 0);
+        if (cy < h - 1) tryPush((idx + w) | 0);
+      }
+
+      if (stamp[goal] !== mark) return null;
+
+      let len = 0;
+      for (let cur2 = goal; cur2 !== start; cur2 = prev[cur2] | 0) {
+        if (cur2 < 0) return null;
+        len++;
+        if (len > n) return null;
+      }
+
+      const route = new Array(len);
+      let cur2 = goal;
+      for (let i = len - 1; i >= 0; i--) {
+        route[i] = cur2 | 0;
+        cur2 = prev[cur2] | 0;
+      }
+      return this._navyPathCacheSet(sx, sy, gx, gy, compId, route);
+    }
+
 
   World.prototype._navyPickTradeTargetFromWater = function(sx, sy) {
       let x = sx | 0, y = sy | 0;
@@ -1279,6 +1587,311 @@ export function installNavy(World) {
       return { x: outX, y: outY };
     }
 
+  World.prototype._navyFindBestPortTradePartner = function(ownerId, sourcePort, allyId) {
+      const A = ownerId | 0;
+      const B = allyId | 0;
+      const st = sourcePort || null;
+      if (!st || String(st.type || "") !== "port") return null;
+      if ((st.owner | 0) !== A) return null;
+      if (!this._waterComp || (this._waterComp.length !== (this.w * this.h)) || !((this._waterCompCount | 0) > 0)) {
+        this._recomputeWaterComponents();
+      }
+      const sourceSpawn = this._navyPickAdjacentWater((st.x | 0), (st.y | 0));
+      if (!sourceSpawn) return null;
+      const compId = this._navyWaterCompAt(sourceSpawn.x | 0, sourceSpawn.y | 0) | 0;
+      if (!compId) return null;
+
+      const ports = this._portsByOwner[B] || [];
+      let best = null;
+      let bestD2 = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < ports.length; i++) {
+        const p = ports[i];
+        if (!p || String(p.type || "") !== "port") continue;
+        if ((p.owner | 0) !== B) continue;
+        if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(p)) continue;
+        const targetWater = this._navyPickAdjacentWater((p.x | 0), (p.y | 0), compId);
+        if (!targetWater) continue;
+        const dx = (p.x | 0) - (st.x | 0);
+        const dy = (p.y | 0) - (st.y | 0);
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          best = {
+            sourcePort: st,
+            targetPort: p,
+            sourceSpawn,
+            targetWater,
+            compId,
+            distancePx: Math.max(1, Math.round(Math.hypot(dx, dy)))
+          };
+        }
+      }
+      return best;
+    }
+
+  World.prototype._navyComputePortTradeReward = function(ownerId, routeDistancePx) {
+      const A = ownerId | 0;
+      const distancePx = Math.max(0, Number(routeDistancePx) || 0);
+      const baseReward = Math.max(0, Number(PORT_TRADE_REWARD_BASE_GOLD) || 0);
+      const perPixel = Math.max(0, Number(PORT_TRADE_REWARD_PER_PIXEL) || 0);
+      const maxReward = Math.max(baseReward, Number(PORT_TRADE_REWARD_MAX_GOLD) || baseReward);
+      const researchBonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(A) : null;
+      const rewardMul = 1 + Math.max(0, Number(researchBonuses?.tradeShipRewardMul) || 0);
+      const raw = Math.min(maxReward, baseReward + (distancePx * perPixel));
+      return Math.max(0, Math.round(raw * rewardMul));
+    }
+
+  World.prototype._navyResolvePortTradeRoute = function(ownerId, partner) {
+      const A = ownerId | 0;
+      const p = (partner && typeof partner === "object") ? partner : null;
+      if (!p || !p.sourceSpawn || !p.targetWater) return null;
+
+      const route = this._navyBuildWaterPath(
+        p.sourceSpawn.x | 0,
+        p.sourceSpawn.y | 0,
+        p.targetWater.x | 0,
+        p.targetWater.y | 0,
+        p.compId | 0
+      );
+      if (!route || route.length <= 0) return null;
+
+      const routeDistancePx = Math.max(p.distancePx | 0, route.length | 0);
+      return {
+        sourcePort: p.sourcePort || null,
+        targetPort: p.targetPort || null,
+        sourceSpawn: p.sourceSpawn,
+        targetWater: p.targetWater,
+        compId: p.compId | 0,
+        distancePx: Math.max(1, p.distancePx | 0),
+        route,
+        routeDistancePx: Math.max(1, routeDistancePx | 0),
+        rewardGold: this._navyComputePortTradeReward(A, routeDistancePx)
+      };
+    }
+
+  World.prototype.getPortTradeStatus = function(structId, ownerId = OWNER.PLAYER) {
+      const sid = structId | 0;
+      const A = ownerId | 0;
+      const st = this._structureById && typeof this._structureById.get === "function"
+        ? this._structureById.get(sid)
+        : null;
+      if (!st || String(st.type || "") !== "port") return { ok: false, reason: "Port not found." };
+      if ((st.owner | 0) !== A) return { ok: false, reason: "You do not control this Port." };
+
+      const out = {
+        ok: true,
+        reason: "",
+        portId: sid,
+        available: true,
+        isActive: false,
+        activeShipId: 0,
+        activeTargetOwnerId: 0,
+        activeTargetName: "",
+        activeDistancePx: 0,
+        activeRewardGold: 0,
+        cooldownUntil: 0,
+        cooldownRemainingS: 0,
+        allies: []
+      };
+
+      if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(st)) {
+        out.available = false;
+        out.reason = (typeof this._getStructureInactiveReason === "function")
+          ? this._getStructureInactiveReason(st)
+          : "Port is unavailable.";
+        return out;
+      }
+
+      const d = this._navyGetPortTradeRecord(st, true);
+      if (d && (d.activeShipId | 0) > 0) {
+        out.isActive = true;
+        out.activeShipId = d.activeShipId | 0;
+        out.activeTargetOwnerId = d.targetOwnerId | 0;
+        out.activeTargetName = d.targetOwnerId > 0 ? this._nameOf(d.targetOwnerId | 0) : "";
+        out.activeDistancePx = Math.max(0, Math.round(Number(d.distancePx) || 0));
+        out.activeRewardGold = Math.max(0, Math.round(Number(d.rewardGold) || 0));
+      }
+      out.cooldownUntil = Math.max(0, Number(d?.cooldownUntil) || 0);
+      out.cooldownRemainingS = Math.max(0, out.cooldownUntil - (Number(this.time) || 0));
+
+      const sourceSpawn = this._navyPickAdjacentWater((st.x | 0), (st.y | 0));
+      if (!sourceSpawn) {
+        out.available = false;
+        out.reason = "Port is not coastal.";
+        return out;
+      }
+      const compId = this._navyWaterCompAt(sourceSpawn.x | 0, sourceSpawn.y | 0) | 0;
+      if (!compId) {
+        out.available = false;
+        out.reason = "Port is not connected to an ocean route.";
+        return out;
+      }
+
+      for (let oid = 1; oid <= this._nationCount; oid++) {
+        if ((oid | 0) === A) continue;
+        const nat = this.nation[oid];
+        if (!nat || !nat.alive || nat.collapsed) continue;
+        const rel = (typeof this.getRelation === "function") ? this.getRelation(A, oid) : null;
+        if (!rel?.allied) continue;
+
+        const partner = this._navyFindBestPortTradePartner(A, st, oid);
+        const resolved = partner ? this._navyResolvePortTradeRoute(A, partner) : null;
+        if (!resolved || (resolved.compId | 0) !== compId) {
+          out.allies.push({
+            nationId: oid | 0,
+            name: this._nameOf(oid),
+            distancePx: 0,
+            disabled: true,
+            reason: "No reachable allied port."
+          });
+          continue;
+        }
+        out.allies.push({
+          nationId: oid | 0,
+          name: this._nameOf(oid),
+          distancePx: Math.max(1, resolved.distancePx | 0),
+          routeDistancePx: Math.max(1, resolved.routeDistancePx | 0),
+          rewardGold: Math.max(0, resolved.rewardGold | 0),
+          disabled: false,
+          targetPortId: resolved.targetPort?.id | 0
+        });
+      }
+
+      out.allies.sort((a, b) => {
+        const ad = a?.disabled ? 1 : 0;
+        const bd = b?.disabled ? 1 : 0;
+        if (ad !== bd) return ad - bd;
+        const da = Math.max(0, Number(a?.distancePx) || 0);
+        const db = Math.max(0, Number(b?.distancePx) || 0);
+        if (da !== db) return da - db;
+        return String(a?.name || "").localeCompare(String(b?.name || ""));
+      });
+
+      if (!out.isActive) {
+        if (out.cooldownRemainingS > 0.00001) {
+          out.available = false;
+          out.reason = `Trade cooldown: ${_navyFormatCooldown(out.cooldownRemainingS)} remaining.`;
+        } else {
+          const hasReachable = out.allies.some((ally) => !ally?.disabled);
+          if (!hasReachable) {
+            out.available = false;
+            out.reason = out.allies.length > 0
+              ? "No reachable allied port."
+              : "Form an alliance to start sea trade.";
+          }
+        }
+      }
+
+      if (!out.isActive && out.cooldownRemainingS <= 0.00001) {
+        out.cooldownRemainingS = 0;
+        out.cooldownUntil = 0;
+      }
+
+      return out;
+    }
+
+  World.prototype.startPortTrade = function(structId, ownerId, allyId, options = null) {
+      if (this.gameOver) return { ok: false, reason: "Game over." };
+      const sid = structId | 0;
+      const A = ownerId | 0;
+      const B = allyId | 0;
+      const st = this._structureById && typeof this._structureById.get === "function"
+        ? this._structureById.get(sid)
+        : null;
+      if (!st || String(st.type || "") !== "port") return { ok: false, reason: "Port not found." };
+      if ((st.owner | 0) !== A) return { ok: false, reason: "You do not control this Port." };
+      if (B <= 0 || B === A) return { ok: false, reason: "Choose an allied nation." };
+      if (!this.nation[A]?.alive || !this.nation[B]?.alive) return { ok: false, reason: "Invalid trade partner." };
+      if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(st)) {
+        return {
+          ok: false,
+          reason: (typeof this._getStructureInactiveReason === "function")
+            ? this._getStructureInactiveReason(st)
+            : "Port is unavailable."
+        };
+      }
+
+      const rel = (typeof this.getRelation === "function") ? this.getRelation(A, B) : null;
+      if (!rel?.allied) return { ok: false, reason: "You can only trade with allies." };
+
+      const portTrade = this._navyGetPortTradeRecord(st, true);
+      if (portTrade && (portTrade.activeShipId | 0) > 0) {
+        return { ok: false, reason: "This Port already has an active trade ship." };
+      }
+      const cooldownRemainingS = Math.max(0, (Number(portTrade?.cooldownUntil) || 0) - (Number(this.time) || 0));
+      if (cooldownRemainingS > 0.00001) {
+        return { ok: false, reason: `Trade cooldown: ${_navyFormatCooldown(cooldownRemainingS)} remaining.` };
+      }
+
+      const partner = this._navyFindBestPortTradePartner(A, st, B);
+      const resolved = partner ? this._navyResolvePortTradeRoute(A, partner) : null;
+      if (!resolved || !resolved.sourceSpawn || !resolved.targetWater) {
+        return { ok: false, reason: "No reachable allied Port for that trade route." };
+      }
+
+      const route = resolved.route;
+      const routeDistancePx = Math.max(1, resolved.routeDistancePx | 0);
+      const rewardGold = Math.max(0, resolved.rewardGold | 0);
+      const ship = {
+        id: (this._nextShipId++ | 0),
+        kind: "trade",
+        owner: A,
+        cx: resolved.sourceSpawn.x | 0,
+        cy: resolved.sourceSpawn.y | 0,
+        px: (resolved.sourceSpawn.x | 0) + 0.5,
+        py: (resolved.sourceSpawn.y | 0) + 0.5,
+        tx: resolved.targetWater.x | 0,
+        ty: resolved.targetWater.y | 0,
+        nx: null,
+        ny: null,
+        seg: 0,
+        speed: TRADE_SHIP_SPEED_CPS,
+        hp: TRADE_SHIP_HP,
+        mode: "toPort",
+        comp: resolved.compId | 0,
+        trail: [],
+        trailAcc: 0,
+        sourcePortId: st.id | 0,
+        targetOwnerId: B,
+        targetPortId: resolved.targetPort?.id | 0,
+        tradeDistancePx: Math.max(1, resolved.distancePx | 0),
+        tradeRouteDistancePx: Math.max(1, routeDistancePx | 0),
+        tradeRewardGold: Math.max(0, rewardGold | 0),
+        createdAt: this.time
+      };
+      this._navySetShipRoute(ship, route);
+      this.ships.push(ship);
+
+      const d = this._navyEnsurePortTradeData(st);
+      d.activeShipId = ship.id | 0;
+      d.targetOwnerId = B;
+      d.targetPortId = resolved.targetPort?.id | 0;
+      d.distancePx = Math.max(1, resolved.distancePx | 0);
+      d.routeDistancePx = Math.max(1, routeDistancePx | 0);
+      d.rewardGold = Math.max(0, rewardGold | 0);
+      d.startedAt = Math.max(0, Number(this.time) || 0);
+      d.cooldownUntil = 0;
+
+      const opts = (options && typeof options === "object") ? options : null;
+      if (!opts?.silent && A === OWNER.PLAYER) {
+        this._pushEvent(`Trade ship launched toward ${this._nameOf(B)} (${d.distancePx | 0}px).`);
+      }
+
+      return {
+        ok: true,
+        reason: "",
+        trade: {
+          shipId: ship.id | 0,
+          targetOwnerId: B,
+          targetOwnerName: this._nameOf(B),
+          targetPortId: resolved.targetPort?.id | 0,
+          distancePx: Math.max(1, resolved.distancePx | 0),
+          routeDistancePx: Math.max(1, routeDistancePx | 0),
+          rewardGold: Math.max(0, rewardGold | 0)
+        }
+      };
+    }
+
   World.prototype._navyAssignTradeTrip = function(s) {
       const A = s.owner | 0;
 
@@ -1316,6 +1929,7 @@ export function installNavy(World) {
       }
 
       // Reset segment interpolation.
+      this._navyClearShipRoute(s);
       s.nx = null;
       s.ny = null;
       s.seg = 0;
@@ -1353,13 +1967,28 @@ export function installNavy(World) {
 
           const kind = String(s.kind || "");
           const compId = (s.comp | 0);
+          const usesPlannedRoute = (kind === "trade" || kind === "transport");
           const stuckTicks = s._stuckTicks | 0;
           const forcePath = (stuckTicks >= (kind === "transport" ? 2 : 4));
-          const pathCadence = (kind === "transport") ? 0.20 : 0.28;
+          const pathCadence = (kind === "transport") ? 0.75 : 0.28;
           const pathAllowedAt = Number(s._pathAllowedAt) || 0;
           let step = null;
 
-          if (forcePath && now >= pathAllowedAt) {
+          if (usesPlannedRoute) {
+            if (Array.isArray(s._route) && (((s._routeGoalX | 0) !== (s.tx | 0)) || ((s._routeGoalY | 0) !== (s.ty | 0)))) {
+              this._navyClearShipRoute(s);
+            }
+            step = this._navyConsumeRouteStep(s, compId, stepOut);
+            if (!step && now >= pathAllowedAt) {
+              const route = this._navyBuildWaterPath((s.cx | 0), (s.cy | 0), (s.tx | 0), (s.ty | 0), compId);
+              if (route && route.length > 0) {
+                this._navySetShipRoute(s, route);
+                step = this._navyConsumeRouteStep(s, compId, stepOut);
+              }
+              s._pathAllowedAt = now + pathCadence;
+            }
+          }
+          if (!step && forcePath && now >= pathAllowedAt) {
             step = this._navyStepWaterTowardPath((s.cx | 0), (s.cy | 0), (s.tx | 0), (s.ty | 0), (s.comp | 0), stepOut);
             s._pathAllowedAt = now + pathCadence;
           }
@@ -1418,10 +2047,26 @@ export function installNavy(World) {
         s._stuckTicks = 0;
       }
 
-      if ((s._stuckTicks | 0) >= 10) {
-        if (String(s.kind || "") === "trade") {
+      const kindNow = String(s.kind || "");
+      const stuckLimit = kindNow === "transport" ? 6 : 10;
+      if ((s._stuckTicks | 0) >= stuckLimit) {
+        if (kindNow === "trade" && (s.sourcePortId | 0) > 0) {
+          this._navyClearShipRoute(s);
+          s.nx = null;
+          s.ny = null;
+          s.seg = 0;
+          s._pathAllowedAt = 0;
+          s._stuckTicks = 0;
+        } else if (kindNow === "trade") {
           this._navyAssignTradeTrip(s);
-        } else if (String(s.kind || "") === "war") {
+        } else if (kindNow === "transport") {
+          this._navyClearShipRoute(s);
+          s.nx = null;
+          s.ny = null;
+          s.seg = 0;
+          s._pathAllowedAt = 0;
+          s._stuckTicks = 0;
+        } else if (kindNow === "war") {
           s.targetId = 0;
           s.tx = s.ax | 0;
           s.ty = s.ay | 0;

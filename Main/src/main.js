@@ -235,6 +235,7 @@ const SOLO_WORKER_COMMAND_STRATEGY = Object.freeze({
   cancelAllOperations: "positive",
   cancelOperation: "truthy",
   cancelShip: "truthy",
+  startPortTrade: "ok",
   cancelTradeDeal: "truthy",
   cancelTradeRequest: "truthy",
   regenerate: "restart"
@@ -1432,6 +1433,7 @@ const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   respondCeasefireRequest: Object.freeze({ cmd: "respond_ceasefire_request" }),
   respondAllianceRequest: Object.freeze({ cmd: "respond_alliance_request" }),
   cancelShip: Object.freeze({ cmd: "cancel_ship" }),
+  startPortTrade: Object.freeze({ cmd: "start_port_trade", predictLocal: true }),
   startMissileSiloBuild: Object.freeze({ cmd: "start_missile_silo_build" }),
   startAirbaseTransportBuild: Object.freeze({ cmd: "start_airbase_transport_build" }),
   startBurstExpand: Object.freeze({ cmd: "start_burst_expand", predictLocal: true }),
@@ -10972,6 +10974,26 @@ function boot() {
       const sid = sel?.id | 0;
       if (!sid) return;
 
+      if (actionId === "start_port_trade") {
+        const allyId = Math.max(0, Number(sel?.tradeTargetNationId) | 0);
+        const res = world.startPortTrade
+          ? world.startPortTrade(sid, OWNER.PLAYER, allyId)
+          : { ok: false, reason: "Port trade API unavailable." };
+        if (isQueuedActionResult(res)) {
+          const targetName = String(res?.trade?.targetOwnerName || "ally");
+          hud.setOpMessage(`Trade launch queued toward ${targetName}.`);
+        } else if (res.ok) {
+          const targetName = String(res?.trade?.targetOwnerName || "ally");
+          const dist = Math.max(0, Math.round(Number(res?.trade?.distancePx) || 0));
+          const reward = Math.max(0, Math.round(Number(res?.trade?.rewardGold) || 0));
+          hud.setOpMessage(`Trade ship launched to ${targetName} (${dist}px, ${fmtCompactLocal(reward)} Gold).`);
+        } else {
+          hud.setOpMessage(res.reason || "Unable to start trade route.");
+        }
+        refreshAllUI();
+        return;
+      }
+
       if (actionId === "build_atomic" || actionId === "build_hydrogen") {
         const type = actionId === "build_atomic" ? "atomic" : "hydrogen";
         const res = world.startMissileSiloBuild
@@ -15167,6 +15189,55 @@ function getSelectedStructure() {
   if (String(st.type || "") === "radar_station") {
     view.desc = "Reveals nearby nations, detects incoming missiles and transport planes, and improves ABM accuracy inside its coverage.";
     view.metaText = `Radar Radius: ${Math.max(1, Math.floor(Number(RADAR_STATION_RADIUS_TILES) || 1))} tiles`;
+    return view;
+  }
+
+  if (String(st.type || "") === "port") {
+    view.desc = "Manual sea trade with allied Ports. Longer routes pay more Gold, and this Port can only run one trade ship at a time.";
+
+    if ((st.owner | 0) === OWNER.PLAYER && typeof world.getPortTradeStatus === "function") {
+      const status = world.getPortTradeStatus(st.id | 0, OWNER.PLAYER);
+      if (status?.ok) {
+        const formatCooldown = (secondsRaw) => {
+          const total = Math.max(0, Math.ceil(Number(secondsRaw) || 0));
+          const mins = Math.floor(total / 60);
+          const secs = total % 60;
+          return mins > 0 ? `${mins}:${String(secs).padStart(2, "0")}` : `${secs}s`;
+        };
+        if (status.isActive) {
+          const dist = Math.max(0, Math.round(Number(status.activeDistancePx) || 0));
+          const reward = Math.max(0, Math.round(Number(status.activeRewardGold) || 0));
+          view.desc += ` Active route to ${String(status.activeTargetName || "an ally")} (${dist}px).`;
+          view.metaText = `Projected Gold: ${fmtCompactLocal(reward)} | Distance: ${dist}px`;
+        } else if ((Number(status.cooldownRemainingS) || 0) > 0.00001) {
+          view.desc += " Port is cooling down after its last trade.";
+          view.metaText = `Trade Cooldown: ${formatCooldown(status.cooldownRemainingS)}`;
+        } else if (!status.available) {
+          view.desc += ` ${String(status.reason || "Port unavailable.")}`;
+        } else {
+          const openRoutes = (Array.isArray(status.allies) ? status.allies : []).filter((opt) => !opt?.disabled);
+          if (openRoutes.length > 0) {
+            const nearest = openRoutes[0];
+            const reward = Math.max(0, Math.round(Number(nearest?.rewardGold) || 0));
+            view.metaText = `Nearest Allied Port: ${Math.max(0, Number(nearest?.distancePx) || 0)}px | Projected Gold: ${fmtCompactLocal(reward)}`;
+          } else {
+            view.metaText = String(status.reason || "No allied Port is reachable from this sea.");
+          }
+        }
+
+        view.portTrade = {
+          available: !!status.available,
+          reason: String(status.reason || ""),
+          active: !!status.isActive,
+          activeTargetOwnerId: status.activeTargetOwnerId | 0,
+          activeTargetName: String(status.activeTargetName || ""),
+          activeDistancePx: Math.max(0, Number(status.activeDistancePx) || 0),
+          activeRewardGold: Math.max(0, Number(status.activeRewardGold) || 0),
+          cooldownRemainingS: Math.max(0, Number(status.cooldownRemainingS) || 0),
+          options: Array.isArray(status.allies) ? status.allies : []
+        };
+      }
+    }
     return view;
   }
 

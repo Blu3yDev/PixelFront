@@ -935,9 +935,13 @@ export class World {
     if (this._committedByNationScratch && this._committedByNationScratch.length) {
       this._committedByNationScratch.fill(0);
     }
+    if (this._tradeSlotRespawnAt && typeof this._tradeSlotRespawnAt.clear === "function") this._tradeSlotRespawnAt.clear();
+    if (this._navyPathCache && typeof this._navyPathCache.clear === "function") this._navyPathCache.clear();
     this._tradeEventCooldownUntil.fill(0);
     this._warEventCooldownUntil.fill(0);
     this._tradeShipCount.fill(0);
+    this._warShipCount.fill(0);
+    this._transportCount.fill(0);
     this._structAt.fill(0);
     this._markRadarCoverageDirty();
     this._ownerTilePos.fill(-1);
@@ -2050,6 +2054,7 @@ export class World {
   }
 
   _flightPointAtAge(flight, ageS) {
+    if (flight?.guided) return this._guidedFlightProjectedPoint(flight, ageS);
     const duration = Math.max(0.05, Number(flight?.durationS) || 0.05);
     const age = Math.max(0, Number(ageS) || 0);
     return this._flightPointAt(flight, age / duration);
@@ -2070,9 +2075,61 @@ export class World {
   }
 
   _flightTangentAtAge(flight, ageS) {
+    if (flight?.guided) return this._guidedFlightProjectedTangent(flight, ageS);
     const duration = Math.max(0.05, Number(flight?.durationS) || 0.05);
     const age = Math.max(0, Number(ageS) || 0);
     return this._flightTangentAt(flight, age / duration);
+  }
+
+  _guidedFlightProjectedPoint(flight, ageS) {
+    const curAge = Math.max(0, Number(flight?.ageS) || 0);
+    const age = Math.max(0, Number(ageS) || 0);
+    const px = Number.isFinite(Number(flight?.posX)) ? Number(flight.posX) : (Number(flight?.startX) || 0);
+    const py = Number.isFinite(Number(flight?.posY)) ? Number(flight.posY) : (Number(flight?.startY) || 0);
+    if (age <= curAge + 0.00001) return { x: px, y: py };
+
+    const destX = Number.isFinite(Number(flight?.destX)) ? Number(flight.destX) : (Number(flight?.targetX) || px);
+    const destY = Number.isFinite(Number(flight?.destY)) ? Number(flight.destY) : (Number(flight?.targetY) || py);
+    const vx = Number(flight?.velX) || 0;
+    const vy = Number(flight?.velY) || 0;
+    const vLen = Math.hypot(vx, vy);
+    let dirX = 0;
+    let dirY = 0;
+    let speed = 0;
+
+    if (vLen > 0.00001) {
+      dirX = vx / vLen;
+      dirY = vy / vLen;
+      speed = vLen;
+    } else {
+      const dx = destX - px;
+      const dy = destY - py;
+      const dist = Math.hypot(dx, dy) || 1;
+      dirX = dx / dist;
+      dirY = dy / dist;
+      speed = Math.max(1, Number(flight?.speedTilesPerS) || 1);
+    }
+
+    const remainDist = Math.hypot(destX - px, destY - py);
+    const travel = Math.min(remainDist, speed * (age - curAge));
+    return {
+      x: px + dirX * travel,
+      y: py + dirY * travel
+    };
+  }
+
+  _guidedFlightProjectedTangent(flight, ageS) {
+    const vx = Number(flight?.velX) || 0;
+    const vy = Number(flight?.velY) || 0;
+    if (Math.hypot(vx, vy) > 0.00001) return { x: vx, y: vy };
+
+    const p = this._guidedFlightProjectedPoint(flight, ageS);
+    const destX = Number.isFinite(Number(flight?.destX)) ? Number(flight.destX) : (Number(flight?.targetX) || p.x);
+    const destY = Number.isFinite(Number(flight?.destY)) ? Number(flight.destY) : (Number(flight?.targetY) || p.y);
+    return {
+      x: destX - p.x,
+      y: destY - p.y
+    };
   }
 
   _rotateDirToward(curX, curY, targetX, targetY, maxTurnRad) {
@@ -2262,6 +2319,150 @@ export class World {
     return { done: false, hitTargetId: 0, hitTargetKind: targetKind };
   }
 
+  _findThreateningAbmFlightForNuke(flight, flightIndex = null) {
+    if (!flight || !Array.isArray(this.nukeFlights) || this.nukeFlights.length <= 0) return null;
+
+    const selfId = flight.id | 0;
+    const ownerId = flight.owner | 0;
+    const px = Number.isFinite(Number(flight.posX)) ? Number(flight.posX) : (Number(flight.startX) || 0);
+    const py = Number.isFinite(Number(flight.posY)) ? Number(flight.posY) : (Number(flight.startY) || 0);
+    let best = null;
+
+    for (let i = this.nukeFlights.length - 1; i >= 0; i--) {
+      const other = this.nukeFlights[i];
+      if (!other || other === flight) continue;
+      if (String(other.flightKind || "nuke") !== "abm" || !other.homing) continue;
+      if ((other.owner | 0) === ownerId) continue;
+
+      const targeted = String(other.targetKind || "nuke").toLowerCase() === "nuke" && ((other.targetFlightId | 0) === selfId);
+      let ox = Number(other.posX);
+      let oy = Number(other.posY);
+      if (!Number.isFinite(ox) || !Number.isFinite(oy)) {
+        const p = this._flightPointAtAge(other, Number(other.ageS) || 0);
+        ox = Number(p.x);
+        oy = Number(p.y);
+      }
+      if (!Number.isFinite(ox) || !Number.isFinite(oy)) continue;
+
+      const dist = Math.hypot(ox - px, oy - py);
+      const dangerRadius = targeted ? 26 : 15;
+      if (!targeted && dist > dangerRadius) continue;
+
+      const score = targeted ? (dist - 10) : (dist + 14);
+      if (!best || score < best.score) {
+        best = { flight: other, posX: ox, posY: oy, dist, targeted, score };
+      }
+    }
+
+    return best;
+  }
+
+  _tickGuidedNukeFlight(flight, dt, flightIndex = null) {
+    if (!flight) return { done: true, impacted: false };
+    const step = Math.max(0, Number(dt) || 0);
+    if (!(step > 0)) return { done: false, impacted: false };
+
+    const speed = Math.max(1, Number(flight.speedTilesPerS) || 1);
+    const maxLifeS = Math.max(0.3, Number(flight.maxLifeS) || Math.max(0.5, Number(flight.durationS) || 0.5));
+    const destX = Number.isFinite(Number(flight.destX)) ? Number(flight.destX) : (Number(flight.targetX) || 0.5);
+    const destY = Number.isFinite(Number(flight.destY)) ? Number(flight.destY) : (Number(flight.targetY) || 0.5);
+
+    if (!Number.isFinite(flight.posX) || !Number.isFinite(flight.posY)) {
+      flight.posX = Number(flight.startX) || 0.5;
+      flight.posY = Number(flight.startY) || 0.5;
+    }
+    if (!Number.isFinite(flight.velX) || !Number.isFinite(flight.velY)) {
+      const dx0 = destX - flight.posX;
+      const dy0 = destY - flight.posY;
+      const len0 = Math.hypot(dx0, dy0) || 1;
+      flight.velX = (dx0 / len0) * speed;
+      flight.velY = (dy0 / len0) * speed;
+    }
+
+    flight.ageS = Math.max(0, Number(flight.ageS) || 0) + step;
+
+    const px = Number(flight.posX) || 0;
+    const py = Number(flight.posY) || 0;
+    const toTargetX = destX - px;
+    const toTargetY = destY - py;
+    const distTarget = Math.hypot(toTargetX, toTargetY);
+    if (distTarget <= 0.40) {
+      flight.posX = destX;
+      flight.posY = destY;
+      flight.targetX = destX;
+      flight.targetY = destY;
+      return { done: true, impacted: true };
+    }
+
+    const vLen = Math.hypot(Number(flight.velX) || 0, Number(flight.velY) || 0) || speed;
+    const curDirX = (Number(flight.velX) || (toTargetX / distTarget)) / Math.max(0.00001, vLen);
+    const curDirY = (Number(flight.velY) || (toTargetY / distTarget)) / Math.max(0.00001, vLen);
+    let desiredDirX = toTargetX / Math.max(0.00001, distTarget);
+    let desiredDirY = toTargetY / Math.max(0.00001, distTarget);
+
+    const threat = this._findThreateningAbmFlightForNuke(flight, flightIndex);
+    if (threat) {
+      const awayX0 = px - threat.posX;
+      const awayY0 = py - threat.posY;
+      const awayLen = Math.hypot(awayX0, awayY0) || 1;
+      const awayX = awayX0 / awayLen;
+      const awayY = awayY0 / awayLen;
+      const perpBaseX = -curDirY;
+      const perpBaseY = curDirX;
+      const lateralSign = ((perpBaseX * awayX) + (perpBaseY * awayY)) >= 0 ? 1 : -1;
+      const lateralX = perpBaseX * lateralSign;
+      const lateralY = perpBaseY * lateralSign;
+      const dangerRadius = threat.targeted ? 26 : 15;
+      const danger = clamp01((dangerRadius - threat.dist) / Math.max(0.001, dangerRadius));
+      const awayWeight = (threat.targeted ? 0.26 : 0.14) + (danger * (threat.targeted ? 0.34 : 0.18));
+      const lateralWeight = danger * (threat.targeted ? 0.82 : 0.42);
+      const desiredX0 = (desiredDirX * 1.0) + (awayX * awayWeight) + (lateralX * lateralWeight);
+      const desiredY0 = (desiredDirY * 1.0) + (awayY * awayWeight) + (lateralY * lateralWeight);
+      const desiredLen = Math.hypot(desiredX0, desiredY0) || 1;
+      desiredDirX = desiredX0 / desiredLen;
+      desiredDirY = desiredY0 / desiredLen;
+    }
+
+    const turnRate = Math.max(0.28, Math.min(0.72, Number(flight.turnRateRadPerS) || 0.52));
+    const nextDir = this._rotateDirToward(curDirX, curDirY, desiredDirX, desiredDirY, turnRate * step);
+    const move = Math.min(distTarget, speed * step);
+    let nextX = px + nextDir.x * move;
+    let nextY = py + nextDir.y * move;
+    if (move >= distTarget - 0.00001) {
+      nextX = destX;
+      nextY = destY;
+    }
+
+    flight.posX = Math.max(0.5, Math.min(this.w - 0.5, nextX));
+    flight.posY = Math.max(0.5, Math.min(this.h - 0.5, nextY));
+    flight.velX = nextDir.x * speed;
+    flight.velY = nextDir.y * speed;
+
+    const trail = Array.isArray(flight.trail) ? flight.trail : (flight.trail = []);
+    const last = trail.length > 0 ? trail[trail.length - 1] : null;
+    if (!last || Math.hypot((Number(flight.posX) || 0) - (Number(last.x) || 0), (Number(flight.posY) || 0) - (Number(last.y) || 0)) >= 0.32) {
+      trail.push({ x: Number(flight.posX) || 0, y: Number(flight.posY) || 0 });
+      const maxTrail = 20;
+      if (trail.length > maxTrail) trail.splice(0, trail.length - maxTrail);
+    }
+
+    const remaining = Math.hypot(destX - (Number(flight.posX) || 0), destY - (Number(flight.posY) || 0));
+    if (remaining <= Math.max(0.34, speed * step * 0.70)) {
+      flight.posX = destX;
+      flight.posY = destY;
+      flight.targetX = destX;
+      flight.targetY = destY;
+      return { done: true, impacted: true };
+    }
+    if ((Number(flight.ageS) || 0) >= maxLifeS) {
+      flight.targetX = Number(flight.posX) || destX;
+      flight.targetY = Number(flight.posY) || destY;
+      return { done: true, impacted: true };
+    }
+
+    return { done: false, impacted: false };
+  }
+
   _buildArcControlPoint(sx, sy, tx, ty, seed, options = null) {
     const dx = tx - sx;
     const dy = ty - sy;
@@ -2436,7 +2637,11 @@ export class World {
 
     const speed = Math.max(1, Number(spec.flightSpeedTilesPerS) || 1);
     // Keep missile velocity distance-invariant: no fixed launch-time bonus.
-    const durationS = Math.max(0.1, dist / speed);
+    const baseDurationS = Math.max(0.1, dist / speed);
+    const guidance = spec.key === "hydrogen"
+      ? { durationMul: 1.16, maxLifeMul: 1.26, turnRateRadPerS: 0.46 }
+      : { durationMul: 1.12, maxLifeMul: 1.22, turnRateRadPerS: 0.54 };
+    const durationS = Math.max(0.1, baseDurationS * guidance.durationMul);
 
     const dirSeed = (((st.id | 0) * 2654435761) ^ ((tx + 1) * 73856093) ^ ((ty + 1) * 19349663)) >>> 0;
     const curve = spec.key === "hydrogen"
@@ -2454,6 +2659,10 @@ export class World {
       targetX: ex,
       targetY: ey,
       durationS,
+      guided: true,
+      speedTilesPerS: speed,
+      maxLifeS: durationS * guidance.maxLifeMul,
+      turnRateRadPerS: guidance.turnRateRadPerS,
       blastRadiusTiles: Math.max(1, Number(spec.blastRadiusTiles) || 1),
       neutralizeTileCap: Math.max(1, Number(spec.neutralizeTileCap) || 1),
       structureDestroyCap: Math.max(0, Number(spec.structureDestroyCap) || 0),
@@ -2510,6 +2719,17 @@ export class World {
       targetY: arc.targetY,
       durationS: Math.max(0.1, Number(arc.durationS) || 0.1),
       ageS: 0,
+      guided: !!arc.guided,
+      destX: arc.targetX,
+      destY: arc.targetY,
+      posX: arc.startX,
+      posY: arc.startY,
+      velX: 0,
+      velY: 0,
+      speedTilesPerS: Math.max(1, Number(arc.speedTilesPerS) || 1),
+      maxLifeS: Math.max(0.1, Number(arc.maxLifeS) || Number(arc.durationS) || 0.1),
+      turnRateRadPerS: Math.max(0.1, Number(arc.turnRateRadPerS) || 0.5),
+      trail: [],
       blastRadiusTiles: Math.max(1, Number(arc.blastRadiusTiles) || 1),
       neutralizeTileCap: Math.max(1, Number(arc.neutralizeTileCap) || 1),
       structureDestroyCap: Math.max(0, Number(arc.structureDestroyCap) || 0),
@@ -2707,6 +2927,17 @@ export class World {
       targetY: arc.targetY,
       durationS: Math.max(0.1, Number(arc.durationS) || 0.1),
       ageS: 0,
+      guided: !!arc.guided,
+      destX: arc.targetX,
+      destY: arc.targetY,
+      posX: arc.startX,
+      posY: arc.startY,
+      velX: 0,
+      velY: 0,
+      speedTilesPerS: Math.max(1, Number(arc.speedTilesPerS) || 1),
+      maxLifeS: Math.max(0.1, Number(arc.maxLifeS) || Number(arc.durationS) || 0.1),
+      turnRateRadPerS: Math.max(0.1, Number(arc.turnRateRadPerS) || 0.5),
+      trail: [],
       blastRadiusTiles: Math.max(1, Number(arc.blastRadiusTiles) || 1),
       neutralizeTileCap: Math.max(1, Number(arc.neutralizeTileCap) || 1),
       structureDestroyCap: Math.max(0, Number(arc.structureDestroyCap) || 0),
@@ -3301,6 +3532,27 @@ export class World {
           this._pushEvent("ABM interceptor missed.");
         }
 
+        this.nukeFlights.splice(i, 1);
+        continue;
+      }
+
+      if (!isAbm && f.guided) {
+        const res = this._tickGuidedNukeFlight(f, step, flightIndex);
+        if (!res.done) {
+          this._maybeTriggerPlayerRadarNukeAlert(f);
+          continue;
+        }
+
+        const abmSid = f.abmAssignedLauncherId | 0;
+        if (abmSid > 0) {
+          const abm = this._getAbmLauncherById(abmSid);
+          if (abm) {
+            const d = this._ensureAbmLauncherData(abm);
+            if (d && (d.targetFlightId | 0) === (f.id | 0)) d.targetFlightId = 0;
+          }
+        }
+
+        if (res.impacted) this._detonateWarhead(f);
         this.nukeFlights.splice(i, 1);
         continue;
       }
@@ -4407,6 +4659,16 @@ placeStructure(type, ownerId, x, y) {
 
       targetIndices: arr.slice(0)
     };
+    if (typeof this._navyBuildWaterPath === "function" && typeof this._navySetShipRoute === "function") {
+      const routePath = this._navyBuildWaterPath(
+        route.spawn.x | 0,
+        route.spawn.y | 0,
+        waterDest.x | 0,
+        waterDest.y | 0,
+        compId
+      );
+      if (routePath && routePath.length > 0) this._navySetShipRoute(ship, routePath);
+    }
 
     if (oilNeed > 0 && typeof this.spendResourceBundle === "function") {
       this.spendResourceBundle(A, { oil: oilNeed });

@@ -26,8 +26,8 @@ export const BUILD_COST = Object.freeze({
   barracks: 150000,
   port: 175000,
   coastal_rig: 220000,
-  defence_post: 75000,
-  research_lab: 750000,
+  defence_post: 90000,
+  research_lab: 680000,
   missile_silo: 1200000,
   abm_launcher: 750000,
   radar_station: 1350000,
@@ -35,17 +35,17 @@ export const BUILD_COST = Object.freeze({
 });
 
 export const STRUCT_BUILD_TIME_S = Object.freeze({
-  city: 7,
-  factory: 9,
-  barracks: 8,
-  port: 10,
+  city: 8,
+  factory: 10,
+  barracks: 9,
+  port: 11,
   coastal_rig: 8,
-  defence_post: 5,
-  research_lab: 12,
-  missile_silo: 14,
-  abm_launcher: 12,
-  radar_station: 15,
-  airbase: 16
+  defence_post: 6,
+  research_lab: 14,
+  missile_silo: 15,
+  abm_launcher: 13,
+  radar_station: 16,
+  airbase: 18
 });
 
 export const STRUCT_COST_MAX = 5000000;
@@ -73,12 +73,12 @@ export const STRUCT_STACK_MAX = 10;
 // ===== Defence Post =====
 // Provides a defensive bonus to tiles within its radius (stacks with diminishing returns).
 export const DEFENCE_POST_RADIUS_TILES = 6;
-export const DEFENCE_POST_MAX_BONUS = 0.55; // up to 55% capture resistance
+export const DEFENCE_POST_MAX_BONUS = 0.42; // up to 42% capture resistance
 export const DEFENCE_POST_STACK_K = 0.55;   // stacking curve (higher = faster ramp)
 
 // Capital defensive aura: larger radius than a defence post, but weaker bonus.
 export const CAPITAL_DEFENCE_RADIUS_TILES = 9;
-export const CAPITAL_DEFENCE_BONUS = 0.26;
+export const CAPITAL_DEFENCE_BONUS = 0.18;
 
 // ===== Missile Silo / Nuclear system =====
 // Atomic: faster + cheaper, smaller blast.
@@ -125,8 +125,8 @@ export const RADAR_STATION_RADIUS_TILES = 350;
 export const RADAR_STATION_ABM_PRECISION_BONUS = 0.16;
 
 // ===== Airbase / Airborne transport =====
-export const AIRBASE_TRANSPORT_BUILD_GOLD_COST = 4500000;
-export const AIRBASE_TRANSPORT_BUILD_TIME_S = 90;
+export const AIRBASE_TRANSPORT_BUILD_GOLD_COST = 3200000;
+export const AIRBASE_TRANSPORT_BUILD_TIME_S = 70;
 export const AIRBASE_LAUNCH_RADIUS_TILES = 480;
 export const AIRBORNE_PLANE_SPEED_TILES_PER_S = 8.5;
 export const AIRBORNE_COMMIT_MIN_INFANTRY = 320;
@@ -153,12 +153,12 @@ export const RESOURCE_STOCK_CAP = Object.freeze({
 });
 
 export const RESOURCE_PRODUCTION_PER_STRUCTURE_S = Object.freeze({
-  foodPerCity: 16,
+  foodPerCity: 12.5,
   steelPerFactory: 2.5,
   oilPerCoastalRig: 3.2
 });
 
-export const RESOURCE_FOOD_CONSUMPTION_PER_POP_S = 0.0003;
+export const RESOURCE_FOOD_CONSUMPTION_PER_POP_S = 0.00036;
 export const RESOURCE_FOOD_GROWTH_MIN_MUL = 0.40;
 export const RESOURCE_FOOD_GROWTH_MAX_MUL = 1.22;
 export const RESOURCE_FOOD_REINFORCE_MIN_MUL = 0.45;
@@ -232,6 +232,10 @@ export const AI_WAR_DECLARED_ATTACK_DELAY_S = 18.0;
 // ===== NAVY (Section 2: Sea Economy - Trade Ships) =====
 export const TRADE_SHIP_MAX_OUTGOING = 7;
 export const TRADE_SHIP_REWARD_GOLD = 22000;
+export const PORT_TRADE_REWARD_BASE_GOLD = 8000;
+export const PORT_TRADE_REWARD_PER_PIXEL = 75;
+export const PORT_TRADE_REWARD_MAX_GOLD = 48000;
+export const PORT_TRADE_COOLDOWN_S = 120.0;
 // Trade ships are durable enough that warships don’t insta-delete them.
 export const TRADE_SHIP_HP = 90;
 // Movement in water-cells per second (grid-walk; keeps ships on water tiles).
@@ -626,12 +630,12 @@ export const WAR_STABILITY_BASE_WAR_PENALTY = 0.08;
 // and quick relief if players pause with ceasefires or make peace.
 export const WAR_EXHAUSTION_GRACE_S = 105.0;
 export const WAR_EXHAUSTION_RAMP_S = 300.0;
-export const WAR_EXHAUSTION_GAIN_PER_S = 1 / 780;
+export const WAR_EXHAUSTION_GAIN_PER_S = 1 / 720;
 export const WAR_EXHAUSTION_MULTI_WAR_GAIN_BONUS = 0.12;
 export const WAR_EXHAUSTION_PAUSE_RECOVER_PER_S = 1 / 110;
 export const WAR_EXHAUSTION_PEACE_RECOVER_PER_S = 1 / 80;
 export const WAR_EXHAUSTION_WARTIME_DECAY_PER_S = 2.2;
-export const WAR_EXHAUSTION_STABILITY_MAX_PENALTY = 0.035;
+export const WAR_EXHAUSTION_STABILITY_MAX_PENALTY = 0.09;
 
 // OpenFront-style: attack ratio directly represents committed attack troops.
 export const ATTACK_COMMIT_MIN = 0.00;

@@ -55,6 +55,34 @@ export function createHUD() {
   const syncLagProgressText = maybe("syncLagProgressText");
   const hudRangeInputs = Array.from(hud.querySelectorAll('input[type="range"]'));
   const hudControlIcons = Array.from(document.querySelectorAll(".hudControlIcon"));
+  const isPhonePortraitUi = () => {
+    const root = document.documentElement;
+    const uiViewport = String(root?.dataset?.uiViewport || "").toLowerCase();
+    const uiOrientation = String(root?.dataset?.uiOrientation || "").toLowerCase();
+    return uiViewport === "phone" && uiOrientation === "portrait";
+  };
+  const isCompactHudUi = () => {
+    const root = document.documentElement;
+    const uiViewport = String(root?.dataset?.uiViewport || "").toLowerCase();
+    const uiShort = String(root?.dataset?.uiShort || "").toLowerCase() === "true";
+    if (isPhonePortraitUi() || uiShort || uiViewport === "tablet") return true;
+    const w = Math.max(0, Number(window.innerWidth) || 0);
+    const h = Math.max(0, Number(window.innerHeight) || 0);
+    return w <= 1366 || h <= 860;
+  };
+  const shouldSuppressBuildHover = () => {
+    const root = document.documentElement;
+    const uiViewport = String(root?.dataset?.uiViewport || "").toLowerCase();
+    const uiOrientation = String(root?.dataset?.uiOrientation || "").toLowerCase();
+    const uiShort = String(root?.dataset?.uiShort || "").toLowerCase() === "true";
+    const isSmallLayout = uiShort || uiViewport === "phone" || (uiViewport === "tablet" && uiOrientation === "portrait");
+    if (!isSmallLayout) return false;
+    try {
+      if (window.matchMedia?.("(pointer: coarse)").matches) return true;
+      if (window.matchMedia?.("(hover: none)").matches) return true;
+    } catch {}
+    return false;
+  };
   const setPauseButtonA11y = (isPaused) => {
     const label = isPaused ? "Resume game" : "Pause game";
     btnPause.setAttribute("aria-label", label);
@@ -247,6 +275,10 @@ export function createHUD() {
   selectedProgress.appendChild(selectedProgressBar);
   selectedProgress.hidden = true;
   selectedCard.appendChild(selectedProgress);
+  const selectedCustomPanel = document.createElement("div");
+  selectedCustomPanel.className = "selectedCustomPanel";
+  selectedCustomPanel.hidden = true;
+  selectedCard.appendChild(selectedCustomPanel);
   const selectedActions = document.createElement("div");
   selectedActions.className = "selectedActions";
   selectedCard.appendChild(selectedActions);
@@ -842,9 +874,15 @@ export function createHUD() {
       setBuildMode(buildMode === b.type ? null : b.type);
       if (cbBuildMode) cbBuildMode(buildMode);
     });
-    b.el.addEventListener("mouseenter", () => showBuildTooltip(b.type));
+    b.el.addEventListener("mouseenter", () => {
+      if (shouldSuppressBuildHover()) return;
+      showBuildTooltip(b.type);
+    });
     b.el.addEventListener("mouseleave", () => hideBuildTooltip(b.type));
-    b.el.addEventListener("focus", () => showBuildTooltip(b.type));
+    b.el.addEventListener("focus", () => {
+      if (shouldSuppressBuildHover()) return;
+      showBuildTooltip(b.type);
+    });
     b.el.addEventListener("blur", () => hideBuildTooltip(b.type));
   }
 
@@ -952,6 +990,7 @@ export function createHUD() {
   }
 
   function showBuildTooltip(type) {
+    if (shouldSuppressBuildHover()) return;
     activeBuildTooltipType = String(type || "");
     if (!buildBtnMeta[activeBuildTooltipType]) return;
     renderBuildTooltip(activeBuildTooltipType);
@@ -1988,11 +2027,20 @@ export function createHUD() {
         selectedRenderSig = "__none__";
       }
       const actions = Array.isArray(sel?.actions) ? sel.actions : [];
+      const portTrade = (sel?.portTrade && typeof sel.portTrade === "object") ? sel.portTrade : null;
       if (sel) {
         let sig = `${sel.id ?? 0}|${sel.entityKind || "structure"}|${String(sel.name || "")}|${String(sel.desc || "")}|${String(sel.ownerName || "")}|${String(sel.type || "")}|${sel.level ?? ""}|${String(sel.metaText || "")}|${sel.progress ? `${Math.round(clamp01(Number(sel.progress.progress01) || 0) * 100)}:${String(sel.progress.label || "")}` : "-"}|${actions.length}|`;
         for (let i = 0; i < actions.length; i++) {
           const a = actions[i];
           sig += `${String(a?.id || "")}:${String(a?.label || "")}:${a?.disabled ? 1 : 0}:${String(a?.style || "")}|`;
+        }
+        if (portTrade) {
+          const opts = Array.isArray(portTrade.options) ? portTrade.options : [];
+          sig += `portTrade:${portTrade.available ? 1 : 0}:${portTrade.active ? 1 : 0}:${portTrade.activeTargetOwnerId ?? 0}:${portTrade.activeDistancePx ?? 0}:${Math.round(Number(portTrade.cooldownRemainingS) || 0)}:${String(portTrade.reason || "")}:${opts.length}|`;
+          for (let i = 0; i < opts.length; i++) {
+            const opt = opts[i];
+            sig += `${opt?.nationId ?? 0}:${String(opt?.name || "")}:${opt?.disabled ? 1 : 0}:${opt?.distancePx ?? 0}:${opt?.rewardGold ?? 0}|`;
+          }
         }
         if (sig === selectedRenderSig) return;
         selectedRenderSig = sig;
@@ -2005,6 +2053,8 @@ export function createHUD() {
         selectedProgress.hidden = true;
         selectedProgressLabel.textContent = "";
         selectedProgressFill.style.width = "0%";
+        selectedCustomPanel.hidden = true;
+        selectedCustomPanel.innerHTML = "";
         selectedActions.innerHTML = "";
         return;
       }
@@ -2023,12 +2073,110 @@ export function createHUD() {
       selectedProgress.hidden = true;
       selectedProgressLabel.textContent = "";
       selectedProgressFill.style.width = "0%";
+      selectedCustomPanel.hidden = true;
+      selectedCustomPanel.innerHTML = "";
       if (sel.progress && typeof sel.progress === "object") {
         const p = clamp01(Number(sel.progress.progress01) || 0);
         const pct = Math.max(0, Math.min(100, Math.round(p * 100)));
         selectedProgressLabel.textContent = String(sel.progress.label || `Build Progress: ${pct}%`);
         selectedProgressFill.style.width = `${pct}%`;
         selectedProgress.hidden = false;
+      }
+
+      if (portTrade) {
+        const wrap = document.createElement("div");
+        wrap.className = "selectedTradeControl";
+        const label = document.createElement("div");
+        label.className = "selectedTradeLabel";
+        label.textContent = "Allied Port Trade";
+        const select = document.createElement("select");
+        select.className = "selectedTradeSelect";
+        const info = document.createElement("div");
+        info.className = "selectedTradeInfo";
+        const startBtn = document.createElement("button");
+        startBtn.type = "button";
+        startBtn.className = "btn";
+        startBtn.textContent = "Start Trade";
+
+        const options = Array.isArray(portTrade.options) ? portTrade.options : [];
+        const validOptions = options.filter((opt) => !opt?.disabled);
+        const formatGold = (amountRaw) => `${Math.max(0, Math.round(Number(amountRaw) || 0)).toLocaleString()} Gold`;
+
+        if (!options.length) {
+          const placeholder = document.createElement("option");
+          placeholder.value = "";
+          placeholder.textContent = String(portTrade.reason || "No allied trade routes available.");
+          placeholder.selected = true;
+          placeholder.disabled = true;
+          select.appendChild(placeholder);
+        } else {
+          for (const opt of options) {
+            const el = document.createElement("option");
+            el.value = String(opt?.nationId ?? 0);
+            el.disabled = !!opt?.disabled;
+            const dist = Math.max(0, Number(opt?.distancePx) || 0);
+            el.textContent = opt?.disabled
+              ? `${String(opt?.name || "Ally")} (${String(opt?.reason || "Unavailable")})`
+              : `${String(opt?.name || "Ally")} (${dist}px)`;
+            select.appendChild(el);
+          }
+        }
+
+        const activeTargetValue = String(portTrade.activeTargetOwnerId || "");
+        if (activeTargetValue && Array.from(select.options).some((opt) => opt.value === activeTargetValue)) {
+          select.value = activeTargetValue;
+        } else if (validOptions.length > 0) {
+          select.value = String(validOptions[0]?.nationId ?? "");
+        }
+
+        const syncPortTradeUi = () => {
+          const picked = options.find((opt) => String(opt?.nationId ?? "") === String(select.value || ""));
+          if (portTrade.active) {
+            const dist = Math.max(0, Number(portTrade.activeDistancePx) || 0);
+            info.textContent = `Active route: ${String(portTrade.activeTargetName || "Ally")} | ${dist}px | ${formatGold(portTrade.activeRewardGold)}`;
+            startBtn.disabled = true;
+            startBtn.title = "This Port already has an active trade ship.";
+            return;
+          }
+          if (!portTrade.available) {
+            info.textContent = String(portTrade.reason || "Port unavailable.");
+            startBtn.disabled = true;
+            startBtn.title = String(portTrade.reason || "Port unavailable.");
+            return;
+          }
+          if (!picked) {
+            info.textContent = options.length > 0 ? "Select an ally." : String(portTrade.reason || "No allied trade routes available.");
+            startBtn.disabled = true;
+            startBtn.title = "Select an allied nation.";
+            return;
+          }
+          if (picked?.disabled) {
+            info.textContent = String(picked.reason || "No reachable allied port.");
+            startBtn.disabled = true;
+            startBtn.title = String(picked.reason || "No reachable allied port.");
+            return;
+          }
+          const dist = Math.max(0, Number(picked.distancePx) || 0);
+          info.textContent = `Nearest allied port: ${dist}px | Projected: ${formatGold(picked.rewardGold)}`;
+          startBtn.disabled = false;
+          startBtn.title = "Launch one trade ship from this Port.";
+        };
+
+        select.addEventListener("change", syncPortTradeUi);
+        startBtn.addEventListener("click", () => {
+          if (startBtn.disabled) return;
+          const nationId = Math.max(0, Number(select.value) | 0);
+          if (!nationId) return;
+          if (cbSelectedAction) cbSelectedAction("start_port_trade", { ...sel, tradeTargetNationId: nationId });
+        });
+
+        syncPortTradeUi();
+        wrap.appendChild(label);
+        wrap.appendChild(select);
+        wrap.appendChild(info);
+        wrap.appendChild(startBtn);
+        selectedCustomPanel.hidden = false;
+        selectedCustomPanel.appendChild(wrap);
       }
 
       selectedActions.innerHTML = "";
@@ -2413,7 +2561,7 @@ export function createHUD() {
 
   setDockTab("events");
   setEventsScope("nationwide");
-  api.setEventsVisible(true);
+  api.setEventsVisible(!isCompactHudUi());
   setBuildMode(null);
   selectedCard.hidden = true;
   applyDonateVisibility();

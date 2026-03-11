@@ -3095,6 +3095,13 @@ export class Renderer {
     const heightArr = world.height || null;
     const seaLevel = Number.isFinite(Number(world._seaLevel)) ? (world._seaLevel | 0) : 128;
     const visibleOwners = this._playerVisibleNationIds;
+    const spawnPhase = world._spawnPhase || null;
+    const showSpawnCountryBorders = !!(
+      spawnPhase &&
+      spawnPhase.active &&
+      String(spawnPhase.mode || "tile") === "country" &&
+      world._earthCountryBorder
+    );
 
     // Vintage atlas palette: warm parchment land + muted sea + inked borders.
     const neutralLandLight = { r: 228, g: 214, b: 183 };
@@ -3199,7 +3206,11 @@ export class Renderer {
         b = lerp(b, 72, 0.09);
       }
 
-      if (typeof world._isRenderBorderCell === "function" && world._isRenderBorderCell(idx)) {
+      if (showSpawnCountryBorders && world._earthCountryBorder[idx]) {
+        r = lerp(r, borderColor.r, 0.52);
+        g = lerp(g, borderColor.g, 0.52);
+        b = lerp(b, borderColor.b, 0.52);
+      } else if (typeof world._isRenderBorderCell === "function" && world._isRenderBorderCell(idx)) {
         r = lerp(r, borderColor.r, 0.46);
         g = lerp(g, borderColor.g, 0.46);
         b = lerp(b, borderColor.b, 0.46);
@@ -5667,18 +5678,17 @@ export class Renderer {
         : isHydrogen
           ? { r: 255, g: 104, b: 72 }
           : { r: 255, g: 228, b: 150 };
-      if (isAbm && f.homing) {
+      if ((isAbm && f.homing) || f.guided) {
         const hwx = Number(f.posX);
         const hwy = Number(f.posY);
         if (!Number.isFinite(hwx) || !Number.isFinite(hwy)) continue;
         const hpX = dx + hwx * zoom;
         const hpY = dy + hwy * zoom;
 
-        // Homing trail (latest points only, bounded on world side for performance).
         const trail = Array.isArray(f.trail) ? f.trail : null;
         if (showDestinationOverlay && trail && trail.length >= 2) {
-          ctx.lineWidth = 1.2;
-          ctx.strokeStyle = `rgba(${base.r},${base.g},${base.b},0.44)`;
+          ctx.lineWidth = isAbm ? 1.2 : 1.4;
+          ctx.strokeStyle = `rgba(${base.r},${base.g},${base.b},${isAbm ? "0.44" : "0.48"})`;
           ctx.beginPath();
           for (let ti = 0; ti < trail.length; ti++) {
             const tp0 = trail[ti];
@@ -5694,12 +5704,27 @@ export class Renderer {
         } else if (showDestinationOverlay) {
           const sx0 = dx + (Number(f.startX) || hwx) * zoom;
           const sy0 = dy + (Number(f.startY) || hwy) * zoom;
-          ctx.lineWidth = 1.1;
-          ctx.strokeStyle = `rgba(${base.r},${base.g},${base.b},0.32)`;
+          ctx.lineWidth = isAbm ? 1.1 : 1.3;
+          ctx.strokeStyle = `rgba(${base.r},${base.g},${base.b},${isAbm ? "0.32" : "0.38"})`;
           ctx.beginPath();
           ctx.moveTo(sx0, sy0);
           ctx.lineTo(hpX, hpY);
           ctx.stroke();
+        }
+
+        if (showDestinationOverlay && !isAbm) {
+          const destX = dx + (Number(f.destX) || tx) * zoom;
+          const destY = dy + (Number(f.destY) || ty) * zoom;
+          ctx.lineWidth = 0.9;
+          ctx.strokeStyle = `rgba(${base.r},${base.g},${base.b},0.26)`;
+          ctx.beginPath();
+          ctx.moveTo(hpX, hpY);
+          ctx.lineTo(destX, destY);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(destX, destY, 2.6, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${base.r},${base.g},${base.b},0.34)`;
+          ctx.fill();
         }
 
         const vx = Number(f.velX) || 0;
@@ -5709,12 +5734,12 @@ export class Renderer {
         const diry = vy / vLen;
         const lifeS = Math.max(0.05, Number(f.maxLifeS) || duration);
         const lifeT = clamp((Number(f.ageS) || 0) / lifeS, 0, 1);
-        const liftPx = 0;
+        const liftPx = isAbm ? 0 : (isHydrogen ? 10 : 8);
         const mx = hpX;
         const my = hpY - liftPx;
 
         ctx.beginPath();
-        ctx.ellipse(hpX, hpY, 5.2, 2.7, 0, 0, Math.PI * 2);
+        ctx.ellipse(hpX, hpY, isAbm ? 5.2 : (isHydrogen ? 7.4 : 6.2), isAbm ? 2.7 : 3.1, 0, 0, Math.PI * 2);
         ctx.fillStyle = "rgba(0,0,0,0.30)";
         ctx.fill();
 
@@ -5726,15 +5751,15 @@ export class Renderer {
           base,
           variant,
           missileIcon,
-          Number(iconSizes[variant]) || 34
+          Number(iconSizes[variant]) || (isAbm ? 34 : (isHydrogen ? 46 : 40))
         );
 
-        const plume = 6.1 * (0.78 + 0.22 * (1 - lifeT));
+        const plume = (isAbm ? 6.1 : (isHydrogen ? 8.4 : 7.3)) * (0.78 + 0.22 * (1 - lifeT));
         const px = mx - dirx * plume;
         const py = my - diry * plume;
         ctx.beginPath();
-        ctx.arc(px, py, 2.2, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(150,225,255,0.58)";
+        ctx.arc(px, py, isAbm ? 2.2 : 2.8, 0, Math.PI * 2);
+        ctx.fillStyle = isAbm ? "rgba(150,225,255,0.58)" : (isHydrogen ? "rgba(255,140,96,0.62)" : "rgba(255,220,150,0.62)");
         ctx.fill();
         continue;
       }

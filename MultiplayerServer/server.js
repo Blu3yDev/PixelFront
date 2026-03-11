@@ -228,6 +228,7 @@ const COMMAND_METHOD = Object.freeze({
   respond_ceasefire_request: "respondCeasefireRequest",
   respond_alliance_request: "respondAllianceRequest",
   cancel_ship: "cancelShip",
+  start_port_trade: "startPortTrade",
   start_missile_silo_build: "startMissileSiloBuild",
   start_airbase_transport_build: "startAirbaseTransportBuild",
   start_burst_expand: "startBurstExpand",
@@ -259,6 +260,7 @@ const COMMAND_NATION_ARGS = Object.freeze({
   respond_ceasefire_request: [0, 1],
   respond_alliance_request: [0, 1],
   cancel_ship: [1],
+  start_port_trade: [1, 2],
   start_missile_silo_build: [1],
   start_airbase_transport_build: [1],
   start_burst_expand: [0],
@@ -290,6 +292,7 @@ const COMMAND_ACTOR_ARG = Object.freeze({
   respond_ceasefire_request: 1,
   respond_alliance_request: 1,
   cancel_ship: 1,
+  start_port_trade: 1,
   start_missile_silo_build: 1,
   start_airbase_transport_build: 1,
   start_burst_expand: 0,
@@ -3224,6 +3227,7 @@ function shouldPushPostCommandFullSync(cmdRaw) {
     cmd === "start_research" ||
     cmd === "place_structure" ||
     cmd === "send_warship" ||
+    cmd === "start_port_trade" ||
     cmd === "launch_missile_warhead" ||
     cmd === "launch_airbase_transport" ||
     cmd === "declare_war" ||

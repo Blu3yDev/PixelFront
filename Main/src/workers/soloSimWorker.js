@@ -350,6 +350,7 @@ function serializeEntitiesDelta(world, forceFull = false) {
     out.ships = cloneWire(Array.isArray(world?.ships) ? world.ships : []) || [];
     out.nukeFlights = cloneWire(Array.isArray(world?.nukeFlights) ? world.nukeFlights : []) || [];
     out.airborneMissions = cloneWire(Array.isArray(world?.airborneMissions) ? world.airborneMissions : []) || [];
+    out.divisions = cloneWire(Array.isArray(world?.divisions) ? world.divisions : []) || [];
     runtime.lastMobileSnapshotAtMs = now;
     included = true;
   }

@@ -1,7 +1,7 @@
 ﻿// src/main.js
 import { createHUD } from "./ui.js";
 import { World, OWNER } from "./game/core/world.js";
-import { AIRBASE_LAUNCH_RADIUS_TILES, AIRBASE_TRANSPORT_BUILD_GOLD_COST, AIRBASE_TRANSPORT_BUILD_TIME_S, BIOME, BIOME_COLORS, DEBUG_ABM_TEST, DEBUG_MATCH_OUTCOME_TEST, MAP_MODE, MAX_ALLIES, RADAR_STATION_RADIUS_TILES, SIM_DT_S, TRADE_DEAL_MAX_DURATION_MIN, TRADE_DEAL_MAX_RATE_PER_MIN, TRADE_DEAL_MIN_DURATION_MIN, TRADE_DEAL_MIN_RATE_PER_MIN, WORLD_SETUP, WORLD_SIZE_PRESET, WORLD_SIZE_PRESETS, WORLDGEN, attackCommitFromRatio } from "./game/config.js";
+import { AIRBASE_LAUNCH_RADIUS_TILES, AIRBASE_TRANSPORT_BUILD_GOLD_COST, AIRBASE_TRANSPORT_BUILD_TIME_S, BIOME, BIOME_COLORS, DEBUG_ABM_TEST, DEBUG_MATCH_OUTCOME_TEST, GAME_MODE, MAP_MODE, MAX_ALLIES, RADAR_STATION_RADIUS_TILES, SIM_DT_S, TRADE_DEAL_MAX_DURATION_MIN, TRADE_DEAL_MAX_RATE_PER_MIN, TRADE_DEAL_MIN_DURATION_MIN, TRADE_DEAL_MIN_RATE_PER_MIN, WORLD_SETUP, WORLD_SIZE_PRESET, WORLD_SIZE_PRESETS, WORLDGEN, attackCommitFromRatio } from "./game/config.js";
 import { Renderer } from "./render.js";
 import { PaintInput } from "./input.js";
 import { loadEarthData } from "./game/data/earthData.js";
@@ -9,6 +9,7 @@ import { createClient } from "@supabase/supabase-js";
 import { createMainMenuAuthController } from "./auth/mainMenuAuth.js";
 import { createPlayerStatsService } from "./auth/playerStatsService.js";
 import { createMainMenuLeaderboardController } from "./auth/mainMenuLeaderboard.js";
+import { DEFAULT_FEEDBACK_TABLE, normalizeFeedbackCategory, normalizeFeedbackContact, normalizeFeedbackMessage, publishFeedbackEntry } from "./feedbackApi.js";
 import { renderMainMenuGuide } from "./mainMenuGuide.js";
 import { renderMainMenuUpdateLog } from "./mainMenuUpdates.js";
 import { RESEARCH_BRANCH_ORDER, getResearchBranch, getResearchIconCandidates, getResearchIconNode, getResearchNode, getResearchNodesForBranch } from "./game/researchCatalog.js";
@@ -36,6 +37,31 @@ document.title = "PixelFront | Pre-Release";
 
 const canvas = document.getElementById("game");
 if (!canvas) throw new Error("[Boot] Missing canvas #game");
+
+function getCanvasEventPosition(ev) {
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect?.();
+  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+
+  const clientX = Number(ev?.clientX);
+  const clientY = Number(ev?.clientY);
+  const offsetX = Number(ev?.offsetX);
+  const offsetY = Number(ev?.offsetY);
+
+  const x = Number.isFinite(clientX)
+    ? (clientX - rect.left)
+    : (Number.isFinite(offsetX) ? offsetX : 0);
+  const y = Number.isFinite(clientY)
+    ? (clientY - rect.top)
+    : (Number.isFinite(offsetY) ? offsetY : 0);
+
+  return {
+    x,
+    y,
+    clientX: Number.isFinite(clientX) ? clientX : (rect.left + x),
+    clientY: Number.isFinite(clientY) ? clientY : (rect.top + y)
+  };
+}
 
 function getViewportSnapshot() {
   const vv = (typeof window !== "undefined" && window?.visualViewport) ? window.visualViewport : null;
@@ -103,6 +129,7 @@ const voiceLines = createVoiceLineToast();
 const SUPABASE_URL = resolveSupabaseUrl();
 const SUPABASE_ANON_KEY = resolveSupabaseAnonKey();
 const SUPABASE_TABLE_PUBLIC_MAPS = resolveSupabaseMapsTable();
+const SUPABASE_TABLE_FEEDBACK = resolveSupabaseFeedbackTable();
 const SUPABASE_RPC_INCREMENT_DOWNLOADS = resolveSupabaseDownloadsRpc();
 const SUPABASE_RPC_SUBMIT_RATING = String(import.meta?.env?.VITE_SUPABASE_RPC_SUBMIT_RATING || "submit_map_rating").trim();
 const SUPABASE_TABLE_PLAYER_PROFILES = String(import.meta?.env?.VITE_SUPABASE_PLAYER_PROFILES_TABLE || "player_profiles").trim() || "player_profiles";
@@ -218,6 +245,7 @@ const SOLO_WORKER_COMMAND_STRATEGY = Object.freeze({
   startBurstExpand: "ok",
   startBurstAttack: "ok",
   declareWar: "ok",
+  betrayAlliance: "ok",
   donate: "ok",
   sendWarship: "ok",
   requestCeasefire: "ok",
@@ -227,6 +255,9 @@ const SOLO_WORKER_COMMAND_STRATEGY = Object.freeze({
   respondTradeRequest: "ok",
   startMissileSiloBuild: "ok",
   startAirbaseTransportBuild: "ok",
+  queueDivisionTraining: "ok",
+  issueDivisionOrder: "ok",
+  clearDivisionOrder: "ok",
   requestTradeDeal: "ok",
   pickSpawn: "ok",
   launchMissileWarhead: "ok",
@@ -368,6 +399,7 @@ const DEFAULT_MATCH_CONFIG = Object.freeze({
   sizePreset: String(WORLD_SETUP?.sizePreset ?? WORLD_SIZE_PRESET.LARGE),
   aiCount: null,
   difficulty: "normal",
+  gameMode: GAME_MODE.CLASSIC,
   mapMode: MAP_MODE.WORLD_MAP,
   mapSource: MAP_SOURCE.POLITICAL_EARTH,
   customMapId: "",
@@ -547,6 +579,19 @@ function resolveSupabaseMapsTable() {
     fallback: "public_maps"
   });
   return raw || "public_maps";
+}
+
+function resolveSupabaseFeedbackTable() {
+  const raw = resolveRuntimeConfigValue({
+    envValue: import.meta?.env?.VITE_SUPABASE_FEEDBACK_TABLE,
+    globalKey: "__PF_SUPABASE_FEEDBACK_TABLE",
+    metaName: "pf-supabase-feedback-table",
+    queryKey: "sbFeedbackTable",
+    storageKey: "pf-supabase-feedback-table-override",
+    storageCompatKey: "pf-supabase-feedback-table",
+    fallback: DEFAULT_FEEDBACK_TABLE
+  });
+  return raw || DEFAULT_FEEDBACK_TABLE;
 }
 
 function resolveSupabaseDownloadsRpc() {
@@ -1200,6 +1245,7 @@ const PLAYER_FLAG_STORAGE_KEY = "pf-player-flag-v1";
 const PLAYER_COUNTRY_COLOR_STORAGE_KEY = "pf-player-country-color-v1";
 const MAP_LIBRARY_AUTHOR_STORAGE_KEY = "pf-map-library-author-v1";
 const MAP_LIBRARY_RATINGS_STORAGE_KEY = "pf-map-library-ratings-v1";
+const FEEDBACK_CONTACT_STORAGE_KEY = "pf-feedback-contact-v1";
 let bootInProgress = false;
 let bootCompleted = false;
 let mainMenuController = null;
@@ -1209,6 +1255,7 @@ let activePlayerCountryColorHex = loadPlayerCountryColor(activePlayerFlag);
 let activeNationFlagsById = Object.create(null);
 let activePlayerFlagImageUrl = "";
 let activeNationFlagImagesById = Object.create(null);
+const intelFlagThumbCache = new Map();
 const REST_COUNTRIES_ALL_FIELDS_URL = "https://restcountries.com/v3.1/all?fields=cca3,name,flags,altSpellings";
 let restCountriesIndex = null;
 let restCountriesIndexPromise = null;
@@ -1427,6 +1474,7 @@ const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   cancelTradeDeal: Object.freeze({ cmd: "cancel_trade_deal" }),
   donate: Object.freeze({ cmd: "donate" }),
   declareWar: Object.freeze({ cmd: "declare_war" }),
+  betrayAlliance: Object.freeze({ cmd: "betray_alliance" }),
   sendWarship: Object.freeze({ cmd: "send_warship" }),
   requestCeasefire: Object.freeze({ cmd: "request_ceasefire" }),
   requestAlliance: Object.freeze({ cmd: "request_alliance" }),
@@ -2179,6 +2227,11 @@ function applyMultiplayerEntities(worldRef, changedEntities) {
   if (Array.isArray(changedEntities.airborneMissions)) {
     worldRef.airborneMissions = changedEntities.airborneMissions;
     worldRef._nextAirborneMissionId = maxEntityId(worldRef.airborneMissions, worldRef._nextAirborneMissionId || 1);
+  }
+
+  if (Array.isArray(changedEntities.divisions)) {
+    worldRef.divisions = changedEntities.divisions;
+    worldRef._nextDivisionId = maxEntityId(worldRef.divisions, worldRef._nextDivisionId || 1);
   }
 
   if (Array.isArray(changedEntities.operations)) {
@@ -4298,6 +4351,7 @@ function sanitizeMatchConfig(next) {
   const difficulty = Object.prototype.hasOwnProperty.call(MATCH_DIFFICULTY_PROFILES, difficultyRaw)
     ? difficultyRaw
     : DEFAULT_MATCH_CONFIG.difficulty;
+  const gameMode = GAME_MODE.CLASSIC;
 
   const mapMode = MAP_MODE.WORLD_MAP;
   const mapSourceRaw = String(src.mapSource ?? src.mapMode ?? DEFAULT_MATCH_CONFIG.mapSource).toLowerCase();
@@ -4321,6 +4375,7 @@ function sanitizeMatchConfig(next) {
     sizePreset,
     aiCount,
     difficulty,
+    gameMode,
     mapMode,
     mapSource,
     customMapId,
@@ -4861,6 +4916,7 @@ function applyFullscreenPreference(enabled) {
 
 let selectedStructureId = null;
 let selectedShipId = null;
+let selectedDivisionId = null;
 let paused = false;
 
 // selection is always stored as indices (auto-filled + pruned)
@@ -5104,6 +5160,12 @@ function canPlayerIssueOrders(showReason = true) {
   return true;
 }
 
+function isDivisionsModeActive(matchConfig = null) {
+  const cfg = sanitizeMatchConfig(matchConfig || activeMatchConfig);
+  if (world && typeof world._isDivisionsMode === "function") return !!world._isDivisionsMode();
+  return String(cfg.gameMode || GAME_MODE.CLASSIC).toLowerCase() === GAME_MODE.DIVISIONS;
+}
+
 function isQueuedActionResult(res) {
   return !!(res && typeof res === "object" && res.queued);
 }
@@ -5128,6 +5190,7 @@ function resetClientStateAfterRegenerate(message = "") {
 
   selectedStructureId = null;
   selectedShipId = null;
+  selectedDivisionId = null;
   clearNukeLaunchMode();
   clearAirborneLaunchMode();
   clearNavalTransportLaunchMode();
@@ -5233,6 +5296,7 @@ function activateNukeLaunchFromSilo(siloIdRaw) {
   clearSelection();
   selectedStructureId = sid;
   selectedShipId = null;
+  selectedDivisionId = null;
   nukeLaunchMode = { siloId: sid, type: String(status.readyType) };
   refreshNukePreview();
   hud.setOpMessage(`Launch targeting active: ${warheadLabel(status.readyType)}. Click a target tile.`);
@@ -5240,6 +5304,10 @@ function activateNukeLaunchFromSilo(siloIdRaw) {
 }
 
 function activateAirborneLaunchFromAirbase(airbaseIdRaw) {
+  if (isDivisionsModeActive()) {
+    hud.setOpMessage("Divisions mode disables transport plane land grabs. Use infantry divisions instead.");
+    return false;
+  }
   const sid = airbaseIdRaw | 0;
   if (!sid) {
     hud.setOpMessage("No airbase selected.");
@@ -5269,6 +5337,7 @@ function activateAirborneLaunchFromAirbase(airbaseIdRaw) {
   clearSelection();
   selectedStructureId = sid;
   selectedShipId = null;
+  selectedDivisionId = null;
   airborneLaunchMode = { airbaseId: sid };
   const radius = Math.max(1, Math.floor(Number(status.transport?.launchRadiusTiles) || Number(AIRBASE_LAUNCH_RADIUS_TILES) || 1));
   hud.setOpMessage(`Airborne targeting active (range ${radius} tiles). Click a land tile.`);
@@ -5324,6 +5393,11 @@ function tryQuickLaunchNuke(typeRaw) {
 
 function tryQuickLaunchTransportPlane() {
   if (!canPlayerIssueOrders()) return;
+  if (isDivisionsModeActive()) {
+    hud.setOpMessage("Divisions mode disables transport plane land grabs. Use infantry divisions instead.");
+    refreshAllUI();
+    return;
+  }
   const sid = findReadyAirbaseForLaunch();
   if (!sid) {
     hud.setOpMessage("No launch-ready Transport Plane available.");
@@ -5381,6 +5455,7 @@ function getQuickLaunchAvailabilityState() {
     transportReady: false
   };
   if (!world) return out;
+  const divisionsMode = isDivisionsModeActive();
 
   const structures = Array.isArray(world.structures) ? world.structures : [];
   for (let i = 0; i < structures.length; i++) {
@@ -5401,7 +5476,7 @@ function getQuickLaunchAvailabilityState() {
       continue;
     }
 
-    if (type === "airbase" && typeof world.getAirbaseStatus === "function") {
+    if (!divisionsMode && type === "airbase" && typeof world.getAirbaseStatus === "function") {
       const status = world.getAirbaseStatus(sid, OWNER.PLAYER);
       if (status?.ok && status.isReady && status.canLaunch) out.transportReady = true;
     }
@@ -5420,6 +5495,7 @@ function setQuickLaunchButtonEnabled(buttonId, enabled, readyTitle, blockedTitle
 
 function updateQuickLaunchButtons() {
   const state = getQuickLaunchAvailabilityState();
+  const divisionsMode = isDivisionsModeActive();
   setQuickLaunchButtonEnabled(
     "btnQuickAtomic",
     state.atomicReady,
@@ -5442,7 +5518,9 @@ function updateQuickLaunchButtons() {
     "btnQuickPlane",
     state.transportReady,
     "Launch a ready Transport Plane instantly.",
-    "No launch-ready Transport Plane available."
+    divisionsMode
+      ? "Divisions mode disables transport plane land grabs."
+      : "No launch-ready Transport Plane available."
   );
 }
 
@@ -5562,6 +5640,7 @@ function createScreenAlertOverlay() {
 
 function createVoiceLineToast() {
   const VOICE_DIR = "/VoiceLines/";
+  const WAR_DECLARED_FILE = "/GameSounds/WarDeclard.mp3";
   const FILES = {
     war: "DeclaredWar.mp3",
     ally: "Allied.mp3",
@@ -5577,6 +5656,7 @@ function createVoiceLineToast() {
 
   // Keep these conservative; Vercel + browser audio can be loud.
   const VOL_ANNOUNCE = 0.35;
+  const VOL_WAR_DECLARED = 0.22;
   const VOL_STATIC = 0.12;
   const VOL_DECISION = 0.35;
   const VOL_BUILD = 0.25;
@@ -5605,6 +5685,7 @@ function createVoiceLineToast() {
   let audio = null;
   /** @type {HTMLAudioElement | null} */
   let staticAudio = null;
+  let activeAnnounceType = "";
 
   let lastDecisionAt = 0;
   let lastBuildAt = 0;
@@ -5620,6 +5701,7 @@ function createVoiceLineToast() {
     try { audio.pause(); } catch {}
     try { audio.currentTime = 0; } catch {}
     audio = null;
+    activeAnnounceType = "";
   }
 
   function stopStatic() {
@@ -5657,6 +5739,7 @@ function createVoiceLineToast() {
       const t = String(type || "").toLowerCase();
       const file = FILES[t];
       if (!file) return;
+      if (t === "war" && audio && activeAnnounceType === "war" && !audio.paused && !audio.ended) return;
 
       // Restart pop animation
       el.classList.remove("isActive");
@@ -5683,9 +5766,11 @@ function createVoiceLineToast() {
       }
 
       // Main announcement
-      audio = new Audio(VOICE_DIR + file);
+      const announceSrc = t === "war" ? WAR_DECLARED_FILE : (VOICE_DIR + file);
+      audio = new Audio(announceSrc);
       audio.preload = "auto";
-      audio.volume = VOL_ANNOUNCE;
+      audio.volume = (t === "war") ? VOL_WAR_DECLARED : VOL_ANNOUNCE;
+      activeAnnounceType = t;
 
       let playbackStarted = false;
       const p = audio.play();
@@ -5906,6 +5991,32 @@ function isPlayerUnderAttackNow() {
   return false;
 }
 
+function tradeRouteSuccessMessageFromEvent(ev) {
+  if (!ev || typeof ev !== "object") return "";
+  const kind = String(ev.kind || "").toLowerCase();
+  const text = String(ev.text || "").trim();
+  const lower = text.toLowerCase();
+  const isTradeSuccess =
+    kind === "trade_route_success" ||
+    lower.includes("trade route completed (+") ||
+    lower.includes("trade ship returned (+");
+  if (!isTradeSuccess) return "";
+
+  const rewardFromField = Math.max(0, Math.round(Number(ev.rewardGold) || 0));
+  if (rewardFromField > 0) {
+    return `Trade route successful: +${fmtCompactLocal(rewardFromField)} Gold.`;
+  }
+
+  const rewardMatch = text.match(/\(\+([0-9][0-9,]*)\s*gold\)/i);
+  if (rewardMatch && rewardMatch[1]) {
+    const parsed = Number(String(rewardMatch[1]).replace(/,/g, ""));
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return `Trade route successful: +${fmtCompactLocal(parsed)} Gold.`;
+    }
+  }
+  return text || "Trade route successful.";
+}
+
 function resetPlayerAlertState() {
   const events = Array.isArray(world?.events) ? world.events : [];
   let maxId = 0;
@@ -5932,6 +6043,10 @@ function updatePlayerAlertState() {
     const kind = String(ev.kind || "");
     const from = ev.from | 0;
     const to = ev.to | 0;
+    const tradeSuccessText = tradeRouteSuccessMessageFromEvent(ev);
+    if (from === OWNER.PLAYER && tradeSuccessText) {
+      hud.setOpMessage(tradeSuccessText);
+    }
 
     if (kind === "war_declared" && to === OWNER.PLAYER && from > 0 && from !== OWNER.PLAYER) {
       triggerPlayerAlert("war");
@@ -5950,7 +6065,7 @@ function updatePlayerAlertState() {
         voiceLines.play("ceasefire");
       } else if (kind === "alliance_formed" && playerInvolved) {
         voiceLines.play("ally");
-      } else if (kind === "war_declared" && to === OWNER.PLAYER && from > 0 && from !== OWNER.PLAYER) {
+      } else if (kind === "war_declared" && playerInvolved) {
         voiceLines.play("war");
       } else if (kind === "nuke_incoming" && to === OWNER.PLAYER) {
         voiceLines.play("nuke");
@@ -6072,7 +6187,8 @@ async function initAndBoot(matchConfig = null, opts = null) {
     mapMode: activeMapMode,
     earthData,
     aiCount: worldSize.aiCount,
-    countryClaimEnabled: politicalEarthMode
+    countryClaimEnabled: politicalEarthMode,
+    gameMode: cfg.gameMode
   });
   clearCountryIdentityOverrides(false);
   applyMatchWorldRestrictions(world, cfg);
@@ -6366,12 +6482,14 @@ function createMainMenuController(options = null) {
   const multiplayerBtn = document.getElementById("mmMultiplayerBtn");
   const settingsBtn = document.getElementById("mmSettingsBtn");
   const mapEditorBtn = document.getElementById("mmMapEditorBtn");
+  const feedbackBtn = document.getElementById("mmFeedbackBtn");
   const startBtn = document.getElementById("mmStartBtn");
   const settingsBackBtn = document.getElementById("mmSettingsBackBtn");
   const settingsDoneBtn = document.getElementById("mmSettingsDoneBtn");
   const configBackBtn = document.getElementById("mmConfigBackBtn");
   const mapEditorBackBtn = document.getElementById("mmMapEditorBackBtn");
   const updatesBackBtn = document.getElementById("mmUpdatesBackBtn");
+  const feedbackBackBtn = document.getElementById("mmFeedbackBackBtn");
   const multiplayerBackBtn = document.getElementById("mmMultiplayerBackBtn");
   const createLobbyBtn = document.getElementById("mmCreateLobbyBtn");
   const joinLobbyBtn = document.getElementById("mmJoinLobbyBtn");
@@ -6418,6 +6536,13 @@ function createMainMenuController(options = null) {
   const guideHeroCopy = document.getElementById("mmGuideHeroCopy");
   const guideHighlights = document.getElementById("mmGuideHighlights");
   const guideSections = document.getElementById("mmGuideSections");
+  const feedbackNameInput = document.getElementById("mmFeedbackName");
+  const feedbackCategoryInput = document.getElementById("mmFeedbackCategory");
+  const feedbackContactInput = document.getElementById("mmFeedbackContact");
+  const feedbackMessageInput = document.getElementById("mmFeedbackMessage");
+  const feedbackStatus = document.getElementById("mmFeedbackStatus");
+  const feedbackSubmitBtn = document.getElementById("mmFeedbackSubmitBtn");
+  const feedbackBoardBtn = document.getElementById("mmFeedbackBoardBtn");
   const nameInput = document.getElementById("mmNameInput");
   const flagPreview = document.getElementById("mmPlayerFlagPreview");
   const countryColorInput = document.getElementById("mmCountryColorInput");
@@ -6538,6 +6663,7 @@ function createMainMenuController(options = null) {
     aiCount: document.getElementById("mmCfgAiCount"),
     sizePreset: document.getElementById("mmCfgSizePreset"),
     difficulty: document.getElementById("mmCfgDifficulty"),
+    gameMode: document.getElementById("mmCfgGameMode"),
     fogOfWar: document.getElementById("mmCfgFogOfWar"),
     mapMode: document.getElementById("mmCfgMapMode"),
     customMapId: document.getElementById("mmCfgCustomMap"),
@@ -6600,7 +6726,8 @@ function createMainMenuController(options = null) {
     mpjoin: "Enter a lobby code to join.",
     mplobby: "Lobby connected. Waiting for host.",
     updates: "Review the latest build notes and announcements.",
-    guide: "Read the field manual and open only the systems you need."
+    guide: "Read the field manual and open only the systems you need.",
+    feedback: "Publish bugs, ideas, or balance notes to the feedback board."
   });
   let currentView = "home";
   let playMenuMode = "singleplayer";
@@ -6667,6 +6794,7 @@ function createMainMenuController(options = null) {
   let mapLibraryRows = [];
   let mapLibraryLoading = false;
   let mapLibraryPublishing = false;
+  let feedbackSubmitting = false;
   let mapLibraryLoadToken = 0;
   let mapLibrarySearchDebounceTimer = 0;
   let authController = null;
@@ -8202,7 +8330,8 @@ function createMainMenuController(options = null) {
       view === "mpjoin" ||
       view === "mplobby" ||
       view === "updates" ||
-      view === "guide"
+      view === "guide" ||
+      view === "feedback"
     ) ? view : "home";
     const prev = currentView;
     currentView = next;
@@ -9406,6 +9535,7 @@ function createMainMenuController(options = null) {
     if (matchInputs.aiCount) matchInputs.aiCount.value = cfg.aiCount ? String(cfg.aiCount) : "";
     if (matchInputs.sizePreset) matchInputs.sizePreset.value = cfg.sizePreset;
     if (matchInputs.difficulty) matchInputs.difficulty.value = cfg.difficulty;
+    if (matchInputs.gameMode) matchInputs.gameMode.value = String(cfg.gameMode || GAME_MODE.CLASSIC).toLowerCase();
     if (matchInputs.fogOfWar) matchInputs.fogOfWar.value = getFogOfWarMode(cfg);
     if (matchInputs.mapMode) matchInputs.mapMode.value = String(cfg.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
     if (matchInputs.customMapId) matchInputs.customMapId.value = String(cfg.customMapId || "");
@@ -9443,6 +9573,7 @@ function createMainMenuController(options = null) {
       aiCount,
       sizePreset: matchInputs.sizePreset ? matchInputs.sizePreset.value : undefined,
       difficulty: matchInputs.difficulty ? matchInputs.difficulty.value : undefined,
+      gameMode: matchInputs.gameMode ? matchInputs.gameMode.value : undefined,
       fogOfWar: matchInputs.fogOfWar ? matchInputs.fogOfWar.value : undefined,
       mapMode: MAP_MODE.WORLD_MAP,
       mapSource,
@@ -9480,13 +9611,16 @@ function createMainMenuController(options = null) {
     const ruleText = rules.length ? rules.join(", ") : "Default rules";
     let modeText = "Political Earth";
     const fogText = getFogOfWarMode(cfg) === FOG_OF_WAR_MODE.ADVANCED ? "Advanced FOW" : "Simple FOW";
+    const gameModeText = String(cfg.gameMode || GAME_MODE.CLASSIC).toLowerCase() === GAME_MODE.DIVISIONS
+      ? "Divisions"
+      : "Classic";
     if (String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.EARTH) {
       modeText = "Earth";
     } else if (String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.CUSTOM) {
       const meta = findCustomMapMetaById(cfg.customMapId);
       modeText = meta ? `Custom (${meta.name})` : "Custom (Select map)";
     }
-    configSummary.textContent = `Mode: ${modeText} | Size: ${cfg.sizePreset} | Bots: ${botsText}${botsCapText} | Difficulty: ${cfg.difficulty.toUpperCase()} | Fog: ${fogText} | ${ruleText}`;
+    configSummary.textContent = `Mode: ${modeText} | Gamemode: ${gameModeText} | Size: ${cfg.sizePreset} | Bots: ${botsText}${botsCapText} | Difficulty: ${cfg.difficulty.toUpperCase()} | Fog: ${fogText} | ${ruleText}`;
   };
 
   const persistSettingsFromForm = () => {
@@ -9507,6 +9641,7 @@ function createMainMenuController(options = null) {
     if (statusText) statusText.textContent = fallback;
     if (multiplayerStatus) multiplayerStatus.textContent = fallback;
     if (joinStatus) joinStatus.textContent = fallback;
+    if (feedbackStatus) feedbackStatus.textContent = fallback;
     if (mpLobbyStatus && !activeMultiplayerLobby?.started) {
       // Keep started-state message intact when host has already launched lobby.
       mpLobbyStatus.textContent = fallback;
@@ -9556,12 +9691,13 @@ function createMainMenuController(options = null) {
       multiplayerBtn.setAttribute("aria-disabled", "false");
     }
     refreshMultiplayerUI();
+    syncFeedbackControls();
   };
 
   const setStarting = (next) => {
     const starting = !!next;
     root.classList.toggle("isStarting", starting);
-    const interactives = root.querySelectorAll("button, input, select");
+    const interactives = root.querySelectorAll("button, input, select, textarea");
     for (let i = 0; i < interactives.length; i++) {
       interactives[i].disabled = starting;
     }
@@ -9571,6 +9707,80 @@ function createMainMenuController(options = null) {
       refreshMultiplayerUI();
     }
     setStatus(starting ? "Generating world..." : IDLE_STATUS_BY_VIEW[currentView]);
+  };
+
+  const syncFeedbackControls = () => {
+    if (feedbackSubmitBtn) {
+      feedbackSubmitBtn.disabled = feedbackSubmitting;
+      feedbackSubmitBtn.textContent = feedbackSubmitting ? "Publishing..." : "Publish Feedback";
+    }
+    if (feedbackNameInput) feedbackNameInput.disabled = feedbackSubmitting;
+    if (feedbackCategoryInput) feedbackCategoryInput.disabled = feedbackSubmitting;
+    if (feedbackContactInput) feedbackContactInput.disabled = feedbackSubmitting;
+    if (feedbackMessageInput) feedbackMessageInput.disabled = feedbackSubmitting;
+  };
+
+  const openFeedbackBoard = () => {
+    try {
+      const url = new URL("./feedbacks/", String(globalThis?.location?.href || "/"));
+      window.open(url.href, "_blank", "noopener");
+    } catch {
+      window.open("/feedbacks/", "_blank", "noopener");
+    }
+  };
+
+  const primeFeedbackForm = () => {
+    if (feedbackNameInput && !String(feedbackNameInput.value || "").trim()) {
+      feedbackNameInput.value = playerNameFromInput();
+    }
+    if (feedbackContactInput && !String(feedbackContactInput.value || "").trim()) {
+      feedbackContactInput.value = safeStorageRead(FEEDBACK_CONTACT_STORAGE_KEY) || "";
+    }
+    if (!supabase) {
+      setStatus(`Feedback is offline. ${SUPABASE_CONFIG_HINT || "Supabase config not detected."} Restart dev server after .env edits.`);
+      return;
+    }
+    setStatus(IDLE_STATUS_BY_VIEW.feedback);
+  };
+
+  const submitFeedbackFromMainMenu = async () => {
+    if (!supabase) {
+      setStatus(`Feedback is offline. ${SUPABASE_CONFIG_HINT || "Supabase config not detected."} Restart dev server after .env edits.`);
+      return;
+    }
+    const playerName = resolvePlayerDisplayName(feedbackNameInput?.value || playerNameFromInput());
+    const category = normalizeFeedbackCategory(feedbackCategoryInput?.value || "general");
+    const contact = normalizeFeedbackContact(feedbackContactInput?.value || "");
+    const message = normalizeFeedbackMessage(feedbackMessageInput?.value || "", 1200);
+    if (feedbackNameInput) feedbackNameInput.value = playerName;
+    if (feedbackCategoryInput) feedbackCategoryInput.value = category;
+    if (feedbackContactInput) feedbackContactInput.value = contact;
+    safeStorageWrite(FEEDBACK_CONTACT_STORAGE_KEY, contact);
+    if (message.length < 8) {
+      setStatus("Write at least a short sentence before publishing feedback.");
+      return;
+    }
+
+    feedbackSubmitting = true;
+    syncFeedbackControls();
+    try {
+      await publishFeedbackEntry(supabase, SUPABASE_TABLE_FEEDBACK, {
+        playerName,
+        category,
+        contact,
+        message,
+        build: PF_BUILD,
+        pagePath: String(globalThis?.location?.pathname || "/"),
+        source: "main-menu"
+      });
+      if (feedbackMessageInput) feedbackMessageInput.value = "";
+      setStatus("Feedback published. It should appear on the public board shortly.");
+    } catch (err) {
+      setStatus(err?.message || "Failed to publish feedback.");
+    } finally {
+      feedbackSubmitting = false;
+      syncFeedbackControls();
+    }
   };
 
   const setHint = (el, text) => {
@@ -9586,6 +9796,7 @@ function createMainMenuController(options = null) {
   setHint(multiplayerBtn, "Create or join a private lobby.");
   setHint(settingsBtn, "Open client settings.");
   setHint(mapEditorBtn, "Open advanced map editor.");
+  setHint(feedbackBtn, "Publish bugs, ideas, and balance notes.");
   setHint(libraryBtn, "Browse and publish community maps.");
   setHint(flagBtn, "Set your country color.");
   setHint(updateLogBtn, "Open the latest update log.");
@@ -9620,8 +9831,19 @@ function createMainMenuController(options = null) {
       setView("mapeditor");
     });
   }
+  if (feedbackBtn) {
+    feedbackBtn.addEventListener("click", () => {
+      primeFeedbackForm();
+      setView("feedback");
+    });
+  }
   if (mapEditorBackBtn) {
     mapEditorBackBtn.addEventListener("click", () => {
+      setView("home");
+    });
+  }
+  if (feedbackBackBtn) {
+    feedbackBackBtn.addEventListener("click", () => {
       setView("home");
     });
   }
@@ -9643,6 +9865,23 @@ function createMainMenuController(options = null) {
   if (guideBackBtn) {
     guideBackBtn.addEventListener("click", () => {
       setView("home");
+    });
+  }
+  if (feedbackBoardBtn) {
+    feedbackBoardBtn.addEventListener("click", () => {
+      openFeedbackBoard();
+    });
+  }
+  if (feedbackContactInput) {
+    feedbackContactInput.addEventListener("change", () => {
+      const contact = normalizeFeedbackContact(feedbackContactInput.value || "");
+      feedbackContactInput.value = contact;
+      safeStorageWrite(FEEDBACK_CONTACT_STORAGE_KEY, contact);
+    });
+  }
+  if (feedbackSubmitBtn) {
+    feedbackSubmitBtn.addEventListener("click", () => {
+      void submitFeedbackFromMainMenu();
     });
   }
   if (libraryBtn) {
@@ -10623,6 +10862,12 @@ function createMainMenuController(options = null) {
   }
 
   applySavedName();
+  if (feedbackNameInput && !String(feedbackNameInput.value || "").trim()) {
+    feedbackNameInput.value = playerNameFromInput();
+  }
+  if (feedbackContactInput && !String(feedbackContactInput.value || "").trim()) {
+    feedbackContactInput.value = safeStorageRead(FEEDBACK_CONTACT_STORAGE_KEY) || "";
+  }
   if (mapLibraryPublishAuthor && !String(mapLibraryPublishAuthor.value || "").trim()) {
     mapLibraryPublishAuthor.value = safeStorageRead(MAP_LIBRARY_AUTHOR_STORAGE_KEY) || "";
   }
@@ -10789,7 +11034,11 @@ function boot() {
 
     const f = finalizeSelection();
     if (!f) {
-      hud.setOpMessage("Paint a valid region first.");
+      const neutralCount = selection?.neutral?.length || 0;
+      const warCount = selection?.war?.length || 0;
+      if ((neutralCount + warCount) <= 0) {
+        hud.setOpMessage("Paint a valid region first.");
+      }
       return;
     }
 
@@ -10846,6 +11095,19 @@ function boot() {
     hud.setOpMessage(actionResultMessage(
       res,
       `War declared on ${world.nation[targetId]?.name || "AI " + (targetId - 1)}. Auto-front will fight continuously once borders touch.`
+    ));
+    refreshAllUI();
+  });
+
+  hud.onBetray((targetId) => {
+    if (!canPlayerIssueOrders()) return;
+    const res = world.betrayAlliance(OWNER.PLAYER, targetId);
+    if (res && res.ok && voiceLines && typeof voiceLines.playDecision === "function") {
+      voiceLines.playDecision();
+    }
+    hud.setOpMessage(actionResultMessage(
+      res,
+      `Alliance betrayed. You are now at war with ${world.nation[targetId]?.name || "AI " + (targetId - 1)}.`
     ));
     refreshAllUI();
   });
@@ -10952,6 +11214,15 @@ function boot() {
   if (hud.onSelectedAction) {
     hud.onSelectedAction((actionId, sel) => {
       if (!canPlayerIssueOrders()) return;
+      if (actionId === "clear_division_order") {
+        const divId = (sel?.entityKind === "division") ? (sel.id | 0) : 0;
+        const res = world.clearDivisionOrder
+          ? world.clearDivisionOrder(divId, OWNER.PLAYER)
+          : { ok: false, reason: "Division order API unavailable." };
+        hud.setOpMessage(actionResultMessage(res, "Division order cleared."));
+        refreshAllUI();
+        return;
+      }
       if (actionId === "cancel_ship") {
         const shipId = (sel?.entityKind === "ship") ? (sel.id | 0) : 0;
         if (!shipId || typeof world.cancelShip !== "function") {
@@ -10973,6 +11244,23 @@ function boot() {
       }
       const sid = sel?.id | 0;
       if (!sid) return;
+
+      if (actionId === "queue_division_training") {
+        const divisionType = String(sel?.divisionType || "infantry");
+        const quantity = Math.max(1, Number(sel?.divisionQuantity) | 0);
+        const res = world.queueDivisionTraining
+          ? world.queueDivisionTraining(sid, OWNER.PLAYER, divisionType, quantity)
+          : { ok: false, reason: "Division training API unavailable." };
+        if (isQueuedActionResult(res)) {
+          hud.setOpMessage("Division training queued.");
+        } else if (res.ok) {
+          hud.setOpMessage(quantity === 1 ? "Division queued for training." : `${quantity} divisions queued for training.`);
+        } else {
+          hud.setOpMessage(res.reason || "Unable to queue division training.");
+        }
+        refreshAllUI();
+        return;
+      }
 
       if (actionId === "start_port_trade") {
         const allyId = Math.max(0, Number(sel?.tradeTargetNationId) | 0);
@@ -13142,6 +13430,7 @@ function boot() {
       brushGhost: input.getBrushGhost ? input.getBrushGhost() : null,
       selectedStructureId,
       selectedShipId,
+      selectedDivisionId,
       intentArrows,
       nukePreview,
       targetMarker: getActiveTargetMarker(),
@@ -14264,7 +14553,7 @@ function bindInput() {
     if (navalTransportLaunchMode) {
       if (!canPlayerIssueOrders()) return;
       const idx = ((cell.y | 0) * (world.w | 0) + (cell.x | 0)) | 0;
-      if (!world.land[idx]) {
+      if (!isGameplayLandTile(world, idx)) {
         hud.setOpMessage("Transport target must be on land.");
         refreshAllUI();
         return;
@@ -14305,15 +14594,28 @@ function bindInput() {
       return;
     }
 
+    const division = (typeof world.getDivisionAt === "function") ? world.getDivisionAt(cell.x, cell.y) : null;
+    if (division && (division.owner | 0) === OWNER.PLAYER) {
+      selectedDivisionId = division.id | 0;
+      selectedStructureId = null;
+      selectedShipId = null;
+      clearSelection();
+      hud.setSelectedStructure(getSelectedStructure());
+      refreshOpUI();
+      return;
+    }
+
     const st0 = world.getStructureAt(cell.x, cell.y);
     const st = canPlayerSeeLandStructure(st0) ? st0 : null;
     if (st) {
       selectedStructureId = st.id;
       selectedShipId = null;
+      selectedDivisionId = null;
     } else {
       const ship = (typeof world.getShipAt === "function") ? world.getShipAt(cell.x, cell.y) : null;
       selectedShipId = ship ? (ship.id | 0) : null;
       selectedStructureId = null;
+      selectedDivisionId = null;
     }
     hud.setSelectedStructure(getSelectedStructure());
 
@@ -14337,6 +14639,17 @@ function bindInput() {
       renderer.clearSelection();
       return;
     }
+    if (isDivisionsModeActive()) {
+      clearSelection();
+      renderer.clearSelection();
+      if (!(selectedDivisionId | 0)) {
+        hud.setOpMessage("Select a division first, then drag-paint its order area.");
+        return;
+      }
+      selection = { division: [] };
+      hud.setOpMessage("Painting division order... Release to assign it.");
+      return;
+    }
     clearSelection();
     selection = { neutral: [], warOwner: 0, war: [] };
     renderer.clearSelection();
@@ -14344,8 +14657,15 @@ function bindInput() {
   });
 
   input.onPaintAdd((cell, idx) => {
+    if (isDivisionsModeActive()) {
+      if (!(selectedDivisionId | 0) || !isGameplayLandTile(world, idx)) return;
+      if (!selection || !Array.isArray(selection.division)) selection = { division: [] };
+      selection.division.push(idx);
+      renderer.paintSelectionIndex(idx, { r: 255, g: 214, b: 122, a: 112 });
+      return;
+    }
     if (!selection) selection = { neutral: [], warOwner: 0, war: [] };
-    if (!world.land[idx]) return;
+    if (!isGameplayLandTile(world, idx)) return;
 
     const o = world.owner[idx];
 
@@ -14365,6 +14685,44 @@ function bindInput() {
     if (!canPlayerIssueOrders(false)) {
       clearSelection();
       selection = null;
+      return;
+    }
+    if (isDivisionsModeActive()) {
+      const divId = selectedDivisionId | 0;
+      if (!divId) {
+        clearSelection();
+        selection = null;
+        return;
+      }
+      const filled = fillEnclosedRegion(world.w, world.h, strokeIndices || []);
+      const landOnly = [];
+      for (let i = 0; i < filled.length; i++) {
+        const idx = filled[i] | 0;
+        if (isGameplayLandTile(world, idx)) landOnly.push(idx);
+      }
+      const orderIndices = largestConnectedComponent4(
+        world.w,
+        world.h,
+        landOnly,
+        (idx) => isGameplayLandTile(world, idx)
+      );
+      if (!orderIndices.length) {
+        clearSelection();
+        selection = null;
+        hud.setOpMessage("Paint a land area to give the division an order.");
+        return;
+      }
+      const res = world.issueDivisionOrder
+        ? world.issueDivisionOrder(divId, OWNER.PLAYER, unique(orderIndices))
+        : { ok: false, reason: "Division order API unavailable." };
+      clearSelection();
+      selection = null;
+      if (res?.ok) {
+        hud.setOpMessage(`Division order assigned (${orderIndices.length} tiles).`);
+      } else {
+        hud.setOpMessage(res?.reason || "Unable to assign division order.");
+      }
+      refreshAllUI();
       return;
     }
     applyAutoFillAndPrune(strokeIndices);
@@ -14407,11 +14765,8 @@ function installHoverAndDiplomacy() {
   canvas.addEventListener("pointermove", (e) => {
     if (input.isPointerDown() || input.isPainting()) return;
 
-    const vp = renderer.getViewport();
-    const px = e.offsetX * vp.dpr;
-    const py = e.offsetY * vp.dpr;
-
-    const cell = renderer.screenToWorldCell(px, py);
+    const point = getCanvasEventPosition(e);
+    const cell = renderer.screenToWorldCell(point?.x, point?.y);
     hoveredCell = cell;
 
     if (!cell) {
@@ -14650,6 +15005,7 @@ function buildIntelData(targetId) {
 
   const populationText = buildEstimateRangeText(n.population || 0, id, revealPopulationIntel, 0xA91C3D4E);
   const infantryText = buildEstimateRangeText(n.infantry || 0, id, revealPopulationIntel, 0x5BD1E995);
+  const alliances = getNationAllianceIntel(id);
 
   return {
     id,
@@ -14661,8 +15017,73 @@ function buildIntelData(targetId) {
     infantry: n.infantry || 0,
     populationText,
     infantryText,
+    alliances,
     structures
   };
+}
+
+function getNationAllianceIntel(targetId) {
+  const id = targetId | 0;
+  if (!world || typeof world._pair !== "function") return [];
+
+  const now = Number(world.time) || 0;
+  const nationCount = Math.max(0, (world.nation?.length || 0) - 1);
+  const out = [];
+  for (let other = 1; other <= nationCount; other++) {
+    if (other === id) continue;
+    const nation = world.nation[other];
+    if (!nation?.alive) continue;
+
+    const pair = world._pair(id, other) | 0;
+    if ((Number(world._alliedUntil?.[pair]) || 0) <= now) continue;
+
+    const flag = getNationIntelFlagThumb(other);
+    out.push({
+      id: other,
+      name: String(nation.name || (other === OWNER.PLAYER ? "You" : `AI ${other - 1}`)),
+      flagSrc: flag.src,
+      flagToken: flag.token
+    });
+  }
+
+  out.sort((a, b) => a.id - b.id);
+  return out;
+}
+
+function getNationIntelFlagThumb(nationIdRaw) {
+  const nationId = nationIdRaw | 0;
+  const imageSrc = nationId === OWNER.PLAYER
+    ? String(activePlayerFlagImageUrl || "").trim()
+    : String(activeNationFlagImagesById[nationId] || "").trim();
+  if (imageSrc) return { src: imageSrc, token: imageSrc };
+
+  const fallbackFlag = sanitizeFlag(
+    activeNationFlagsById[nationId]
+    || world?.nation?.[nationId]?.flag
+    || (nationId === OWNER.PLAYER ? activePlayerFlag : null)
+    || createDefaultFlag()
+  );
+  const token = JSON.stringify(fallbackFlag);
+  const cachedSrc = intelFlagThumbCache.get(token);
+  if (cachedSrc) {
+    intelFlagThumbCache.delete(token);
+    intelFlagThumbCache.set(token, cachedSrc);
+    return { src: cachedSrc, token };
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 72;
+  canvas.height = 48;
+  renderFlagToCanvas(canvas, fallbackFlag, { smoothing: true });
+  const src = canvas.toDataURL("image/png");
+
+  intelFlagThumbCache.set(token, src);
+  if (intelFlagThumbCache.size > 96) {
+    const oldestKey = intelFlagThumbCache.keys().next().value;
+    if (oldestKey) intelFlagThumbCache.delete(oldestKey);
+  }
+
+  return { src, token };
 }
 
 function countStructuresByType(worldRef, ownerId) {
@@ -14778,6 +15199,24 @@ function pseudo01(seed) {
 
 // --- BEGIN unchanged block (copied from your current file) ---
 
+function isGameplayLandTile(worldRef, idxRaw) {
+  const w = worldRef;
+  if (!w) return false;
+  const idx = idxRaw | 0;
+  const total = Math.max(0, (w.w | 0) * (w.h | 0));
+  if (idx < 0 || idx >= total) return false;
+
+  const land = w.land;
+  if (land && idx < land.length && !!land[idx]) return true;
+
+  const owner = (w.owner && idx < w.owner.length) ? (w.owner[idx] | 0) : 0;
+  if (owner > OWNER.NONE) return true;
+
+  const biome = w.biome;
+  if (biome && idx < biome.length) return !isWaterBiomeId(biome[idx] | 0);
+  return false;
+}
+
 function applyAutoFillAndPrune(strokeIndices) {
   if (!strokeIndices || strokeIndices.length === 0) return;
 
@@ -14788,7 +15227,7 @@ function applyAutoFillAndPrune(strokeIndices) {
   const warCounts = new Map(); // owner -> count
 
   for (const idx of filled) {
-    if (!world.land[idx]) continue;
+    if (!isGameplayLandTile(world, idx)) continue;
     const o = world.owner[idx] | 0;
 
     if (o === OWNER.NONE) {
@@ -14958,7 +15397,7 @@ function buildIntentArrows(sel) {
 
   for (let i = 0; i < indices.length; i++) {
     const idx = indices[i] | 0;
-    if (!world.land[idx]) continue;
+    if (!isGameplayLandTile(world, idx)) continue;
     if ((world.owner[idx] | 0) !== targetOwner) continue;
     sumX += (idx % w) + 0.5;
     sumY += ((idx / w) | 0) + 0.5;
@@ -14973,7 +15412,7 @@ function buildIntentArrows(sel) {
 
   for (let i = 0; i < indices.length; i++) {
     const idx = indices[i] | 0;
-    if (!world.land[idx]) continue;
+    if (!isGameplayLandTile(world, idx)) continue;
     if ((world.owner[idx] | 0) !== targetOwner) continue;
 
     const dir = directionTowardOwner(idx, OWNER.PLAYER);
@@ -15101,7 +15540,7 @@ function directionTowardOwner(idx, ownerVal) {
     const yy = y + dy;
     if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
     const ni = yy * w + xx;
-    if (!world.land[ni]) continue;
+    if (!isGameplayLandTile(world, ni)) continue;
     if ((world.owner[ni] | 0) !== ownerVal) continue;
     // Direction from owner tile to selected tile.
     vx += -dx;
@@ -15128,10 +15567,56 @@ function clearSelection() {
   intentArrows = null;
   renderer.clearSelection();
   hud.setOpStartEnabled(false);
-  hud.setOpStartLabel("Expand");
+  hud.setOpStartLabel(isDivisionsModeActive() ? "Divisions" : "Expand");
+}
+
+function getSelectedDivision() {
+  const divId = selectedDivisionId | 0;
+  if (!divId) return null;
+  const div = (typeof world?.getDivisionById === "function")
+    ? world.getDivisionById(divId)
+    : (Array.isArray(world?.divisions) ? world.divisions.find((row) => ((row?.id | 0) === divId)) : null);
+  if (!div || !(Number(div.infantry) > 0)) {
+    selectedDivisionId = null;
+    return null;
+  }
+  const ownerId = div.owner | 0;
+  const ownerName = ownerId === OWNER.PLAYER
+    ? "You"
+    : (world?.nation?.[ownerId]?.name || (ownerId > 0 ? `AI ${ownerId - 1}` : "Neutral"));
+  const order = (div.order && typeof div.order === "object") ? div.order : null;
+  const orderCount = Array.isArray(order?.indices) ? order.indices.length : 0;
+  return {
+    ...div,
+    entityKind: "division",
+    ownerName,
+    type: "division",
+    desc: order
+      ? "Selected division. Drag-paint land to update its attack or positioning order."
+      : "Selected division. Drag-paint land to give it an attack or positioning order.",
+    metaText: [
+      `Infantry ${Math.max(0, Math.round(Number(div.infantry) || 0))}/${Math.max(1, Math.round(Number(div.maxInfantry) || 1))}`,
+      `Supply ${Math.max(0, Math.round(Number(div.supply) || 0))}%`,
+      `Experience ${Math.max(0, Math.round(Number(div.experienceDays) || 0))}d`,
+      `Mobility ${(Math.max(0.1, Number(div.mobility) || 1)).toFixed(2)}`,
+      `Attack Range ${Math.max(1, Number(div.attackRangeTiles) || 1).toFixed(1)}`
+    ].concat(orderCount > 0 ? [`Order ${orderCount} tiles`] : []).join(" | "),
+    actions: [
+      {
+        id: "clear_division_order",
+        label: "Clear Order",
+        disabled: !order,
+        style: "subtle",
+        title: order ? "Cancels this division's current order." : "Division has no active order."
+      }
+    ]
+  };
 }
 
 function getSelectedStructure() {
+  const divisionSel = getSelectedDivision();
+  if (divisionSel) return divisionSel;
+
   const shipSel = getSelectedShip();
   if (shipSel) return shipSel;
 
@@ -15160,6 +15645,35 @@ function getSelectedStructure() {
     ownerName,
     level: count > 1 ? count : undefined
   };
+
+  if (String(st.type || "") === "barracks") {
+    const divisionsMode = typeof world._isDivisionsMode === "function" && world._isDivisionsMode();
+    view.desc = divisionsMode
+      ? "Queues infantry divisions and serves as your frontline staging point."
+      : "Barracks provide infantry support. Division training is only available in Divisions mode.";
+    if ((st.owner | 0) === OWNER.PLAYER && divisionsMode && typeof world.getBarracksDivisionStatus === "function") {
+      const status = world.getBarracksDivisionStatus(st.id | 0, OWNER.PLAYER);
+      if (status?.ok) {
+        const parts = [
+          `Reserve: ${fmtCompactLocal(status.availableReserve || 0)}`,
+          `Queue: ${Math.max(0, status.queueLength | 0)}`
+        ];
+        if (status.queueLength > 0) {
+          parts.push(`Training: ${String(status.queuedLabel || "Division")}`);
+          const pct = Math.max(0, Math.min(100, Math.round((Number(status.queuedProgress01) || 0) * 100)));
+          view.progress = {
+            label: `${String(status.queuedLabel || "Division")}: ${pct}% (${Math.max(0, Math.ceil(Number(status.queuedRemainingS) || 0))}s)`,
+            progress01: Number(status.queuedProgress01) || 0
+          };
+        } else {
+          view.desc = "Select a division template and queue it here. Trained divisions deploy onto the map from this Barracks.";
+        }
+        view.metaText = parts.join(" | ");
+        view.divisionTraining = status;
+      }
+    }
+    return view;
+  }
 
   if (String(st.type || "") === "abm_launcher") {
     view.desc = "Intercepts incoming missiles in a wide radius. Intercepts are RNG and each launcher fires at only one target before reloading.";
@@ -15242,7 +15756,10 @@ function getSelectedStructure() {
   }
 
   if (String(st.type || "") === "airbase") {
-    view.desc = "Builds transport planes for airborne operations.";
+    const divisionsMode = isDivisionsModeActive();
+    view.desc = divisionsMode
+      ? "Transport plane land grabs are disabled in Divisions mode. Use infantry divisions to project land power."
+      : "Builds transport planes for airborne operations.";
 
     if ((st.owner | 0) === OWNER.PLAYER && typeof world.getAirbaseStatus === "function") {
       const status = world.getAirbaseStatus(st.id | 0, OWNER.PLAYER);
@@ -15275,8 +15792,10 @@ function getSelectedStructure() {
           {
             id: "build_transport_plane",
             label: `Build Transport Plane (${fmtCompactLocal(buildCost)}g, ${buildTimeS}s)`,
-            disabled: !status.isIdle || !status.transport?.affordable,
-            title: "Builds one transport plane for airborne launch."
+            disabled: divisionsMode || !status.isIdle || !status.transport?.affordable,
+            title: divisionsMode
+              ? "Divisions mode disables transport plane land grabs."
+              : "Builds one transport plane for airborne launch."
           },
           {
             id: "launch_airborne_toggle",
@@ -15288,10 +15807,12 @@ function getSelectedStructure() {
                   ? `Launch (Need ${launchMinInf} Free Infantry)`
                   : "Launch (No Ready Plane)",
             style: canLaunchNow || launchActive ? "warn" : "subtle",
-            disabled: !(canLaunchNow || launchActive),
-            title: canLaunchNow || launchActive
-              ? "Click launch, then click a land tile within range."
-              : `Need ${launchMinInf} free infantry (currently ${launchAvailInf}).`
+            disabled: divisionsMode || !(canLaunchNow || launchActive),
+            title: divisionsMode
+              ? "Divisions mode disables transport plane land grabs."
+              : (canLaunchNow || launchActive
+                ? "Click launch, then click a land tile within range."
+                : `Need ${launchMinInf} free infantry (currently ${launchAvailInf}).`)
           }
         ];
       }
@@ -15729,6 +16250,13 @@ function expansionDirectionLabel(op) {
 }
 
 function refreshOpUI(quick = false) {
+  if (isDivisionsModeActive()) {
+    hud.setOpProgress(0);
+    hud.setFocusCancelable(false);
+    hud.setOpStartEnabled(false);
+    hud.setOpStartLabel("Divisions");
+  }
+
   const ops = [];
   const dockOps = [];
   const focusId = world.focusOpId;
@@ -15863,6 +16391,8 @@ function refreshOpUI(quick = false) {
 
   hud.renderOpList(list, world.focusOpId);
   if (hud.renderDockOperations) hud.renderDockOperations(dockOps);
+
+  if (isDivisionsModeActive()) return;
 
   if (!quick) {
     const f = finalizeSelection();
@@ -16008,7 +16538,7 @@ function touchesOwnerNeighbor4(world, idx, ownerVal) {
   for (const [xx, yy] of n) {
     if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
     const ni = yy * w + xx;
-    if (!world.land[ni]) continue;
+    if (!isGameplayLandTile(world, ni)) continue;
     if ((world.owner[ni] | 0) === ownerVal) return true;
   }
   return false;
@@ -16485,12 +17015,11 @@ function installCameraControls() {
         return;
       }
       e.preventDefault();
-      const vp = renderer.getViewport();
-      const px = e.offsetX * vp.dpr;
-      const py = e.offsetY * vp.dpr;
+      const point = getCanvasEventPosition(e);
+      if (!point) return;
 
       const dir = e.deltaY < 0 ? 1 : -1;
-      renderer.zoomStep(dir, px, py);
+      renderer.zoomStep(dir, point.x, point.y);
     },
     { passive: false }
   );
@@ -16500,28 +17029,28 @@ function installCameraControls() {
   canvas.addEventListener("pointerdown", (e) => {
     if (e.button !== 2) return;
 
-    const vp = renderer.getViewport();
+    const point = getCanvasEventPosition(e);
+    if (!point) return;
     pan = {
       id: e.pointerId,
-      x: e.offsetX * vp.dpr,
-      y: e.offsetY * vp.dpr,
+      x: point.x,
+      y: point.y,
       sx: e.clientX,
       sy: e.clientY,
       moved: false,
-      t0: performance.now(),
-      cx: e.clientX,
-      cy: e.clientY,
-      ox: e.offsetX,
-      oy: e.offsetY
+      t0: performance.now()
     };
-    canvas.setPointerCapture(e.pointerId);
+    try {
+      canvas.setPointerCapture?.(e.pointerId);
+    } catch {}
   });
 
   canvas.addEventListener("pointermove", (e) => {
     if (!pan || e.pointerId !== pan.id) return;
-    const vp = renderer.getViewport();
-    const x = e.offsetX * vp.dpr;
-    const y = e.offsetY * vp.dpr;
+    const point = getCanvasEventPosition(e);
+    if (!point) return;
+    const x = point.x;
+    const y = point.y;
 
     const dx = x - pan.x;
     const dy = y - pan.y;
@@ -16537,17 +17066,17 @@ function installCameraControls() {
     if (!pan) return;
     if (e.pointerId !== pan.id) return;
 
-    const wasClick = !pan.moved && performance.now() - pan.t0 < 280;
-    const cx = e.clientX;
-    const cy = e.clientY;
+    try {
+      canvas.releasePointerCapture?.(e.pointerId);
+    } catch {}
 
-    const ox = e.offsetX;
-    const oy = e.offsetY;
+    const wasClick = !pan.moved && performance.now() - pan.t0 < 280;
+    const point = getCanvasEventPosition(e);
 
     pan = null;
 
-    if (wasClick) {
-      openContextMenuAt(cx, cy, ox, oy);
+    if (wasClick && point) {
+      openContextMenuAt(point.clientX, point.clientY, point.x, point.y);
     }
   };
 
@@ -16558,15 +17087,12 @@ function installCameraControls() {
 function openContextMenuAt(clientX, clientY, offsetX, offsetY) {
   if (isSessionTerminalStateNow() || !playerAliveNow()) return;
 
-  const vp = renderer.getViewport();
-  const px = offsetX * vp.dpr;
-  const py = offsetY * vp.dpr;
-
-  const cell = renderer.screenToWorldCell(px, py);
+  const cell = renderer.screenToWorldCell(offsetX, offsetY);
   if (!cell) return;
 
   const idx = cell.y * world.w + cell.x;
-  const isLand = !!world.land[idx];
+  const isLand = isGameplayLandTile(world, idx);
+  const divisionsMode = isDivisionsModeActive();
 
   if (!isLand) {
     // Ocean context menu
@@ -16586,6 +17112,7 @@ function openContextMenuAt(clientX, clientY, offsetX, offsetY) {
       sendWarshipLabel: "Send Warship",
       targetId: 0,
       showDeclareWar: false,
+      showBetray: false,
       showMakePeace: false,
       showRequestAlly: false,
       requestLabel: "Ally"
@@ -16623,18 +17150,21 @@ function openContextMenuAt(clientX, clientY, offsetX, offsetY) {
       titleText: "Neutral Land",
       hintText: useTransport
         ? "Send a transport from your nearest Port to establish an overseas beachhead."
+        : divisionsMode
+        ? "Use infantry divisions and painted orders to capture land in Divisions mode."
         : (!neutralTouchesBorder && !selectionHasCoast)
         ? "Draw/select coastal neutral land to send a transport."
         : "Expand from all borders until attacking infantry is spent. Consumes infantry and small gold per tile.",
       cellAction: useTransport
         ? { kind: "sendTransportNeutral", indices: selNeutral, cell }
-        : { kind: "burstExpand", cell },
-      showExpand: true,
+        : (!divisionsMode ? { kind: "burstExpand", cell } : null),
+      showExpand: useTransport || !divisionsMode,
       expandLabel: useTransport ? "Send Transport" : "Expand",
       showIntel: false,
       intelLabel: "Intel",
       targetId: 0,
       showDeclareWar: false,
+      showBetray: false,
       showMakePeace: false,
       showRequestAlly: false,
       requestLabel: "Ally"
@@ -16661,6 +17191,7 @@ function openContextMenuAt(clientX, clientY, offsetX, offsetY) {
       tradeEnabled: true,
       tradeLabel: "Trade",
       showDeclareWar: false,
+      showBetray: false,
       showMakePeace: false,
       showRequestAlly: false,
       requestLabel: "Ally"
@@ -16675,6 +17206,7 @@ function openContextMenuAt(clientX, clientY, offsetX, offsetY) {
     const canTradeWithNation = !!(rel?.allied && !rel?.atWar && !rel?.warActive);
 
     const showDeclareWar = !rel.atWar && !rel.allied;
+    const showBetray = !!rel.allied;
     const showMakePeace = rel.atWar && !rel.ceasefire;
     const showRequestAlly = !rel.allied && !rel.pending && !rel.atWar;
 
@@ -16700,20 +17232,24 @@ function openContextMenuAt(clientX, clientY, offsetX, offsetY) {
     const showTransport = !warTouchesFrontline && selectionHasCoast && !!canTransportWar.ok;
 
     const hint = rel.allied
-      ? `Allied (${fmtSec(rel.allyRemaining)} left). Attacks blocked.`
+      ? `Allied (${fmtSec(rel.allyRemaining)} left). Attacks blocked unless you Betray.`
       : rel.ceasefire
       ? `Ceasefire active (${fmtSec(rel.ceasefireRemaining)} left). Attacks paused.`
       : rel.atWar
-      ? (showTransport
-          ? "At war. Attack from the frontline, or send a transport to open an overseas front."
-          : (!warTouchesFrontline && !selectionHasCoast)
-          ? "At war. Draw/select coastal enemy land to send a transport."
-          : "At war. Attack commits a troop stack, press again to reinforce, and cancel to retreat.")
+      ? (divisionsMode
+          ? (showTransport
+              ? "At war. Use infantry divisions on the frontline, or send a transport to open an overseas front."
+              : "At war. Use infantry divisions and painted orders to attack territory.")
+          : (showTransport
+              ? "At war. Attack from the frontline, or send a transport to open an overseas front."
+              : (!warTouchesFrontline && !selectionHasCoast)
+              ? "At war. Draw/select coastal enemy land to send a transport."
+              : "At war. Attack commits a troop stack, press again to reinforce, and cancel to retreat."))
       : rel.pending
       ? `Alliance pending (${rel.pendingDir}).`
       : "Neutral. Declare war or request alliance.";
 
-    const canAttack = rel.warActive;
+    const canAttack = !divisionsMode && rel.warActive;
 
     hud.showContextMenu({
       x: clientX,
@@ -16723,7 +17259,7 @@ function openContextMenuAt(clientX, clientY, offsetX, offsetY) {
       targetId: o,
       cellAction: showTransport
         ? { kind: "burstAttack", expandKind: "sendTransportWar", targetId: o, indices: selWar, cell }
-        : { kind: "burstAttack", targetId: o, cell },
+        : (!divisionsMode ? { kind: "burstAttack", targetId: o, cell } : null),
       showExpand: showTransport,
       expandLabel: "Send Transport",
       showAttack: canAttack,
@@ -16735,6 +17271,7 @@ function openContextMenuAt(clientX, clientY, offsetX, offsetY) {
       tradeEnabled: canTradeWithNation,
       tradeLabel: "Trade",
       showDeclareWar,
+      showBetray,
       showMakePeace,
       showRequestAlly,
       requestLabel: "Ally"

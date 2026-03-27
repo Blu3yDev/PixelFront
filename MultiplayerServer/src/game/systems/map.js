@@ -3965,7 +3965,7 @@ World.prototype._applyRiverWetlands = function(sea) {
           highTechEveryWar,
           highTechEveryPeace,
           warCooldownUntil: Math.max(baseWarCooldownUntil, graceWarCooldownUntil),
-          allianceCooldownUntil: this.time + 22.0 + this._rng() * 30.0,
+          allianceCooldownUntil: this.time + 30.0 + this._rng() * 38.0,
           focusCooldownUntil: this.time + 18.0 + this._rng() * 18.0,
           transportCooldownUntil: this.time + 14.0 + this._rng() * 20.0,
           tradeCooldownUntil: this.time + 18.0 + this._rng() * 20.0,

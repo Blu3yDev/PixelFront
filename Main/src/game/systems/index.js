@@ -4,6 +4,7 @@ export { installResearch } from "./research.js";
 export { installEconomy } from "./economy.js";
 export { installTrading } from "./trading.js";
 export { installStructures } from "./structures.js";
+export { installDivisions } from "./divisions.js";
 export { installWar } from "./war.js";
 export { installNavy } from "./navy.js";
 export { installAirborne } from "./airborne.js";

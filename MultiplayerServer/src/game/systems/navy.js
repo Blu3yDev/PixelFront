@@ -117,7 +117,12 @@ export function installNavy(World) {
               if (completedSourcePort && String(completedSourcePort.type || "") === "port") this._navyCompletePortTrade(completedSourcePort);
               if (A === OWNER.PLAYER && this.time >= this._tradeEventCooldownUntil[A]) {
                 this._tradeEventCooldownUntil[A] = this.time + TRADE_EVENT_COOLDOWN_S;
-                this._pushEvent(`Trade route completed (+${Math.round(reward)} Gold).`);
+                this._pushEvent(`Trade route completed (+${Math.round(reward)} Gold).`, {
+                  kind: "trade_route_success",
+                  from: A,
+                  to: A,
+                  rewardGold: Math.round(reward)
+                });
               }
               removeShipAt(i);
               continue;
@@ -131,7 +136,12 @@ export function installNavy(World) {
 
             if (A === OWNER.PLAYER && this.time >= this._tradeEventCooldownUntil[A]) {
               this._tradeEventCooldownUntil[A] = this.time + TRADE_EVENT_COOLDOWN_S;
-              this._pushEvent(`Trade ship returned (+${Math.round(reward)} Gold).`);
+              this._pushEvent(`Trade ship returned (+${Math.round(reward)} Gold).`, {
+                kind: "trade_route_success",
+                from: A,
+                to: A,
+                rewardGold: Math.round(reward)
+              });
             }
 
             this._navySetTradeSlotCooldown(A, s.portKey, TRADE_SHIP_RESPAWN_S);
@@ -164,7 +174,12 @@ export function installNavy(World) {
 
             if (A === OWNER.PLAYER && this.time >= this._tradeEventCooldownUntil[A]) {
               this._tradeEventCooldownUntil[A] = this.time + TRADE_EVENT_COOLDOWN_S;
-              this._pushEvent(`Trade route completed (+${Math.round(reward)} Gold).`);
+              this._pushEvent(`Trade route completed (+${Math.round(reward)} Gold).`, {
+                kind: "trade_route_success",
+                from: A,
+                to: A,
+                rewardGold: Math.round(reward)
+              });
             }
 
             this._navySetTradeSlotCooldown(A, s.portKey, TRADE_SHIP_RESPAWN_S);

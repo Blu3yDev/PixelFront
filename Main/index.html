@@ -7,6 +7,7 @@
     <meta name="pf-supabase-url" content="%VITE_SUPABASE_URL%" />
     <meta name="pf-supabase-anon-key" content="%VITE_SUPABASE_ANON_KEY%" />
     <meta name="pf-supabase-maps-table" content="%VITE_SUPABASE_MAPS_TABLE%" />
+    <meta name="pf-supabase-feedback-table" content="feedbacks" />
     <meta name="pf-supabase-rpc-increment-downloads" content="%VITE_SUPABASE_RPC_INCREMENT_DOWNLOADS%" />
     <link rel="icon" type="image/png" href="/GameLogo/pflogo.png" />
     <title>PixelFront | Release</title>
@@ -29,6 +30,7 @@
                   <button id="mmMultiplayerBtn" class="mainMenuBtn" type="button" aria-disabled="false">Multiplayer</button>
                   <button id="mmSettingsBtn" class="mainMenuBtn" type="button">Settings</button>
                   <button id="mmMapEditorBtn" class="mainMenuBtn" type="button">Map Editor</button>
+                  <button id="mmFeedbackBtn" class="mainMenuBtn" type="button">Feedback</button>
                 </div>
                 <p id="mmStatusText" class="mainMenuStatus">Select your command.</p>
               </section>
@@ -82,6 +84,13 @@
                         <option value="Large">Large</option>
                         <option value="Super Large">Super Large</option>
                         <option value="Extremely Large">Extremely Large</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmCfgGameMode">
+                      <span>Gamemode</span>
+                      <select id="mmCfgGameMode">
+                        <option value="classic">Classic</option>
+                        <option value="divisions" disabled>Divisions (Temporarily Disabled)</option>
                       </select>
                     </label>
                     <label class="mainMenuField" for="mmCfgMapMode">
@@ -340,6 +349,52 @@
                   </section>
 
                   <div id="mmGuideSections" class="mainMenuGuideSections" aria-label="Game guide sections"></div>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelFeedback" aria-label="Main menu feedback">
+                <div class="mainMenuCard mainMenuFeedbackCard">
+                  <header class="mainMenuCardHeader">
+                    <div>
+                      <div class="mainMenuGuideEyebrow">Open Channel</div>
+                      <h2 class="mainMenuCardTitle">Player Feedback</h2>
+                    </div>
+                    <button id="mmFeedbackBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+
+                  <div class="mainMenuFieldGrid">
+                    <label class="mainMenuField" for="mmFeedbackName">
+                      <span>Name</span>
+                      <input id="mmFeedbackName" type="text" maxlength="32" placeholder="Your display name" spellcheck="false" />
+                    </label>
+                    <label class="mainMenuField" for="mmFeedbackCategory">
+                      <span>Category</span>
+                      <select id="mmFeedbackCategory">
+                        <option value="general">General</option>
+                        <option value="bug">Bug</option>
+                        <option value="balance">Balance</option>
+                        <option value="ui">UI / UX</option>
+                        <option value="idea">Idea</option>
+                        <option value="other">Other</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField isWide" for="mmFeedbackContact">
+                      <span>Contact (Optional)</span>
+                      <input id="mmFeedbackContact" type="text" maxlength="120" placeholder="Discord, email, or handle" spellcheck="false" />
+                    </label>
+                    <label class="mainMenuField isWide" for="mmFeedbackMessage">
+                      <span>Message</span>
+                      <textarea id="mmFeedbackMessage" maxlength="1200" rows="7" placeholder="Share a bug, a balance note, or an idea that would make PixelFront better."></textarea>
+                    </label>
+                  </div>
+
+                  <p class="mainMenuFeedbackHint">Submissions publish to the community board so you can review them later at <strong>/feedbacks</strong>.</p>
+                  <p id="mmFeedbackStatus" class="mainMenuConfigSummary">Write something useful and hit Publish Feedback.</p>
+
+                  <div class="mainMenuCardActions isSplit">
+                    <button id="mmFeedbackSubmitBtn" class="mainMenuBtn isPrimary" type="button">Publish Feedback</button>
+                    <button id="mmFeedbackBoardBtn" class="mainMenuBtn" type="button">Open Feedback Board</button>
+                  </div>
                 </div>
               </section>
             </div>
@@ -728,6 +783,7 @@
             <button id="ctxSendWarship" class="btn" type="button">Send Warship</button>
 
             <button id="ctxDeclareWar" class="btn" type="button">Declare War</button>
+            <button id="ctxBetray" class="btn danger" type="button">Betray</button>
             <button id="ctxMakePeace" class="btn warn" type="button">Ceasefire</button>
             <button id="ctxRequestAlly" class="btn" type="button">Ally</button>
           </div>

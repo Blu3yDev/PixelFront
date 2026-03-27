@@ -64,7 +64,7 @@ export const STRUCT_COST_GROWTH = Object.freeze({
   radar_station: 1.43,
   airbase: 1.45
 });
-export const STRUCT_COST_LINEAR_STEP = 0.28; // +28% base cost per existing structure of same type
+export const STRUCT_COST_LINEAR_STEP = 0.16; // +16% base cost per existing structure of same type
 
 // Structures use a fixed 3x3 footprint for collision and stacking.
 export const STRUCT_FOOTPRINT_R = 1; // radius => 3x3
@@ -89,8 +89,8 @@ export const NUKE_WARHEAD = Object.freeze({
     label: "Atomic Bomb",
     buildGoldCost: 1250000,
     buildTimeS: 28,
-    blastRadiusTiles: 14,
-    neutralizeTileCap: 620,
+    blastRadiusTiles: 28,
+    neutralizeTileCap: 2400,
     // 0 = unlimited (destroy all structures inside blast radius)
     structureDestroyCap: 0,
     launchStabilityPenaltyPct: 1.6,
@@ -102,8 +102,8 @@ export const NUKE_WARHEAD = Object.freeze({
     label: "Hydrogen Bomb",
     buildGoldCost: 6250000,
     buildTimeS: 55,
-    blastRadiusTiles: 30,
-    neutralizeTileCap: 2600,
+    blastRadiusTiles: 70,
+    neutralizeTileCap: 15500,
     // 0 = unlimited (destroy all structures inside blast radius)
     structureDestroyCap: 0,
     launchStabilityPenaltyPct: 4.2,
@@ -543,10 +543,120 @@ export const AI_PERSONAS = Object.freeze([
   }
 ]);
 
+function _aiPersonaClamp(v, lo, hi) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return lo;
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function _aiPersonaHash01(seedRaw) {
+  let seed = (seedRaw >>> 0);
+  seed ^= seed >>> 16;
+  seed = Math.imul(seed, 0x7feb352d);
+  seed ^= seed >>> 15;
+  seed = Math.imul(seed, 0x846ca68b);
+  seed ^= seed >>> 16;
+  return (seed >>> 0) / 4294967295;
+}
+
+function _aiPersonaRand01(idRaw, channelRaw) {
+  const id = (idRaw | 0) >>> 0;
+  const channel = (channelRaw | 0) >>> 0;
+  const seed =
+    (Math.imul((id + 1) ^ 0x9e3779b9, 0x85ebca6b) ^
+    Math.imul((channel + 17), 0xc2b2ae35)) >>> 0;
+  return _aiPersonaHash01(seed);
+}
+
+function _aiPersonaJitter(idRaw, channelRaw, amplitudeRaw) {
+  const amp = Math.max(0, Number(amplitudeRaw) || 0);
+  return (_aiPersonaRand01(idRaw, channelRaw) * 2 - 1) * amp;
+}
+
 export function aiPersonaForNationId(id) {
-  // Deterministic assignment (keeps the game feel consistent).
-  const ix = Math.max(0, (id | 0) - 2) % AI_PERSONAS.length;
-  return AI_PERSONAS[ix];
+  // Deterministic base archetype + deterministic per-nation tuning for more unique AI behavior.
+  const nationId = Math.max(0, id | 0);
+  const ix = Math.max(0, nationId - 2) % AI_PERSONAS.length;
+  const base = AI_PERSONAS[ix] || AI_PERSONAS[0];
+
+  const econRaw = _aiPersonaClamp(Number(base.econ ?? 0.5) + _aiPersonaJitter(nationId, 1, 0.10), 0.08, 0.92);
+  const milRaw = _aiPersonaClamp(Number(base.mil ?? 0.5) + _aiPersonaJitter(nationId, 2, 0.10), 0.08, 0.92);
+  const econMilSum = Math.max(0.00001, econRaw + milRaw);
+  const econ = econRaw / econMilSum;
+  const mil = milRaw / econMilSum;
+
+  const aggression = _aiPersonaClamp(Number(base.aggression ?? 0.25) + _aiPersonaJitter(nationId, 3, 0.11), 0.04, 0.92);
+  const diplomacy = _aiPersonaClamp(Number(base.diplomacy ?? 0.50) + _aiPersonaJitter(nationId, 4, 0.11), 0.05, 0.95);
+  const burstP = _aiPersonaClamp(Number(base.burstP ?? 0.20) + _aiPersonaJitter(nationId, 5, 0.08), 0.04, 0.45);
+  const mobTarget = _aiPersonaClamp(Number(base.mobTarget ?? 0.50) + _aiPersonaJitter(nationId, 6, 0.11), 0.22, 0.90);
+  const attackTarget = _aiPersonaClamp(Number(base.attackTarget ?? 0.34) + _aiPersonaJitter(nationId, 7, 0.12), 0.14, 0.72);
+  const reserveFrac = _aiPersonaClamp(Number(base.reserveFrac ?? 0.24) + _aiPersonaJitter(nationId, 8, 0.06), 0.12, 0.45);
+  const seekPeaceAt = _aiPersonaClamp(Number(base.seekPeaceAt ?? 0.65) + _aiPersonaJitter(nationId, 9, 0.10), 0.36, 0.95);
+  const supportAllyP = _aiPersonaClamp(Number(base.supportAllyP ?? 0.40) + _aiPersonaJitter(nationId, 10, 0.12), 0.08, 0.95);
+  const coalition = _aiPersonaClamp(Number(base.coalition ?? 0.50) + _aiPersonaJitter(nationId, 11, 0.12), 0.05, 0.95);
+  const threatTolerance = _aiPersonaClamp(Number(base.threatTolerance ?? 1.05) + _aiPersonaJitter(nationId, 12, 0.10), 0.75, 1.35);
+  const focusP = _aiPersonaClamp(Number(base.focusP ?? 0.14) + _aiPersonaJitter(nationId, 13, 0.08), 0.04, 0.40);
+
+  const expandTries = Math.max(2, Math.min(8, Math.round((Number(base.expandTries) || 4) + _aiPersonaJitter(nationId, 14, 1.6))));
+  const maxWars = Math.max(1, Math.min(4, Math.round((Number(base.maxWars) || 2) + _aiPersonaJitter(nationId, 15, 0.9))));
+  const warRatioMin = _aiPersonaClamp(Number(base.warRatioMin ?? 1.00) + _aiPersonaJitter(nationId, 16, 0.11), 0.82, 1.40);
+  const warJoinRatioMin = _aiPersonaClamp(Number(base.warJoinRatioMin ?? 0.94) + _aiPersonaJitter(nationId, 17, 0.10), 0.78, 1.20);
+
+  const reserveGoldBase = Math.max(
+    32000,
+    Math.round((Number(base.reserveGoldBase) || 70000) * (1 + _aiPersonaJitter(nationId, 18, 0.16)))
+  );
+  const cityPerLand = Math.max(
+    1200,
+    Math.round((Number(base.cityPerLand) || 2200) * (1 + _aiPersonaJitter(nationId, 19, 0.14)))
+  );
+  const factoryPerLand = Math.max(
+    1500,
+    Math.round((Number(base.factoryPerLand) || 3000) * (1 + _aiPersonaJitter(nationId, 20, 0.14)))
+  );
+  const barracksPerLand = Math.max(
+    1200,
+    Math.round((Number(base.barracksPerLand) || 2100) * (1 + _aiPersonaJitter(nationId, 21, 0.14)))
+  );
+
+  const buildWBase = (base.buildW && typeof base.buildW === "object") ? base.buildW : {};
+  let buildCity = _aiPersonaClamp(Number(buildWBase.city ?? 0.33) + _aiPersonaJitter(nationId, 22, 0.12), 0.05, 0.85);
+  let buildFactory = _aiPersonaClamp(Number(buildWBase.factory ?? 0.33) + _aiPersonaJitter(nationId, 23, 0.12), 0.05, 0.85);
+  let buildBarracks = _aiPersonaClamp(Number(buildWBase.barracks ?? 0.34) + _aiPersonaJitter(nationId, 24, 0.12), 0.05, 0.85);
+  const buildSum = Math.max(0.00001, buildCity + buildFactory + buildBarracks);
+  buildCity /= buildSum;
+  buildFactory /= buildSum;
+  buildBarracks /= buildSum;
+
+  return Object.freeze({
+    ...base,
+    econ,
+    mil,
+    aggression,
+    diplomacy,
+    burstP,
+    mobTarget,
+    attackTarget,
+    reserveGoldBase,
+    reserveFrac,
+    seekPeaceAt,
+    expandTries,
+    cityPerLand,
+    factoryPerLand,
+    barracksPerLand,
+    buildW: Object.freeze({
+      city: buildCity,
+      factory: buildFactory,
+      barracks: buildBarracks
+    }),
+    warRatioMin,
+    warJoinRatioMin,
+    maxWars,
+    supportAllyP,
+    coalition,
+    threatTolerance,
+    focusP
+  });
 }
 
 // Economy (Phase 1 pacing)
@@ -616,9 +726,9 @@ export const WAR_CAPTURE_ATTACK_FLOOR = 190;
 // How strongly attacker-vs-defender committed troop ratio changes capture speed.
 export const WAR_SUPERIORITY_EXP = 0.62;
 export const WAR_SUPERIORITY_MUL_MIN = 0.60;
-export const WAR_SUPERIORITY_MUL_MAX = 2.35;
+export const WAR_SUPERIORITY_MUL_MAX = 2.40;
 // Lower values make frontline pressure convert into flips more aggressively.
-export const WAR_POWER_SATURATION = 0.55;
+export const WAR_POWER_SATURATION = 0.58;
 // Player still gets a tiny passive defence edge in auto-war, but not enough to stall large mismatches.
 export const WAR_PASSIVE_PLAYER_DEFENCE_MUL = 1.05;
 export const WAR_PASSIVE_PLAYER_FLIP_DAMP = 1.03;
@@ -650,8 +760,8 @@ export function attackCommitFromRatio(ratio01) {
 }
 
 // Casualties & war cost (kept moderate so attacks do not instantly drain infantry)
-export const WAR_ENGAGE_TROOPS_PER_CONTACT = 280;  // troops that can meaningfully engage per sampled contact
-export const WAR_FIRE_K = 0.0031;                  // kill rate per engaged troop (scaled by stability)
+export const WAR_ENGAGE_TROOPS_PER_CONTACT = 305;  // troops that can meaningfully engage per sampled contact
+export const WAR_FIRE_K = 0.0033;                  // kill rate per engaged troop (scaled by stability)
 export const WAR_ATTACK_EXPOSE_MUL_MIN = 1.00;     // legacy, unused by simplified attack-ratio model
 export const WAR_ATTACK_EXPOSE_MUL_MAX = 1.00;     // legacy, unused by simplified attack-ratio model
 export const WAR_STABILITY_LOSS_MUL_MIN = 0.95;       // loss multiplier when stable
@@ -686,13 +796,13 @@ export const SPECKLE_MIN_AGE_S = 0.9;
 export const SPECKLE_MAX_CHECKS_PER_PASS = 12000;
 
 // Player ops pacing
-export const OP_CAPTURE_K = 0.162;
+export const OP_CAPTURE_K = 0.172;
 export const OP_MAX_FLIPS_PER_TICK = 72;
 export const OP_CARRY_CAP = 60;
 
 // Burst expand
 export const BURST_DURATION_DEFAULT = 3.5;
-export const BURST_CAPTURE_K = 0.205;
+export const BURST_CAPTURE_K = 0.216;
 export const BURST_MAX_FLIPS_PER_TICK = 96;
 export const BURST_CARRY_CAP = 80;
 export const BURST_EXPAND_INFANTRY_PER_TILE = 0.80;

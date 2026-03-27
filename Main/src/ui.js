@@ -216,6 +216,7 @@ export function createHUD() {
   const ctxTrade = must("ctxTrade");
   const ctxSendWarship = must("ctxSendWarship");
   const ctxDeclareWar = must("ctxDeclareWar");
+  const ctxBetray = must("ctxBetray");
   const ctxMakePeace = must("ctxMakePeace");
   const ctxRequestAlly = must("ctxRequestAlly");
   const ctxHint = must("ctxHint");
@@ -225,13 +226,14 @@ export function createHUD() {
   let intelZ = 70;
   let intelSpawnIndex = 0;
 
-  const INTEL_DEFAULT_W = 420;
-  const INTEL_DEFAULT_H = 460;
+  const INTEL_DEFAULT_W = 384;
+  const INTEL_DEFAULT_H = 400;
   const INTEL_MIN_W = 260;
   const INTEL_MIN_H = 240;
   const INTEL_MAX_W = 720;
   const INTEL_MAX_H = 720;
   const INTEL_MARGIN = 12;
+  const INTEL_ALLIANCE_VISIBLE = 4;
 
   let intelDrag = null;
 
@@ -332,6 +334,7 @@ export function createHUD() {
   let cbCancelOp = null;
   let cbDonate = null;
   let cbDeclareWar = null;
+  let cbBetray = null;
   let cbSendWarship = null;
   let cbAttack = null;
   let cbReinforce = null;
@@ -682,6 +685,13 @@ export function createHUD() {
     const text = String(textRaw || "").trim();
     if (!text) return false;
     const lower = text.toLowerCase();
+    if (
+      lower.includes("trade route successful") ||
+      lower.includes("trade route completed (+") ||
+      lower.includes("trade ship returned (+")
+    ) {
+      return true;
+    }
     const positiveHints = [
       "started.",
       "started ",
@@ -751,6 +761,12 @@ export function createHUD() {
   function showActionWarning(textRaw) {
     const text = String(textRaw || "").trim();
     if (!text) return;
+    const lower = text.toLowerCase();
+    actionWarnKicker.textContent = (
+      lower.includes("trade route successful") ||
+      lower.includes("trade route completed (+") ||
+      lower.includes("trade ship returned (+")
+    ) ? "Trade" : "Warning";
     actionWarnLastText = text;
     actionWarnText.textContent = text;
     if (actionWarnHideTimer) {
@@ -1194,21 +1210,47 @@ export function createHUD() {
     statInf.appendChild(infLabel);
     statInf.appendChild(infVal);
 
+    const statPop = document.createElement("div");
+    statPop.className = "intelStat";
+    const popLabel = document.createElement("div");
+    popLabel.className = "intelLabel";
+    popLabel.textContent = "Population";
+    const popVal = document.createElement("div");
+    popVal.className = "intelValue intelPopulation intelPop";
+    statPop.appendChild(popLabel);
+    statPop.appendChild(popVal);
+
     grid.appendChild(statTerritory);
     grid.appendChild(statGold);
     grid.appendChild(statInf);
+    grid.appendChild(statPop);
     sectionOverview.appendChild(sectionOverviewTitle);
     sectionOverview.appendChild(grid);
 
-    const sectionPop = document.createElement("div");
-    sectionPop.className = "intelSection";
-    const sectionPopTitle = document.createElement("div");
-    sectionPopTitle.className = "intelSectionTitle";
-    sectionPopTitle.textContent = "Population (est.)";
-    const popVal = document.createElement("div");
-    popVal.className = "intelPopulation intelPop";
-    sectionPop.appendChild(sectionPopTitle);
-    sectionPop.appendChild(popVal);
+    const sectionAlliances = document.createElement("div");
+    sectionAlliances.className = "intelSection intelAllianceSection";
+    const sectionAlliancesHeader = document.createElement("div");
+    sectionAlliancesHeader.className = "intelSectionHeader";
+    const sectionAlliancesTitle = document.createElement("div");
+    sectionAlliancesTitle.className = "intelSectionTitle";
+    sectionAlliancesTitle.textContent = "Alliances";
+    const sectionAlliancesActions = document.createElement("div");
+    sectionAlliancesActions.className = "intelAllianceActions";
+    const allianceMoreBtn = document.createElement("button");
+    allianceMoreBtn.type = "button";
+    allianceMoreBtn.className = "btn subtle intelAllianceMore";
+    allianceMoreBtn.hidden = true;
+    sectionAlliancesActions.appendChild(allianceMoreBtn);
+    sectionAlliancesHeader.appendChild(sectionAlliancesTitle);
+    sectionAlliancesHeader.appendChild(sectionAlliancesActions);
+    const allianceFlags = document.createElement("div");
+    allianceFlags.className = "intelAllianceFlags";
+    const allianceEmpty = document.createElement("div");
+    allianceEmpty.className = "intelAllianceEmpty muted";
+    allianceEmpty.textContent = "No active alliances";
+    sectionAlliances.appendChild(sectionAlliancesHeader);
+    sectionAlliances.appendChild(allianceFlags);
+    sectionAlliances.appendChild(allianceEmpty);
 
     const resizeHint = document.createElement("div");
     resizeHint.className = "intelResizeHint";
@@ -1219,13 +1261,13 @@ export function createHUD() {
     resizeHandle.title = "Resize";
 
     panel.appendChild(header);
-    panel.appendChild(sectionStructs);
+    panel.appendChild(sectionAlliances);
     panel.appendChild(sectionOverview);
-    panel.appendChild(sectionPop);
+    panel.appendChild(sectionStructs);
     panel.appendChild(resizeHint);
     panel.appendChild(resizeHandle);
 
-    return {
+    const panelRef = {
       root: panel,
       title,
       meta,
@@ -1233,18 +1275,90 @@ export function createHUD() {
       gold: goldVal,
       inf: infVal,
       pop: popVal,
+      allianceSection: sectionAlliances,
+      allianceFlags,
+      allianceEmpty,
+      allianceMoreBtn,
+      alliancesExpanded: false,
+      alliances: [],
+      allianceItems: new Map(),
       structs,
       structItems: new Map(),
       dataSig: "",
       closeBtn,
       resizeHandle
     };
+
+    allianceMoreBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      panelRef.alliancesExpanded = !panelRef.alliancesExpanded;
+      renderIntelAlliances(panelRef);
+    });
+
+    return panelRef;
+  }
+
+  function renderIntelAlliances(panelRef) {
+    if (!panelRef) return;
+    const alliances = Array.isArray(panelRef.alliances) ? panelRef.alliances : [];
+    const visibleCount = panelRef.alliancesExpanded
+      ? alliances.length
+      : Math.min(INTEL_ALLIANCE_VISIBLE, alliances.length);
+    const hiddenCount = Math.max(0, alliances.length - visibleCount);
+    const visibleKeys = new Set();
+    const frag = document.createDocumentFragment();
+
+    for (let i = 0; i < visibleCount; i++) {
+      const ally = alliances[i];
+      const key = String(ally?.id ?? i);
+      visibleKeys.add(key);
+
+      let itemRef = panelRef.allianceItems.get(key);
+      if (!itemRef) {
+        const item = document.createElement("div");
+        item.className = "intelAllianceFlag";
+        const img = document.createElement("img");
+        img.alt = "";
+        img.loading = "lazy";
+        img.decoding = "async";
+        item.appendChild(img);
+        itemRef = { item, img };
+        panelRef.allianceItems.set(key, itemRef);
+      }
+
+      const label = String(ally?.name || "Ally");
+      itemRef.item.title = label;
+      itemRef.item.setAttribute("aria-label", label);
+      itemRef.img.src = String(ally?.flagSrc || "");
+      frag.appendChild(itemRef.item);
+    }
+
+    for (const [key, itemRef] of panelRef.allianceItems) {
+      if (visibleKeys.has(key)) continue;
+      if (itemRef?.item?.parentNode === panelRef.allianceFlags) panelRef.allianceFlags.removeChild(itemRef.item);
+      panelRef.allianceItems.delete(key);
+    }
+
+    panelRef.allianceFlags.replaceChildren(frag);
+    panelRef.allianceFlags.hidden = alliances.length <= 0;
+    panelRef.allianceEmpty.hidden = alliances.length > 0;
+    panelRef.allianceSection.hidden = false;
+    panelRef.allianceMoreBtn.hidden = alliances.length <= INTEL_ALLIANCE_VISIBLE;
+    if (!panelRef.allianceMoreBtn.hidden) {
+      panelRef.allianceMoreBtn.textContent = panelRef.alliancesExpanded ? "-" : `+${hiddenCount}`;
+      panelRef.allianceMoreBtn.title = panelRef.alliancesExpanded ? "Show fewer alliance flags" : "Show all alliance flags";
+    }
   }
 
   function applyIntelData(panelRef, data) {
     if (!panelRef || !data) return;
     const structs = Array.isArray(data.structures) ? data.structures : [];
-    let sig = `${String(data.name || "Nation Intel")}|${String(data.meta || "")}|${Math.max(0, Math.floor(Number(data.landOwned) || 0))}|${Number.isFinite(Number(data.landPct)) ? Number(data.landPct).toFixed(1) : ""}|${Math.max(0, Math.floor(Number(data.gold) || 0))}|${String(data.populationText || "0")}|${typeof data.infantryText === "string" ? data.infantryText : Math.max(0, Math.floor(Number(data.infantry) || 0))}|${structs.length}|`;
+    const alliances = Array.isArray(data.alliances) ? data.alliances : [];
+    let sig = `${String(data.name || "Nation Intel")}|${String(data.meta || "")}|${Math.max(0, Math.floor(Number(data.landOwned) || 0))}|${Number.isFinite(Number(data.landPct)) ? Number(data.landPct).toFixed(1) : ""}|${Math.max(0, Math.floor(Number(data.gold) || 0))}|${String(data.populationText || "0")}|${typeof data.infantryText === "string" ? data.infantryText : Math.max(0, Math.floor(Number(data.infantry) || 0))}|${alliances.length}|${structs.length}|`;
+    for (let i = 0; i < alliances.length; i++) {
+      const ally = alliances[i];
+      sig += `${String(ally?.id ?? "")}:${String(ally?.flagToken || ally?.flagSrc || "")}|`;
+    }
     for (let i = 0; i < structs.length; i++) {
       const s = structs[i];
       sig += `${String(s?.type || "")}:${String(s?.countText || Math.max(0, Math.floor(Number(s?.count) || 0)))}|`;
@@ -1268,6 +1382,9 @@ export function createHUD() {
     }
 
     panelRef.pop.textContent = String(data.populationText || "0");
+    panelRef.alliances = alliances;
+    if (alliances.length <= INTEL_ALLIANCE_VISIBLE) panelRef.alliancesExpanded = false;
+    renderIntelAlliances(panelRef);
 
     const iconFor = {
       capital: "/Structures/capital.png",
@@ -1453,6 +1570,7 @@ export function createHUD() {
       panelRef.root.addEventListener("pointerdown", (e) => {
         if (e.button !== 0) return;
         bringIntelToFront(panelRef.root);
+        if (e.target.closest("button")) return;
         if (e.target.closest(".intelClose")) return;
         if (e.target.closest(".intelResizeHandle")) return;
         startIntelDrag(panelRef.root, "move", e);
@@ -1493,6 +1611,7 @@ export function createHUD() {
     tradeEnabled,
     tradeLabel,
     showDeclareWar,
+    showBetray,
     showMakePeace,
     showRequestAlly,
     requestLabel,
@@ -1505,6 +1624,7 @@ export function createHUD() {
     onTrade,
     onSendWarship,
     onDeclareWar,
+    onBetray,
     onMakePeace,
     onRequestAlly
   }) {
@@ -1530,6 +1650,8 @@ export function createHUD() {
     ctxSendWarship.disabled = (showSendWarship && sendWarshipEnabled === false);
 
     ctxDeclareWar.hidden = !showDeclareWar;
+    ctxBetray.hidden = !showBetray;
+    ctxBetray.textContent = "Betray";
     ctxMakePeace.hidden = !showMakePeace;
     ctxMakePeace.textContent = "Ceasefire";
     ctxRequestAlly.hidden = !showRequestAlly;
@@ -1541,6 +1663,7 @@ export function createHUD() {
     ctxTrade.onclick = () => { hideCtx(); if (!ctxTrade.disabled) onTrade && onTrade(); };
     ctxSendWarship.onclick = () => { hideCtx(); if (!ctxSendWarship.disabled) onSendWarship && onSendWarship(); };
     ctxDeclareWar.onclick = () => { hideCtx(); onDeclareWar && onDeclareWar(); };
+    ctxBetray.onclick = () => { hideCtx(); onBetray && onBetray(); };
     ctxMakePeace.onclick = () => { hideCtx(); onMakePeace && onMakePeace(); };
     ctxRequestAlly.onclick = () => { hideCtx(); onRequestAlly && onRequestAlly(); };
 
@@ -2028,6 +2151,7 @@ export function createHUD() {
       }
       const actions = Array.isArray(sel?.actions) ? sel.actions : [];
       const portTrade = (sel?.portTrade && typeof sel.portTrade === "object") ? sel.portTrade : null;
+      const divisionTraining = (sel?.divisionTraining && typeof sel.divisionTraining === "object") ? sel.divisionTraining : null;
       if (sel) {
         let sig = `${sel.id ?? 0}|${sel.entityKind || "structure"}|${String(sel.name || "")}|${String(sel.desc || "")}|${String(sel.ownerName || "")}|${String(sel.type || "")}|${sel.level ?? ""}|${String(sel.metaText || "")}|${sel.progress ? `${Math.round(clamp01(Number(sel.progress.progress01) || 0) * 100)}:${String(sel.progress.label || "")}` : "-"}|${actions.length}|`;
         for (let i = 0; i < actions.length; i++) {
@@ -2040,6 +2164,14 @@ export function createHUD() {
           for (let i = 0; i < opts.length; i++) {
             const opt = opts[i];
             sig += `${opt?.nationId ?? 0}:${String(opt?.name || "")}:${opt?.disabled ? 1 : 0}:${opt?.distancePx ?? 0}:${opt?.rewardGold ?? 0}|`;
+          }
+        }
+        if (divisionTraining) {
+          const opts = Array.isArray(divisionTraining.options) ? divisionTraining.options : [];
+          sig += `divisionTraining:${divisionTraining.canQueue ? 1 : 0}:${divisionTraining.maxTrainable ?? 0}:${divisionTraining.queueLength ?? 0}:${String(divisionTraining.reason || "")}:${opts.length}|`;
+          for (let i = 0; i < opts.length; i++) {
+            const opt = opts[i];
+            sig += `${String(opt?.id || "")}:${String(opt?.label || "")}:${opt?.maxTrainable ?? 0}:${opt?.disabled ? 1 : 0}:${opt?.costInfantry ?? 0}:${opt?.trainTimeS ?? 0}|`;
           }
         }
         if (sig === selectedRenderSig) return;
@@ -2175,6 +2307,106 @@ export function createHUD() {
         wrap.appendChild(select);
         wrap.appendChild(info);
         wrap.appendChild(startBtn);
+        selectedCustomPanel.hidden = false;
+        selectedCustomPanel.appendChild(wrap);
+      }
+
+      if (divisionTraining) {
+        const wrap = document.createElement("div");
+        wrap.className = "selectedDivisionTrainControl";
+        const label = document.createElement("div");
+        label.className = "selectedTradeLabel";
+        label.textContent = "Division Training";
+        const select = document.createElement("select");
+        select.className = "selectedTradeSelect";
+        const sliderRow = document.createElement("div");
+        sliderRow.className = "selectedDivisionTrainSliderRow";
+        const slider = document.createElement("input");
+        slider.type = "range";
+        slider.min = "1";
+        slider.max = "1";
+        slider.step = "1";
+        slider.value = "1";
+        slider.className = "selectedDivisionTrainSlider";
+        const sliderValue = document.createElement("output");
+        sliderValue.className = "selectedDivisionTrainValue";
+        const info = document.createElement("div");
+        info.className = "selectedTradeInfo";
+        const queueBtn = document.createElement("button");
+        queueBtn.type = "button";
+        queueBtn.className = "btn";
+        queueBtn.textContent = "Queue Division";
+
+        const options = Array.isArray(divisionTraining.options) ? divisionTraining.options : [];
+        if (!options.length) {
+          const empty = document.createElement("option");
+          empty.value = "";
+          empty.textContent = String(divisionTraining.reason || "No division templates available.");
+          empty.disabled = true;
+          empty.selected = true;
+          select.appendChild(empty);
+        } else {
+          for (const opt of options) {
+            const el = document.createElement("option");
+            el.value = String(opt?.id || "");
+            el.disabled = !!opt?.disabled;
+            const cost = Math.max(0, Number(opt?.costInfantry) || 0);
+            const trainTimeS = Math.max(1, Math.round(Number(opt?.trainTimeS) || 1));
+            el.textContent = `${String(opt?.label || "Division")} (${cost} inf, ${trainTimeS}s)`;
+            select.appendChild(el);
+          }
+          const firstEnabled = options.find((opt) => !opt?.disabled);
+          if (firstEnabled) select.value = String(firstEnabled.id || "");
+        }
+
+        const syncDivisionTrainingUi = () => {
+          const opt = options.find((row) => String(row?.id || "") === String(select.value || "")) || null;
+          const maxTrainable = Math.max(0, Number(opt?.maxTrainable ?? divisionTraining.maxTrainable) || 0);
+          const canQueue = !!(divisionTraining.canQueue && opt && !opt?.disabled && maxTrainable > 0);
+          slider.max = String(Math.max(1, maxTrainable || 1));
+          if ((Number(slider.value) || 1) > Math.max(1, maxTrainable || 1)) slider.value = String(Math.max(1, maxTrainable || 1));
+          slider.disabled = !canQueue;
+          sliderValue.textContent = canQueue ? `${Math.max(1, Number(slider.value) || 1)}` : "0";
+          if (!opt) {
+            info.textContent = String(divisionTraining.reason || "No division template selected.");
+            queueBtn.disabled = true;
+            return;
+          }
+          if (!canQueue) {
+            info.textContent = String(opt?.reason || divisionTraining.reason || "Not enough reserve infantry.");
+            queueBtn.disabled = true;
+            return;
+          }
+          const qty = Math.max(1, Number(slider.value) || 1);
+          const totalCost = qty * Math.max(0, Number(opt?.costInfantry) || 0);
+          const totalTime = qty * Math.max(1, Number(opt?.trainTimeS) || 1);
+          info.textContent = `Reserve infantry: ${Math.max(0, Number(divisionTraining.availableReserve) || 0)} | Queue: ${qty} | Cost: ${totalCost} | Total training: ${totalTime}s`;
+          queueBtn.disabled = false;
+          queueBtn.textContent = qty === 1 ? `Queue ${String(opt?.label || "Division")}` : `Queue ${qty} ${String(opt?.label || "Divisions")}`;
+        };
+
+        select.addEventListener("change", syncDivisionTrainingUi);
+        slider.addEventListener("input", syncDivisionTrainingUi);
+        queueBtn.addEventListener("click", () => {
+          if (queueBtn.disabled) return;
+          const qty = Math.max(1, Number(slider.value) || 1);
+          if (cbSelectedAction) {
+            cbSelectedAction("queue_division_training", {
+              ...sel,
+              divisionType: String(select.value || "infantry"),
+              divisionQuantity: qty
+            });
+          }
+        });
+
+        sliderRow.appendChild(slider);
+        sliderRow.appendChild(sliderValue);
+        syncDivisionTrainingUi();
+        wrap.appendChild(label);
+        wrap.appendChild(select);
+        wrap.appendChild(sliderRow);
+        wrap.appendChild(info);
+        wrap.appendChild(queueBtn);
         selectedCustomPanel.hidden = false;
         selectedCustomPanel.appendChild(wrap);
       }
@@ -2474,6 +2706,7 @@ export function createHUD() {
     },
 
     onDeclareWar: (cb) => (cbDeclareWar = cb),
+    onBetray: (cb) => (cbBetray = cb),
     onSendWarship: (cb) => (cbSendWarship = cb),
     onAttack: (cb) => (cbAttack = cb),
     onReinforce: (cb) => (cbReinforce = cb),
@@ -2513,6 +2746,7 @@ export function createHUD() {
       sendWarshipEnabled,
       sendWarshipLabel,
       showDeclareWar,
+      showBetray,
       showMakePeace,
       showRequestAlly,
       requestLabel
@@ -2536,6 +2770,7 @@ export function createHUD() {
         sendWarshipEnabled,
         sendWarshipLabel,
         showDeclareWar,
+        showBetray,
         showMakePeace,
         showRequestAlly,
         requestLabel,
@@ -2545,6 +2780,7 @@ export function createHUD() {
         onTrade: () => cbTrade && cbTrade(targetId),
         onSendWarship: () => cbSendWarship && cbSendWarship(cellAction || null),
         onDeclareWar: () => cbDeclareWar && cbDeclareWar(targetId),
+        onBetray: () => cbBetray && cbBetray(targetId),
         onMakePeace: () => cbMakePeace && cbMakePeace(targetId),
         onRequestAlly: () => cbRequestAlly && cbRequestAlly(targetId)
       });

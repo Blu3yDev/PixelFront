@@ -1178,15 +1178,15 @@ body {
   left: 16px;
   top: 16px;
   transform: none;
-  width: 420px;
-  height: 460px;
+  width: 384px;
+  height: 400px;
   min-width: 260px;
   min-height: 240px;
   max-width: calc(100vw - 24px);
   max-height: calc(100vh - 24px);
   overflow: auto;
   display: grid;
-  gap: 12px;
+  gap: 10px;
   z-index: 60;
   cursor: grab;
 }
@@ -1221,21 +1221,28 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .intelTitle {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
 }
 
 .intelMeta {
-  margin-top: 2px;
-  font-size: 12px;
+  margin-top: 1px;
+  font-size: 11px;
 }
 
 .intelSection {
   display: grid;
+  gap: 6px;
+}
+
+.intelSectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
 }
 
@@ -1248,44 +1255,85 @@ body {
 
 .intelGrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .intelStat {
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.04);
   border-radius: 10px;
-  padding: 8px;
+  padding: 7px 8px;
 }
 
 .intelLabel {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--muted);
-  letter-spacing: 0.03em;
+  letter-spacing: 0.06em;
 }
 
 .intelValue {
-  margin-top: 2px;
-  font-size: 14px;
+  margin-top: 1px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
+}
+
+.intelAllianceActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.intelAllianceFlags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.intelAllianceFlag {
+  width: 34px;
+  height: 24px;
+  overflow: hidden;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.intelAllianceFlag img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.intelAllianceEmpty {
+  font-size: 11px;
+}
+
+.intelAllianceMore {
+  min-width: 40px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.1;
 }
 
 .intelStructs {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(54px, 1fr));
+  gap: 6px;
 }
 
 .intelStruct {
   display: grid;
-  gap: 4px;
+  gap: 3px;
   align-items: center;
   justify-items: center;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.04);
   border-radius: 10px;
-  padding: 6px;
+  padding: 5px;
 }
 
 .intelStruct.isZero {
@@ -1293,21 +1341,21 @@ body {
 }
 
 .intelStruct img {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   object-fit: contain;
   opacity: 0.95;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
 }
 
 .intelStructCount {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
 .intelPopulation {
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
@@ -4023,6 +4071,30 @@ body {
   gap: 8px;
 }
 
+.selectedDivisionTrainControl {
+  display: grid;
+  gap: 8px;
+}
+
+.selectedDivisionTrainSliderRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.selectedDivisionTrainSlider {
+  width: 100%;
+  accent-color: #f2c319;
+}
+
+.selectedDivisionTrainValue {
+  min-width: 28px;
+  text-align: right;
+  font-size: 12px;
+  color: rgba(244, 222, 165, 0.96);
+}
+
 .selectedTradeLabel {
   font-size: 12px;
   letter-spacing: 0.12em;
@@ -5063,7 +5135,7 @@ body {
 }
 
 #mainMenu {
-  --mm-panel-count: 9;
+  --mm-panel-count: 10;
   --mm-track-shift-panels: 0;
 }
 
@@ -5099,6 +5171,10 @@ body {
   --mm-track-shift-panels: 8;
 }
 
+#mainMenu[data-view="feedback"] {
+  --mm-track-shift-panels: 9;
+}
+
 #mainMenu:not([hidden]) ~ #hud {
   display: none;
 }
@@ -5123,7 +5199,8 @@ body {
 .mainMenuNameInput,
 .mainMenuMiniBtn,
 .mainMenuField input,
-.mainMenuField select {
+.mainMenuField select,
+.mainMenuField textarea {
   font-family: var(--mm-ui-font);
 }
 
@@ -5200,7 +5277,8 @@ body {
 #mainMenu[data-view="home"] .mainMenuPanelMpJoin,
 #mainMenu[data-view="home"] .mainMenuPanelMpLobby,
 #mainMenu[data-view="home"] .mainMenuPanelUpdates,
-#mainMenu[data-view="home"] .mainMenuPanelGuide {
+#mainMenu[data-view="home"] .mainMenuPanelGuide,
+#mainMenu[data-view="home"] .mainMenuPanelFeedback {
   display: none;
 }
 
@@ -5243,6 +5321,10 @@ body {
   animation-delay: 460ms;
 }
 
+.mainMenuPanelHome .mainMenuButtons .mainMenuBtn:nth-child(5) {
+  animation-delay: 540ms;
+}
+
 #mainMenu.isHomeLeaving .mainMenuPanelHome .mainMenuButtons,
 #mainMenu[data-view="settings"] .mainMenuPanelHome .mainMenuButtons,
 #mainMenu[data-view="play"] .mainMenuPanelHome .mainMenuButtons,
@@ -5251,7 +5333,8 @@ body {
 #mainMenu[data-view="mpjoin"] .mainMenuPanelHome .mainMenuButtons,
 #mainMenu[data-view="mplobby"] .mainMenuPanelHome .mainMenuButtons,
 #mainMenu[data-view="updates"] .mainMenuPanelHome .mainMenuButtons,
-#mainMenu[data-view="guide"] .mainMenuPanelHome .mainMenuButtons {
+#mainMenu[data-view="guide"] .mainMenuPanelHome .mainMenuButtons,
+#mainMenu[data-view="feedback"] .mainMenuPanelHome .mainMenuButtons {
   transform: translateX(-26px);
   opacity: 0;
 }
@@ -5357,7 +5440,8 @@ body {
 #mainMenu.isStarting .mainMenuNameInput,
 #mainMenu.isStarting .mainMenuMiniBtn,
 #mainMenu.isStarting .mainMenuField input,
-#mainMenu.isStarting .mainMenuField select {
+#mainMenu.isStarting .mainMenuField select,
+#mainMenu.isStarting .mainMenuField textarea {
   opacity: 0.5;
   pointer-events: none;
 }
@@ -5417,6 +5501,10 @@ body {
   gap: 6px;
 }
 
+.mainMenuField.isWide {
+  grid-column: 1 / -1;
+}
+
 .mainMenuField.isDisabled {
   opacity: 0.56;
 }
@@ -5428,7 +5516,8 @@ body {
 }
 
 .mainMenuField input,
-.mainMenuField select {
+.mainMenuField select,
+.mainMenuField textarea {
   height: 38px;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.32);
@@ -5440,8 +5529,18 @@ body {
 }
 
 .mainMenuField input:focus,
-.mainMenuField select:focus {
+.mainMenuField select:focus,
+.mainMenuField textarea:focus {
   border-color: rgba(255, 255, 255, 0.68);
+}
+
+.mainMenuField textarea {
+  min-height: 160px;
+  height: auto;
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 1.4;
+  font-family: var(--mm-body-font);
 }
 
 .mainMenuToggleGrid {
@@ -5482,8 +5581,18 @@ body {
   justify-items: center;
 }
 
+.mainMenuCardActions.isSplit {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  justify-items: stretch;
+}
+
 .mainMenuCardActions .mainMenuBtn {
   width: min(100%, 360px);
+}
+
+.mainMenuCardActions.isSplit .mainMenuBtn {
+  width: 100%;
 }
 
 .mainMenuPanelMultiplayer .mainMenuButtons {
@@ -5603,6 +5712,10 @@ body {
   min-height: min(74vh, 620px);
 }
 
+.mainMenuPanelFeedback .mainMenuCard {
+  width: min(100%, 680px);
+}
+
 .mainMenuPanelMpLobby .mainMenuLobbyPlayersWrap,
 .mainMenuPanelPlay .mainMenuLobbyPlayersWrap {
   width: min(100%, 420px);
@@ -5669,6 +5782,20 @@ body {
   font-size: 16px;
   line-height: 1.24;
   color: rgba(218, 226, 240, 0.9);
+}
+
+.mainMenuFeedbackHint {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03)),
+    rgba(0, 0, 0, 0.2);
+  font-family: var(--mm-body-font);
+  font-size: 15px;
+  line-height: 1.35;
+  color: rgba(223, 231, 244, 0.9);
 }
 
 .mainMenuUpdateCard {
@@ -8561,6 +8688,10 @@ body {
   }
 
   .mainMenuFieldGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .mainMenuCardActions.isSplit {
     grid-template-columns: 1fr;
   }
 

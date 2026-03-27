@@ -222,6 +222,7 @@ const COMMAND_METHOD = Object.freeze({
   cancel_trade_deal: "cancelTradeDeal",
   donate: "donate",
   declare_war: "declareWar",
+  betray_alliance: "betrayAlliance",
   send_warship: "sendWarship",
   request_ceasefire: "requestCeasefire",
   request_alliance: "requestAlliance",
@@ -254,6 +255,7 @@ const COMMAND_NATION_ARGS = Object.freeze({
   cancel_trade_deal: [1],
   donate: [0, 1],
   declare_war: [0, 1],
+  betray_alliance: [0, 1],
   send_warship: [0],
   request_ceasefire: [0, 1],
   request_alliance: [0, 1],
@@ -286,6 +288,7 @@ const COMMAND_ACTOR_ARG = Object.freeze({
   cancel_trade_deal: 1,
   donate: 0,
   declare_war: 0,
+  betray_alliance: 0,
   send_warship: 0,
   request_ceasefire: 0,
   request_alliance: 0,
@@ -3231,6 +3234,7 @@ function shouldPushPostCommandFullSync(cmdRaw) {
     cmd === "launch_missile_warhead" ||
     cmd === "launch_airbase_transport" ||
     cmd === "declare_war" ||
+    cmd === "betray_alliance" ||
     cmd === "create_trade_deal" ||
     cmd === "request_trade_deal" ||
     cmd === "respond_trade_request" ||

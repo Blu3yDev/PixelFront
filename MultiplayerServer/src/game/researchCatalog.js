@@ -1,7 +1,8 @@
 const HUMAN_START_RESEARCH_POINTS = 42;
 const AI_START_RESEARCH_POINTS = 34;
-const RESEARCH_POINTS_PER_LAB_PER_DAY = 0.9;
+const RESEARCH_POINTS_PER_LAB_PER_DAY = 0.30;
 const RESEARCH_POINTS_PER_CITY_PER_DAY = 0.18;
+const RESEARCH_RP_COST_MULTIPLIER = 3.0;
 
 const BRANCH_META = Object.freeze({
   economy: Object.freeze({
@@ -19,6 +20,10 @@ const BRANCH_META = Object.freeze({
 });
 
 function makeNode(branchId, tier, id, name, summary, effectText, costRp, durationS, requires, bonus) {
+  const baseCostRp = Math.max(0, Number(costRp) || 0);
+  const scaledCostRp = baseCostRp > 0
+    ? Math.max(1, Math.round(baseCostRp * RESEARCH_RP_COST_MULTIPLIER))
+    : 0;
   return Object.freeze({
     branchId: String(branchId || ""),
     tier: Math.max(1, Number(tier) || 1),
@@ -26,7 +31,7 @@ function makeNode(branchId, tier, id, name, summary, effectText, costRp, duratio
     name: String(name || "Research"),
     summary: String(summary || ""),
     effectText: String(effectText || ""),
-    costRp: Math.max(0, Number(costRp) || 0),
+    costRp: scaledCostRp,
     durationS: Math.max(1, Number(durationS) || 1),
     requires: Object.freeze((Array.isArray(requires) ? requires : []).map((value) => String(value || "")).filter(Boolean)),
     bonus: Object.freeze((bonus && typeof bonus === "object") ? { ...bonus } : {})

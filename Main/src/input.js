@@ -65,16 +65,36 @@ export class PaintInput {
     };
   }
 
+  _eventToCanvasPoint(e) {
+    if (!e || !this.canvas) return null;
+
+    const rect = this.canvas.getBoundingClientRect?.();
+    const clientX = Number(e.clientX);
+    const clientY = Number(e.clientY);
+
+    if (rect && rect.width > 0 && rect.height > 0 && Number.isFinite(clientX) && Number.isFinite(clientY)) {
+      return {
+        x: clientX - rect.left,
+        y: clientY - rect.top
+      };
+    }
+
+    const offsetX = Number(e.offsetX);
+    const offsetY = Number(e.offsetY);
+    return {
+      x: Number.isFinite(offsetX) ? offsetX : 0,
+      y: Number.isFinite(offsetY) ? offsetY : 0
+    };
+  }
+
   consumeWheelResize(e) {
     if (!e) return false;
     // Keep wheel-to-zoom as default; only consume wheel while actively drawing intent.
     if (!this._down && !this._painting) return false;
     if (!this._viewport || !this._screenToWorldCell) return false;
 
-    const dpr = this._viewport.dpr || 1;
-    const px = e.offsetX * dpr;
-    const py = e.offsetY * dpr;
-    const cell = this._screenToWorldCell(px, py) || this._lastCell || (this._down ? this._down.cell : null);
+    const point = this._eventToCanvasPoint(e);
+    const cell = this._screenToWorldCell(point?.x, point?.y) || this._lastCell || (this._down ? this._down.cell : null);
     if (!cell) return false;
 
     const step = e.deltaY < 0 ? 1 : -1;
@@ -105,14 +125,11 @@ export class PaintInput {
     if (e.button !== 0) return;
     if (!this._viewport || !this._screenToWorldCell || !this._worldCellToScreenCenter) return;
 
-    const dpr = this._viewport.dpr || 1;
-    const px = e.offsetX * dpr;
-    const py = e.offsetY * dpr;
-
-    const cell = this._screenToWorldCell(px, py);
+    const point = this._eventToCanvasPoint(e);
+    const cell = this._screenToWorldCell(point?.x, point?.y);
     if (!cell) return;
 
-    this._down = { id: e.pointerId, px, py, cell };
+    this._down = { id: e.pointerId, x: point.x, y: point.y, cell };
     this._painting = false;
     this._painted.clear();
     this._lastCell = cell;
@@ -120,18 +137,17 @@ export class PaintInput {
     const s0 = this._worldCellToScreenCenter(cell.x, cell.y);
     this._rubber = { x0: s0.x, y0: s0.y, x1: s0.x, y1: s0.y, active: true };
 
-    this.canvas.setPointerCapture(e.pointerId);
+    try {
+      this.canvas.setPointerCapture?.(e.pointerId);
+    } catch {}
   }
 
   _onMove(e) {
     if (!this._down || e.pointerId !== this._down.id) return;
     if (!this._viewport || !this._screenToWorldCell || !this._worldCellToScreenCenter) return;
 
-    const dpr = this._viewport.dpr || 1;
-    const px = e.offsetX * dpr;
-    const py = e.offsetY * dpr;
-
-    const cell = this._screenToWorldCell(px, py);
+    const point = this._eventToCanvasPoint(e);
+    const cell = this._screenToWorldCell(point?.x, point?.y);
     if (!cell) return;
 
     if (this._rubber) {
@@ -141,8 +157,8 @@ export class PaintInput {
       this._rubber.active = true;
     }
 
-    const dx = px - this._down.px;
-    const dy = py - this._down.py;
+    const dx = point.x - this._down.x;
+    const dy = point.y - this._down.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
 
     if (!this._painting && dist >= this._dragThresholdPx) {
@@ -163,6 +179,10 @@ export class PaintInput {
   _onUp(e) {
     if (!this._down || e.pointerId !== this._down.id) return;
 
+    try {
+      this.canvas.releasePointerCapture?.(e.pointerId);
+    } catch {}
+
     const down = this._down;
     this._down = null;
 
@@ -170,10 +190,8 @@ export class PaintInput {
       // Use release position for click accuracy (fallback to press cell if unavailable).
       let clickCell = down.cell;
       if (this._viewport && this._screenToWorldCell) {
-        const dpr = this._viewport.dpr || 1;
-        const upPx = e.offsetX * dpr;
-        const upPy = e.offsetY * dpr;
-        const upCell = this._screenToWorldCell(upPx, upPy);
+        const point = this._eventToCanvasPoint(e);
+        const upCell = this._screenToWorldCell(point?.x, point?.y);
         if (upCell) clickCell = upCell;
       }
       if (this._onClick) this._onClick(clickCell);

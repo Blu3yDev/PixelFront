@@ -1,0 +1,1469 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="pf-multiplayer-api-url" content="%VITE_MULTIPLAYER_API_URL%" />
+    <meta name="pf-supabase-url" content="https://zphpshadygtjjjwlemkz.supabase.co" />
+    <meta name="pf-supabase-anon-key" content="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpwaHBzaGFkeWd0ampqd2xlbWt6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxMjg2OTMsImV4cCI6MjA4NzcwNDY5M30.2nJwEx75asMoIAtwKJ_GPAYVpWUgt_bzfeABDrtSFus" />
+    <meta name="pf-supabase-maps-table" content="public_maps" />
+    <meta name="pf-supabase-feedback-table" content="feedbacks" />
+    <meta name="pf-supabase-rpc-increment-downloads" content="increment_map_downloads" />
+    <link rel="icon" type="image/png" href="/GameLogo/pflogo.png" />
+    <title>PixelFront | Release</title>
+    <script type="module" crossorigin src="/assets/index-mTtkdPNg.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/feedbackApi-DQQn-TYh.js">
+    <link rel="stylesheet" crossorigin href="/assets/feedbackApi-BGLM-5Jx.css">
+  </head>
+
+  <body>
+    <div id="app">
+      <canvas id="game" aria-label="Game canvas"></canvas>
+      <main id="mainMenu" class="mainMenuOverlay ui-interactive" aria-label="Main menu" data-view="home">
+        <section class="mainMenuCenter" aria-label="Main menu actions">
+          <h1 class="mainMenuTitle">PixelFront</h1>
+          <p class="mainMenuVersion"> PRE-RELEASE | v1.7</p>
+
+          <div class="mainMenuDeck" aria-live="polite">
+            <div class="mainMenuTrack">
+              <section class="mainMenuPanel mainMenuPanelHome" aria-label="Main menu home">
+                <div class="mainMenuButtons">
+                  <button id="mmPlayBtn" class="mainMenuBtn" type="button">Play</button>
+                  <button id="mmMultiplayerBtn" class="mainMenuBtn" type="button" aria-disabled="false">Multiplayer</button>
+                  <button id="mmSettingsBtn" class="mainMenuBtn" type="button">Settings</button>
+                  <button id="mmMapEditorBtn" class="mainMenuBtn" type="button">Map Editor</button>
+                  <button id="mmFeedbackBtn" class="mainMenuBtn" type="button">Feedback</button>
+                </div>
+                <p id="mmStatusText" class="mainMenuStatus">Select your command.</p>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelSettings" aria-label="Main menu settings">
+                <div class="mainMenuCard">
+                  <header class="mainMenuCardHeader">
+                    <h2 class="mainMenuCardTitle">Client Settings</h2>
+                    <button id="mmSettingsBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+
+                  <div class="mainMenuToggleGrid">
+                    <label class="mainMenuToggleRow" for="mmSetShowAIStructures"><span>Show Other AI Structures</span><input id="mmSetShowAIStructures" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetShowAIFlags"><span>Show AI Flags</span><input id="mmSetShowAIFlags" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetShowNationLabels"><span>Show Nation Labels</span><input id="mmSetShowNationLabels" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetShowShips"><span>Show Ships and Routes</span><input id="mmSetShowShips" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetHighlightNation"><span>Highlight Nation</span><input id="mmSetHighlightNation" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetShowHatchOverlay"><span>Show Active Battle Hatch</span><input id="mmSetShowHatchOverlay" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetShowHeatmap"><span>Show Tile Pressure Heatmap</span><input id="mmSetShowHeatmap" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetNukeDestinationOverlay"><span>Nuke Destination Overlay</span><input id="mmSetNukeDestinationOverlay" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetPoliticalMapMode"><span>Political Map Mode</span><input id="mmSetPoliticalMapMode" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetDisableAtmosphere"><span>Disable Weather and Day/Night</span><input id="mmSetDisableAtmosphere" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetReduceMotion"><span>Reduce Camera Motion</span><input id="mmSetReduceMotion" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetFullscreen"><span>Fullscreen</span><input id="mmSetFullscreen" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetMenuMusicVolume"><span>Menu Music Volume (<output id="mmSetMenuMusicVolumeValue">12%</output>)</span><input id="mmSetMenuMusicVolume" type="range" min="0" max="100" step="1" value="12" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetWarMusicVolume"><span>War Music Volume (<output id="mmSetWarMusicVolumeValue">9%</output>)</span><input id="mmSetWarMusicVolume" type="range" min="0" max="100" step="1" value="9" /></label>
+                  </div>
+
+                  <div class="mainMenuCardActions">
+                    <button id="mmSettingsDoneBtn" class="mainMenuBtn" type="button">Done</button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelPlay" aria-label="Main menu match config">
+                <div class="mainMenuCard">
+                  <header class="mainMenuCardHeader">
+                    <h2 class="mainMenuCardTitle">Match Configuration</h2>
+                    <button id="mmConfigBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+
+                  <div class="mainMenuFieldGrid">
+                    <label class="mainMenuField" for="mmCfgAiCount">
+                      <span>Bots (blank = preset)</span>
+                      <input id="mmCfgAiCount" type="number" min="1" max="400" step="1" />
+                    </label>
+                    <label class="mainMenuField" for="mmCfgSizePreset">
+                      <span>Map Size Preset</span>
+                      <select id="mmCfgSizePreset">
+                        <option value="Small">Small</option>
+                        <option value="Large">Large</option>
+                        <option value="Super Large">Super Large</option>
+                        <option value="Extremely Large">Extremely Large</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmCfgMapMode">
+                      <span>Map Source</span>
+                      <select id="mmCfgMapMode">
+                        <option value="political_earth">Political Earth Map</option>
+                        <option value="earth">Earth Map</option>
+                        <option value="custom">Saved Custom Map</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmCfgCustomMap">
+                      <span>Custom Map</span>
+                      <select id="mmCfgCustomMap">
+                        <option value="">No saved maps</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmCfgDifficulty">
+                      <span>Difficulty</span>
+                      <select id="mmCfgDifficulty">
+                        <option value="easy">Easy</option>
+                        <option value="normal">Normal</option>
+                        <option value="hard">Hard</option>
+                        <option value="brutal">Brutal</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmCfgFogOfWar">
+                      <span>Fog of War</span>
+                      <select id="mmCfgFogOfWar">
+                        <option value="simple">Simple FOW</option>
+                        <option value="advanced">Advanced FOW</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmCfgPlayerGoldBoost">
+                      <span>Player Gold Boost</span>
+                      <select id="mmCfgPlayerGoldBoost">
+                        <option value="1">1x</option>
+                        <option value="2">2x</option>
+                        <option value="5">5x</option>
+                        <option value="10">10x</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmCfgPlayerTroopsBoost">
+                      <span>Player Troop Boost</span>
+                      <select id="mmCfgPlayerTroopsBoost">
+                        <option value="1">1x</option>
+                        <option value="2">2x</option>
+                        <option value="5">5x</option>
+                        <option value="10">10x</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div class="mainMenuToggleGrid isCompact">
+                    <label class="mainMenuToggleRow" for="mmCfgInfiniteResources"><span>Infinite Resources</span><input id="mmCfgInfiniteResources" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmCfgInfiniteGold"><span>Infinite Gold</span><input id="mmCfgInfiniteGold" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmCfgInfiniteTroops"><span>Infinite Troops</span><input id="mmCfgInfiniteTroops" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmCfgDisableMissileSilo"><span>Disable Missile Silos</span><input id="mmCfgDisableMissileSilo" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmCfgDisableAbmLauncher"><span>Disable ABM Launchers</span><input id="mmCfgDisableAbmLauncher" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmCfgDisableDefencePost"><span>Disable Defence Posts</span><input id="mmCfgDisableDefencePost" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmCfgDisableAirbase"><span>Remove Airbase</span><input id="mmCfgDisableAirbase" type="checkbox" /></label>
+                  </div>
+
+                  <p id="mmConfigSummary" class="mainMenuConfigSummary"></p>
+
+                  <section id="mmPlayLobbyCard" class="mainMenuCard mainMenuLobbyCard" hidden aria-label="Multiplayer lobby">
+                    <header class="mainMenuCardHeader">
+                      <h3 class="mainMenuCardTitle">Lobby</h3>
+                    </header>
+                    <p class="mainMenuLobbyCode">Code: <strong id="mmPlayLobbyCode">------</strong></p>
+                    <div class="mainMenuLobbyPlayersWrap">
+                      <div class="mainMenuLobbyPlayersTitle">Players</div>
+                      <ul id="mmPlayLobbyPlayers" class="mainMenuLobbyPlayers"></ul>
+                    </div>
+                    <div class="mainMenuLobbyMeta" aria-label="Lobby details">
+                      <div class="mainMenuLobbyMetaItem">
+                        <span>Role</span>
+                        <strong id="mmPlayLobbyRole">Host</strong>
+                      </div>
+                      <div class="mainMenuLobbyMetaItem">
+                        <span>Network</span>
+                        <strong id="mmPlayLobbyNetwork">Realtime reconnecting</strong>
+                      </div>
+                      <div class="mainMenuLobbyMetaItem">
+                        <span>World</span>
+                        <strong id="mmPlayLobbyWorld">Waiting for lobby spec</strong>
+                      </div>
+                      <div class="mainMenuLobbyMetaItem">
+                        <span>Players</span>
+                        <strong id="mmPlayLobbyCount">0 joined</strong>
+                      </div>
+                    </div>
+                  </section>
+
+                  <div class="mainMenuCardActions">
+                    <button id="mmStartBtn" class="mainMenuBtn isPrimary" type="button">Start</button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelMapEditor" aria-label="Main menu map editor setup">
+                <div class="mainMenuCard">
+                  <header class="mainMenuCardHeader">
+                    <h2 class="mainMenuCardTitle">Map Editor</h2>
+                    <button id="mmMapEditorBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+
+                  <div class="mainMenuFieldGrid">
+                    <label class="mainMenuField" for="mmMapEditorSizePreset">
+                      <span>New Map Size</span>
+                      <select id="mmMapEditorSizePreset">
+                        <option value="Small">Small</option>
+                        <option value="Large">Large</option>
+                        <option value="Super Large">Super Large</option>
+                        <option value="Extremely Large">Extremely Large</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField" for="mmMapEditorNameInput">
+                      <span>Map Name</span>
+                      <input id="mmMapEditorNameInput" type="text" maxlength="32" spellcheck="false" placeholder="My Custom World" />
+                    </label>
+                    <label class="mainMenuField" for="mmMapEditorSavedSelect">
+                      <span>Saved Maps</span>
+                      <select id="mmMapEditorSavedSelect">
+                        <option value="">No saved maps</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <p id="mmMapEditorSummary" class="mainMenuConfigSummary">Create a new map or edit an existing one.</p>
+
+                  <div class="mainMenuMapEditorActions">
+                    <button id="mmMapEditorNewBtn" class="mainMenuBtn" type="button">New Map</button>
+                    <button id="mmMapEditorLoadBtn" class="mainMenuBtn" type="button">Edit Selected</button>
+                    <button id="mmMapEditorDeleteBtn" class="mainMenuBtn" type="button">Delete Selected</button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelMultiplayer" aria-label="Main menu multiplayer">
+                <div class="mainMenuCard">
+                  <header class="mainMenuCardHeader">
+                    <h2 class="mainMenuCardTitle">Multiplayer</h2>
+                    <button id="mmMultiplayerBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+                  <div class="mainMenuMpHero">
+                    <div class="mainMenuMpBadgeRow">
+                      <span id="mmMultiplayerHealthBadge" class="mainMenuMpBadge" data-state="idle">Service Unchecked</span>
+                      <span id="mmMultiplayerRuntimeBadge" class="mainMenuMpBadge isSecondary" data-state="idle">Authoritative Runtime</span>
+                    </div>
+                    <p class="mainMenuMpLead">
+                      Private code lobbies backed by authoritative sync so diplomacy, structures, fleets, nukes, and trade stay aligned with solo.
+                    </p>
+                    <div class="mainMenuMpFeatureGrid" aria-label="Multiplayer features">
+                      <div class="mainMenuMpFeature">Authoritative world state</div>
+                      <div class="mainMenuMpFeature">Private lobby codes</div>
+                      <div class="mainMenuMpFeature">Solo ruleset parity</div>
+                      <div class="mainMenuMpFeature">Reconnect-aware lobby sync</div>
+                    </div>
+                  </div>
+                  <div class="mainMenuButtons">
+                    <button id="mmCreateLobbyBtn" class="mainMenuBtn" type="button">Create</button>
+                    <button id="mmJoinLobbyBtn" class="mainMenuBtn" type="button">Join</button>
+                  </div>
+                  <p id="mmMultiplayerStatus" class="mainMenuConfigSummary">Create or join a private lobby.</p>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelMpJoin" aria-label="Main menu multiplayer join">
+                <div class="mainMenuCard">
+                  <header class="mainMenuCardHeader">
+                    <h2 class="mainMenuCardTitle">Join Lobby</h2>
+                    <button id="mmJoinBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+                  <div class="mainMenuFieldGrid">
+                    <label class="mainMenuField" for="mmJoinCodeInput">
+                      <span>Lobby Code</span>
+                      <input id="mmJoinCodeInput" type="text" maxlength="8" spellcheck="false" placeholder="Enter code" />
+                    </label>
+                  </div>
+                  <div class="mainMenuCardActions">
+                    <button id="mmJoinCodeBtn" class="mainMenuBtn isPrimary" type="button">Join Lobby</button>
+                  </div>
+                  <div class="mainMenuMpJoinHint">Use the private code from your host. Codes are 4-8 letters or numbers.</div>
+                  <p id="mmJoinStatus" class="mainMenuConfigSummary">Enter a code to join your friend lobby.</p>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelMpLobby" aria-label="Main menu multiplayer lobby">
+                <div class="mainMenuCard">
+                  <header class="mainMenuCardHeader">
+                    <h2 id="mmMpLobbyTitle" class="mainMenuCardTitle">Lobby</h2>
+                    <button id="mmMpLobbyBackBtn" class="mainMenuMiniBtn" type="button">Leave</button>
+                  </header>
+                  <p class="mainMenuLobbyCode">Code: <strong id="mmMpLobbyCode">------</strong></p>
+                  <div class="mainMenuLobbyPlayersWrap">
+                    <div class="mainMenuLobbyPlayersTitle">Players</div>
+                    <ul id="mmMpLobbyPlayers" class="mainMenuLobbyPlayers"></ul>
+                  </div>
+                  <div class="mainMenuLobbyMeta" aria-label="Lobby details">
+                    <div class="mainMenuLobbyMetaItem">
+                      <span>Role</span>
+                      <strong id="mmMpLobbyRole">Guest</strong>
+                    </div>
+                    <div class="mainMenuLobbyMetaItem">
+                      <span>Network</span>
+                      <strong id="mmMpLobbyNetwork">Realtime reconnecting</strong>
+                    </div>
+                    <div class="mainMenuLobbyMetaItem">
+                      <span>World</span>
+                      <strong id="mmMpLobbyWorld">Waiting for host setup</strong>
+                    </div>
+                    <div class="mainMenuLobbyMetaItem">
+                      <span>Players</span>
+                      <strong id="mmMpLobbyCount">0 joined</strong>
+                    </div>
+                  </div>
+                  <p id="mmMpLobbyStatus" class="mainMenuConfigSummary">Waiting for host to start.</p>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelUpdates" aria-label="Main menu update log">
+                <div class="mainMenuCard mainMenuUpdateCard">
+                  <header class="mainMenuCardHeader">
+                    <div>
+                      <div id="mmUpdatesEyebrow" class="mainMenuUpdateEyebrow">Command Bulletin</div>
+                      <h2 id="mmUpdatesTitle" class="mainMenuCardTitle">Update Log</h2>
+                    </div>
+                    <button id="mmUpdatesBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+
+                  <section class="mainMenuUpdateHero" aria-label="Latest update">
+                    <span id="mmUpdatesHeroBadge" class="mainMenuUpdateBadge">Pre-Release</span>
+                    <h3 id="mmUpdatesHeroTitle" class="mainMenuUpdateHeroTitle">v1.7 Headline Placeholder</h3>
+                    <p id="mmUpdatesHeroCopy" class="mainMenuUpdateHeroCopy">Replace this short summary with the main thing players should know about the current build.</p>
+                  </section>
+
+                  <div id="mmUpdatesTimeline" class="mainMenuUpdateTimeline" aria-label="Update log entries"></div>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelGuide" aria-label="Main menu guide">
+                <div class="mainMenuCard mainMenuGuideCard">
+                  <header class="mainMenuCardHeader">
+                    <div>
+                      <div id="mmGuideEyebrow" class="mainMenuGuideEyebrow">Field Manual</div>
+                      <h2 id="mmGuideTitle" class="mainMenuCardTitle">Game Guide</h2>
+                    </div>
+                    <button id="mmGuideBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+
+                  <section class="mainMenuGuideHero" aria-label="Guide overview">
+                    <span id="mmGuideHeroBadge" class="mainMenuGuideBadge">Start Here</span>
+                    <h3 id="mmGuideHeroTitle" class="mainMenuGuideHeroTitle">How PixelFront Works</h3>
+                    <p id="mmGuideHeroCopy" class="mainMenuGuideHeroCopy">Open any section below and read only what you need.</p>
+                    <div id="mmGuideHighlights" class="mainMenuGuideHighlights" aria-label="Guide highlights"></div>
+                  </section>
+
+                  <div id="mmGuideSections" class="mainMenuGuideSections" aria-label="Game guide sections"></div>
+                </div>
+              </section>
+
+              <section class="mainMenuPanel mainMenuPanelFeedback" aria-label="Main menu feedback">
+                <div class="mainMenuCard mainMenuFeedbackCard">
+                  <header class="mainMenuCardHeader">
+                    <div>
+                      <div class="mainMenuGuideEyebrow">Open Channel</div>
+                      <h2 class="mainMenuCardTitle">Player Feedback</h2>
+                    </div>
+                    <button id="mmFeedbackBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
+                  </header>
+
+                  <div class="mainMenuFieldGrid">
+                    <label class="mainMenuField" for="mmFeedbackName">
+                      <span>Name</span>
+                      <input id="mmFeedbackName" type="text" maxlength="32" placeholder="Your display name" spellcheck="false" />
+                    </label>
+                    <label class="mainMenuField" for="mmFeedbackCategory">
+                      <span>Category</span>
+                      <select id="mmFeedbackCategory">
+                        <option value="general">General</option>
+                        <option value="bug">Bug</option>
+                        <option value="balance">Balance</option>
+                        <option value="ui">UI / UX</option>
+                        <option value="idea">Idea</option>
+                        <option value="other">Other</option>
+                      </select>
+                    </label>
+                    <label class="mainMenuField isWide" for="mmFeedbackContact">
+                      <span>Contact (Optional)</span>
+                      <input id="mmFeedbackContact" type="text" maxlength="120" placeholder="Discord, email, or handle" spellcheck="false" />
+                    </label>
+                    <label class="mainMenuField isWide" for="mmFeedbackMessage">
+                      <span>Message</span>
+                      <textarea id="mmFeedbackMessage" maxlength="1200" rows="7" placeholder="Share a bug, a balance note, or an idea that would make PixelFront better."></textarea>
+                    </label>
+                  </div>
+
+                  <p class="mainMenuFeedbackHint">Submissions publish to the community board so you can review them later at <strong>/feedbacks</strong>.</p>
+                  <p id="mmFeedbackStatus" class="mainMenuConfigSummary">Write something useful and hit Publish Feedback.</p>
+
+                  <div class="mainMenuCardActions isSplit">
+                    <button id="mmFeedbackSubmitBtn" class="mainMenuBtn isPrimary" type="button">Publish Feedback</button>
+                    <button id="mmFeedbackBoardBtn" class="mainMenuBtn" type="button">Open Feedback Board</button>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <div class="mainMenuFooter" aria-label="Main menu footer controls">
+          <canvas id="mmPlayerFlagPreview" class="mainMenuFlagPreview" width="56" height="56" aria-label="Country color preview"></canvas>
+          <input
+            id="mmNameInput"
+            class="mainMenuNameInput"
+            type="text"
+            value="Name"
+            aria-label="Player name"
+            maxlength="20"
+            spellcheck="false"
+          />
+
+          <div class="mainMenuQuickButtons" aria-label="Quick menu buttons">
+            <button id="mmLibraryBtn" class="mainMenuQuickBtn" type="button" aria-label="Map Library">
+              <img class="mainMenuQuickBtnIcon" src="/UI_Icons/Main-Menu/MapLibrary.png" alt="" aria-hidden="true" draggable="false" />
+            </button>
+            <button id="mmFlagBtn" class="mainMenuQuickBtn" type="button" aria-label="Country Color">
+              <img class="mainMenuQuickBtnIcon" src="/UI_Icons/Main-Menu/CountryColor.png" alt="" aria-hidden="true" draggable="false" />
+            </button>
+            <button id="mmUpdateLogBtn" class="mainMenuQuickBtn" type="button" aria-label="Update Log">
+              <img class="mainMenuQuickBtnIcon" src="/UI_Icons/Main-Menu/UpdateLog.png" alt="" aria-hidden="true" draggable="false" />
+            </button>
+            <button id="mmBookBtn" class="mainMenuQuickBtn" type="button" aria-label="Guide">
+              <img class="mainMenuQuickBtnIcon" src="/UI_Icons/Main-Menu/GuideBook.png" alt="" aria-hidden="true" draggable="false" />
+            </button>
+          </div>
+          <input
+            id="mmCountryColorInput"
+            type="color"
+            value="#4fa7f6"
+            aria-label="Country color picker"
+            style="position:fixed;left:14px;bottom:14px;width:2px;height:2px;opacity:0.001;pointer-events:auto;z-index:2147483647;"
+          />
+        </div>
+      </main>
+      <div id="mainMenuLoading" class="mainMenuLoading" hidden aria-hidden="true">
+        <div class="mainMenuLoadingFrame">
+          <div id="mainMenuLoadingLabel" class="mainMenuLoadingLabel">Loading...</div>
+          <div class="mainMenuLoadingBar">
+            <div id="mainMenuLoadingFill" class="mainMenuLoadingFill"></div>
+          </div>
+        </div>
+      </div>
+      <div id="mmMapLibraryModal" class="mainMenuMapLibraryModal" hidden aria-hidden="true">
+        <div id="mmMapLibraryBackdrop" class="mainMenuMapLibraryBackdrop"></div>
+        <section class="mainMenuMapLibraryPanel" aria-label="Public map library">
+          <header class="mainMenuMapLibraryHeader mainMenuCardHeader">
+            <div>
+              <h2 class="mainMenuMapLibraryTitle mainMenuCardTitle">Map Library</h2>
+              <p id="mmMapLibraryStatus" class="mainMenuMapLibrarySub mainMenuConfigSummary">Browse public maps, download locally, or publish your own.</p>
+            </div>
+            <button id="mmMapLibraryCloseBtn" class="mainMenuMiniBtn" type="button">Close</button>
+          </header>
+
+          <div class="mainMenuMapLibraryBody">
+            <section class="mainMenuMapLibraryColumn" aria-label="Publish map">
+              <div class="mainMenuMapLibraryGroup">
+                <div class="mainMenuMapLibraryGroupTitle">Publish</div>
+                <label class="mainMenuMapLibraryField" for="mmMapLibraryPublishMapSelect">
+                  <span>Local Map</span>
+                  <select id="mmMapLibraryPublishMapSelect">
+                    <option value="">No local maps</option>
+                  </select>
+                </label>
+                <label class="mainMenuMapLibraryField" for="mmMapLibraryPublishName">
+                  <span>Public Name</span>
+                  <input id="mmMapLibraryPublishName" type="text" maxlength="48" placeholder="Map name in library" />
+                </label>
+                <label class="mainMenuMapLibraryField" for="mmMapLibraryPublishAuthor">
+                  <span>Author</span>
+                  <input id="mmMapLibraryPublishAuthor" type="text" maxlength="32" placeholder="Your name" />
+                </label>
+                <label class="mainMenuMapLibraryField" for="mmMapLibraryPublishDesc">
+                  <span>Description</span>
+                  <textarea id="mmMapLibraryPublishDesc" maxlength="360" rows="5" placeholder="Short description"></textarea>
+                </label>
+                <button id="mmMapLibraryPublishBtn" class="mainMenuBtn isPrimary" type="button">Publish To Public Library</button>
+              </div>
+            </section>
+
+            <section class="mainMenuMapLibraryColumn isWide" aria-label="Browse maps">
+              <div class="mainMenuMapLibraryGroup">
+                <div class="mainMenuMapLibraryToolbar">
+                  <label class="mainMenuMapLibraryField" for="mmMapLibrarySearchInput">
+                    <span>Search</span>
+                    <input id="mmMapLibrarySearchInput" type="text" maxlength="48" placeholder="Find maps by name" />
+                  </label>
+                  <button id="mmMapLibraryRefreshBtn" class="mainMenuMiniBtn" type="button">Refresh</button>
+                </div>
+                <div id="mmMapLibraryList" class="mainMenuMapLibraryList"></div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+      <div id="mmMapEditorModal" class="mainMenuMapEditorModal" hidden aria-hidden="true">
+        <div id="mmMapEditorBackdrop" class="mainMenuMapEditorBackdrop"></div>
+        <section class="mainMenuMapEditorPanel" aria-label="Advanced map editor">
+          <header class="mainMenuMapEditorHeader mainMenuCardHeader">
+            <div class="mainMenuMapEditorHeaderCopy">
+              <h2 class="mainMenuMapEditorTitle mainMenuCardTitle">Advanced Map Editor</h2>
+              <p class="mainMenuMapEditorSub">Paint biomes with a resizable brush. Save maps locally and use them in match config.</p>
+            </div>
+            <div class="mainMenuMapEditorHeaderControls">
+              <label class="mainMenuMapEditorNameWrap" for="mmMapEditorActiveName">
+                <span>Name</span>
+                <input id="mmMapEditorActiveName" type="text" maxlength="32" spellcheck="false" />
+              </label>
+              <button id="mmMapEditorCloseBtn" class="mainMenuMiniBtn" type="button">Close</button>
+            </div>
+          </header>
+
+          <div class="mainMenuMapEditorBody">
+            <aside class="mainMenuMapEditorTools" aria-label="Map tools">
+              <div class="mainMenuMapEditorGroup">
+                <div class="mainMenuMapEditorGroupTitle">Tools</div>
+                <div class="mainMenuMapEditorToolRow">
+                  <button id="mmMapEditorToolBrush" class="mainMenuMiniBtn isActive" type="button">Brush</button>
+                  <button id="mmMapEditorToolErase" class="mainMenuMiniBtn" type="button">Erase</button>
+                </div>
+                <label class="mainMenuMapEditorRange" for="mmMapEditorBrushSize">
+                  <span>Brush Radius <output id="mmMapEditorBrushSizeValue">8</output></span>
+                  <input id="mmMapEditorBrushSize" type="range" min="1" max="72" step="1" value="8" />
+                </label>
+                <label class="mainMenuMapEditorRange" for="mmMapEditorZoom">
+                  <span>Zoom <output id="mmMapEditorZoomValue">100%</output></span>
+                  <input id="mmMapEditorZoom" type="range" min="30" max="600" step="5" value="100" />
+                </label>
+              </div>
+              <div class="mainMenuMapEditorGroup">
+                <div class="mainMenuMapEditorGroupTitle">Biomes</div>
+                <div id="mmMapEditorBiomeList" class="mainMenuMapEditorBiomeList"></div>
+              </div>
+            </aside>
+
+            <section class="mainMenuMapEditorCanvasPane" aria-label="Map canvas">
+              <canvas id="mmMapEditorCanvas" width="1280" height="720"></canvas>
+              <p class="mainMenuMapEditorHint">Left click to paint, right click drag to pan, mouse wheel to zoom.</p>
+            </section>
+
+            <aside class="mainMenuMapEditorMeta" aria-label="Map actions">
+              <div class="mainMenuMapEditorGroup">
+                <div class="mainMenuMapEditorGroupTitle">Actions</div>
+                <div class="mainMenuMapEditorActionCol">
+                  <button id="mmMapEditorSaveBtn" class="mainMenuBtn isPrimary" type="button">Save</button>
+                  <button id="mmMapEditorSaveAsBtn" class="mainMenuBtn" type="button">Save As New</button>
+                  <button id="mmMapEditorUseBtn" class="mainMenuBtn" type="button">Use In Match Config</button>
+                  <button id="mmMapEditorClearBtn" class="mainMenuBtn" type="button">Clear To Ocean</button>
+                </div>
+              </div>
+              <div class="mainMenuMapEditorGroup">
+                <div class="mainMenuMapEditorGroupTitle">Map Stats</div>
+                <p id="mmMapEditorStats" class="mainMenuMapEditorStats"></p>
+              </div>
+              <div class="mainMenuMapEditorGroup">
+                <div class="mainMenuMapEditorGroupTitle">Saved Maps</div>
+                <label class="mainMenuMapEditorField" for="mmMapEditorModalSavedSelect">
+                  <span>Load Saved</span>
+                  <select id="mmMapEditorModalSavedSelect">
+                    <option value="">No saved maps</option>
+                  </select>
+                </label>
+                <button id="mmMapEditorLoadSavedBtn" class="mainMenuMiniBtn" type="button">Load Into Editor</button>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </div>
+      <div id="mmFlagEditorModal" class="mainMenuFlagEditorModal" hidden aria-hidden="true">
+        <div id="mmFlagEditorBackdrop" class="mainMenuFlagEditorBackdrop"></div>
+        <section class="mainMenuFlagEditorPanel mainMenuFlagEditorPanelV3" aria-label="Flag editor">
+          <header class="mainMenuFlagEditorHeader">
+            <div class="mainMenuFlagEditorHeaderCopy">
+              <h2 class="mainMenuFlagEditorTitle">Flag Editor</h2>
+              <p class="mainMenuFlagEditorSub">Build your nation banner with brush, eraser, and shape tools.</p>
+            </div>
+            <button id="mmFlagCloseBtn" class="mainMenuMiniBtn" type="button">Close</button>
+          </header>
+
+          <div class="mainMenuFlagEditorBody mainMenuFlagEditorBodyV3">
+            <section class="mainMenuFlagPaintRibbon" aria-label="Flag paint controls">
+              <div class="mainMenuFlagPaintGroup">
+                <div class="mainMenuFlagPaintGroupTitle">Tools</div>
+                <div class="mainMenuFlagToolRow" role="toolbar" aria-label="Paint tools">
+                  <button id="mmFlagToolSelect" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Select</button>
+                  <button id="mmFlagToolBrush" class="mainMenuMiniBtn mainMenuFlagToolBtn isActive" type="button">Brush</button>
+                  <button id="mmFlagToolEraser" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Eraser</button>
+                </div>
+              </div>
+              <div class="mainMenuFlagPaintGroup">
+                <div class="mainMenuFlagPaintGroupTitle">Shapes</div>
+                <div class="mainMenuFlagShapeGrid" aria-label="Shape tools">
+                  <button id="mmFlagToolRect" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Rect</button>
+                  <button id="mmFlagToolCircle" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Circle</button>
+                  <button id="mmFlagToolTriangle" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Triangle</button>
+                  <button id="mmFlagToolStar" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Star</button>
+                  <button id="mmFlagToolDiamond" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Diamond</button>
+                  <button id="mmFlagToolLine" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Line</button>
+                  <button id="mmFlagToolCross" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Cross</button>
+                  <button id="mmFlagToolRing" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Ring</button>
+                  <button id="mmFlagToolCrescent" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Crescent</button>
+                  <button id="mmFlagToolChevron" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Chevron</button>
+                  <button id="mmFlagToolPentagon" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Pentagon</button>
+                  <button id="mmFlagToolHexagon" class="mainMenuMiniBtn mainMenuFlagToolBtn" type="button">Hexagon</button>
+                </div>
+              </div>
+              <div class="mainMenuFlagPaintGroup">
+                <div class="mainMenuFlagPaintGroupTitle">Stroke</div>
+                <div class="mainMenuFlagToolRow mainMenuFlagToolSettings" aria-label="Paint settings">
+                  <label class="mainMenuField" for="mmFlagPaintColor">
+                    <span>Color</span>
+                    <input id="mmFlagPaintColor" type="color" value="#ffffff" />
+                  </label>
+                  <label class="mainMenuField mainMenuRangeField" for="mmFlagPaintSize">
+                    <div class="mainMenuFieldHead"><span>Size</span><output id="mmFlagPaintSizeValue" class="mainMenuRangeValue">3%</output></div>
+                    <input id="mmFlagPaintSize" type="range" min="1" max="20" step="1" value="3" />
+                  </label>
+                  <label class="mainMenuField mainMenuRangeField" for="mmFlagPaintOpacity">
+                    <div class="mainMenuFieldHead"><span>Opacity</span><output id="mmFlagPaintOpacityValue" class="mainMenuRangeValue">100%</output></div>
+                    <input id="mmFlagPaintOpacity" type="range" min="10" max="100" step="1" value="100" />
+                  </label>
+                </div>
+              </div>
+              <div class="mainMenuFlagPaintGroup">
+                <div class="mainMenuFlagPaintGroupTitle">Canvas</div>
+                <div class="mainMenuFlagToolRow" aria-label="Canvas options">
+                  <label class="mainMenuTogglePill mainMenuTogglePillSlim"><input id="mmFlagSnapToGrid" type="checkbox" checked /> Snap</label>
+                  <label class="mainMenuTogglePill mainMenuTogglePillSlim"><input id="mmFlagShowGrid" type="checkbox" /> Grid</label>
+                </div>
+              </div>
+            </section>
+
+            <div class="mainMenuFlagPaintBody">
+              <section class="mainMenuFlagCanvasPane" aria-label="Flag canvas">
+                <div class="mainMenuFlagCanvasToolbar">
+                  <div class="mainMenuFlagCanvasTitle">Canvas</div>
+                  <div class="mainMenuFlagCanvasHelp">Paint directly on canvas. Select tool lets you move and resize emblem shapes.</div>
+                </div>
+                <div class="mainMenuFlagCanvasStage">
+                  <div class="mainMenuFlagCanvasWrap" id="mmFlagCanvasWrap">
+                    <canvas id="mmFlagEditorPreview" class="mainMenuFlagEditorPreview" width="480" height="320" aria-label="Flag editor preview"></canvas>
+                    <canvas id="mmFlagEditorOverlay" class="mainMenuFlagEditorOverlay" width="480" height="320" aria-label="Flag editor overlay"></canvas>
+                  </div>
+                </div>
+              </section>
+
+              <aside class="mainMenuFlagPaintSide" aria-label="Paint actions">
+                <section class="mainMenuFlagGroup" aria-label="Edit actions">
+                  <div class="mainMenuFlagSectionTitle">Edit</div>
+                  <div class="mainMenuFlagButtons mainMenuFlagButtonsUtil">
+                    <button id="mmFlagUndoBtn" class="mainMenuMiniBtn" type="button">Undo</button>
+                    <button id="mmFlagClearPaintBtn" class="mainMenuMiniBtn" type="button">Clear Paint</button>
+                    <button id="mmFlagDeleteShapeBtn" class="mainMenuMiniBtn" type="button">Delete Shape</button>
+                  </div>
+                </section>
+                <section class="mainMenuFlagGroup" aria-label="Flag actions">
+                  <div class="mainMenuFlagSectionTitle">Flag</div>
+                  <div class="mainMenuFlagButtons mainMenuFlagButtonsUtil">
+                    <button id="mmFlagResetBtn" class="mainMenuMiniBtn" type="button">Reset</button>
+                    <button id="mmFlagRandomBtn" class="mainMenuMiniBtn" type="button">Randomize</button>
+                  </div>
+                </section>
+              </aside>
+            </div>
+          </div>
+
+          <footer class="mainMenuFlagEditorFooter">
+            <div class="mainMenuFlagFooterActions">
+              <button id="mmFlagCancelBtn" class="mainMenuBtn" type="button">Cancel</button>
+              <button id="mmFlagSaveBtn" class="mainMenuBtn isPrimary" type="button">Save Flag</button>
+            </div>
+          </footer>
+        </section>
+      </div>
+<div id="hud">
+        <div id="topHud" class="panel ui-interactive" aria-label="Game controls">
+          <div id="gameTimer" class="topTimer" aria-label="Match timer">0:00</div>
+          <button
+            id="btnLeaderboard"
+            class="btn subtle iconBtn"
+            type="button"
+            title="Toggle leaderboard"
+            aria-label="Toggle leaderboard"
+          >
+            <img class="hudControlIcon" src="/UI_Icons/Leaderboard.png" alt="" aria-hidden="true" />
+          </button>
+          <button id="btnSettings" class="btn subtle iconBtn" type="button" title="Open settings" aria-label="Open settings">
+            <img class="hudControlIcon" src="/UI_Icons/Settings.png" alt="" aria-hidden="true" />
+          </button>
+          <button id="btnPause" class="btn subtle iconBtn" type="button" title="Pause game" aria-label="Pause game">
+            <img class="hudControlIcon" src="/UI_Icons/Pause.png" alt="" aria-hidden="true" />
+          </button>
+          <button id="btnLeaveGame" class="btn subtle iconBtn" type="button" title="Leave game" aria-label="Leave game">
+            <img class="hudControlIcon" src="/UI_Icons/Leave.png" alt="" aria-hidden="true" />
+          </button>
+        </div>
+        <div id="spawnProgressWrap" class="spawnProgress ui-interactive" hidden aria-hidden="true">
+          <div id="spawnProgressFill" class="spawnProgressFill"></div>
+          <div id="spawnProgressText" class="spawnProgressText"></div>
+        </div>
+        <div id="syncLagProgressWrap" class="syncLagProgress ui-interactive" hidden aria-hidden="true">
+          <div id="syncLagProgressFill" class="syncLagProgressFill"></div>
+          <div id="syncLagProgressText" class="syncLagProgressText"></div>
+        </div>
+
+        <!-- Bottom-left Dock: Events <-> Diplomacy -->
+        <aside id="events" class="ui-interactive" aria-label="Dock">
+          <div class="eventsHeader">
+            <div class="dockTabs" role="tablist" aria-label="Dock tabs">
+              <button id="btnDockEvents" class="btn subtle tabBtn isTabSelected" type="button" role="tab">
+                Events
+              </button>
+              <button id="btnDockDip" class="btn subtle tabBtn" type="button" role="tab">
+                Diplomacy
+              </button>
+              <button id="btnDockOps" class="btn subtle tabBtn" type="button" role="tab">
+                Operations
+              </button>
+            </div>
+            <div class="eventsBtns">
+              <button id="btnEventsToggle" class="btn subtle" type="button" title="Toggle dock (L)">
+                Hide
+              </button>
+            </div>
+          </div>
+
+          <div id="eventsBody" class="eventsBody" aria-label="Events log"></div>
+          <div id="eventsScopeControls" class="eventsScopeControls" aria-label="Event visibility scope">
+            <button id="btnEventsScopeNationwide" class="btn subtle eventsScopeBtn isTabSelected" type="button">
+              Nationwide
+            </button>
+            <button id="btnEventsScopeGlobal" class="btn subtle eventsScopeBtn" type="button">
+              Global
+            </button>
+          </div>
+
+          <div id="dipBody" class="dockBody" hidden aria-label="Diplomacy panel">
+            <div class="hint muted" style="margin-top: 2px;">
+              Hover a nation to highlight it. Right-click to open actions. Alliances block attacks for 3 minutes.
+            </div>
+
+            <div id="dipStatus" class="selectedMeta muted" style="margin-top: 8px;"></div>
+
+            <div id="donatePanel" class="subPanel" hidden>
+              <div class="subTitle">Donations</div>
+
+              <div class="opRow">
+                <div class="opLabel">Gold</div>
+                <div class="opValue"><span id="donGoldVal">0</span></div>
+              </div>
+              <input id="donGold" class="slider" type="range" min="0" max="0" value="0" />
+
+              <div class="opRow">
+                <div class="opLabel">Infantry</div>
+                <div class="opValue"><span id="donTroopsVal">0</span></div>
+              </div>
+              <input id="donTroops" class="slider" type="range" min="0" max="0" value="0" />
+
+              <button id="donateBtn" class="btn" type="button" disabled>Send</button>
+
+              <div class="hint muted" id="donateHint">
+                Donations transfer instantly. Allied AI may donate back over time.
+              </div>
+            </div>
+          </div>
+
+          <div id="opsBody" class="dockBody" hidden aria-label="Operations panel"></div>
+        </aside>
+
+        <!-- Context menu (right-click on land/nation) -->
+        <div id="ctxMenu" class="ctxMenu ui-interactive" hidden>
+          <div class="ctxTitle" id="ctxTitle">Actions</div>
+          <div class="ctxBtns">
+            <button id="ctxExpand" class="btn" type="button">Expand</button>
+
+            <button id="ctxAttack" class="btn danger" type="button">Attack</button>
+            <button id="ctxIntel" class="btn" type="button">Intel</button>
+            <button id="ctxTrade" class="btn" type="button">Trade</button>
+
+            <button id="ctxSendWarship" class="btn" type="button">Send Warship</button>
+
+            <button id="ctxDeclareWar" class="btn" type="button">Declare War</button>
+            <button id="ctxBetray" class="btn danger" type="button">Betray</button>
+            <button id="ctxMakePeace" class="btn warn" type="button">Ceasefire</button>
+            <button id="ctxRequestAlly" class="btn" type="button">Ally</button>
+          </div>
+          <div id="ctxHint" class="ctxHint muted"></div>
+        </div>
+
+        <div id="settingsModal" class="settingsModal ui-interactive" hidden>
+          <div id="settingsBackdrop" class="settingsBackdrop"></div>
+          <section id="settingsPanel" class="panel settingsPanel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+            <div class="settingsHeader">
+              <div>
+                <div id="settingsTitle" class="settingsTitle">Settings</div>
+                <div class="settingsSubtitle muted">These settings only change your client.</div>
+              </div>
+              <button id="settingsClose" class="btn subtle" type="button" aria-label="Close settings">Close</button>
+            </div>
+
+            <div class="settingsGrid">
+              <section class="settingsSection">
+                <div class="settingsSectionTitle">Gameplay View</div>
+
+                <label class="settingsRow" for="setShowAIStructures">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Show Other AI Structures</span>
+                    <span class="settingsRowHint muted">Show or hide AI structures on the map.</span>
+                  </span>
+                  <input id="setShowAIStructures" type="checkbox" checked />
+                </label>
+
+                <label class="settingsRow" for="setShowNationLabels">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Show Nation Labels</span>
+                    <span class="settingsRowHint muted">Show or hide nation names and population labels.</span>
+                  </span>
+                  <input id="setShowNationLabels" type="checkbox" checked />
+                </label>
+
+                <label class="settingsRow" for="setShowShips">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Show Ships and Routes</span>
+                    <span class="settingsRowHint muted">Show or hide ship routes and ship icons.</span>
+                  </span>
+                  <input id="setShowShips" type="checkbox" checked />
+                </label>
+
+                <label class="settingsRow" for="setHighlightNation">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Highlight Nation</span>
+                    <span class="settingsRowHint muted">Makes your territory stand out more clearly.</span>
+                  </span>
+                  <input id="setHighlightNation" type="checkbox" checked />
+                </label>
+              </section>
+
+              <section class="settingsSection">
+                <div class="settingsSectionTitle">Overlay Controls</div>
+
+                <label class="settingsRow" for="setShowHatchOverlay">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Show Active Battle Hatch</span>
+                    <span class="settingsRowHint muted">Marks tiles with active or recent battles.</span>
+                  </span>
+                  <input id="setShowHatchOverlay" type="checkbox" checked />
+                </label>
+
+                <label class="settingsRow" for="setShowHeatmap">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Show Tile Pressure Heatmap</span>
+                    <span class="settingsRowHint muted">Shows where fighting happens the most.</span>
+                  </span>
+                  <input id="setShowHeatmap" type="checkbox" />
+                </label>
+
+                <label class="settingsRow" for="setNukeDestinationOverlay">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Nuke Destination Overlay</span>
+                    <span class="settingsRowHint muted">Shows missile destination guidance lines.</span>
+                  </span>
+                  <input id="setNukeDestinationOverlay" type="checkbox" checked />
+                </label>
+
+                <label class="settingsRow" for="setPoliticalMapMode">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Political Map Mode</span>
+                    <span class="settingsRowHint muted">Uses a clean political-style map view.</span>
+                  </span>
+                  <input id="setPoliticalMapMode" type="checkbox" />
+                </label>
+              </section>
+
+              <section class="settingsSection">
+                <div class="settingsSectionTitle">Performance</div>
+
+                <label class="settingsRow" for="setDisableAtmosphere">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Disable Weather and Day/Night</span>
+                    <span class="settingsRowHint muted">Turns off weather and day/night lighting.</span>
+                  </span>
+                  <input id="setDisableAtmosphere" type="checkbox" />
+                </label>
+
+                <label class="settingsRow" for="setReduceMotion">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Reduce Camera Motion</span>
+                    <span class="settingsRowHint muted">Makes camera movement feel faster.</span>
+                  </span>
+                  <input id="setReduceMotion" type="checkbox" />
+                </label>
+                <label class="settingsRow" for="setFullscreen">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Fullscreen</span>
+                    <span class="settingsRowHint muted">Toggle fullscreen mode for the game window.</span>
+                  </span>
+                  <input id="setFullscreen" type="checkbox" />
+                </label>
+
+              </section>
+
+              <section class="settingsSection settingsSectionAudio">
+                <div class="settingsSectionTitle">Audio</div>
+
+                <label class="settingsRow settingsRowAudio" for="setMenuMusicVolume">
+                  <span class="settingsAudioLabel settingsRowLabel">Menu Music Volume</span>
+                  <output id="setMenuMusicVolumeValue" class="settingsAudioValue">12%</output>
+                  <input id="setMenuMusicVolume" class="slider" type="range" min="0" max="100" step="1" value="12" />
+                </label>
+
+                <label class="settingsRow settingsRowAudio" for="setWarMusicVolume">
+                  <span class="settingsAudioLabel settingsRowLabel">War Music Volume</span>
+                  <output id="setWarMusicVolumeValue" class="settingsAudioValue">9%</output>
+                  <input id="setWarMusicVolume" class="slider" type="range" min="0" max="100" step="1" value="9" />
+                </label>
+              </section>
+
+            </div>
+          </section>
+        </div>
+
+        <div id="researchModal" class="researchModal ui-interactive" hidden>
+          <div id="researchBackdrop" class="researchBackdrop"></div>
+          <section id="researchPanel" class="panel researchPanel" role="dialog" aria-modal="true" aria-labelledby="researchTitle">
+            <div class="researchTopBar">
+              <div class="researchTitleBlock">
+                <div class="researchEyebrow">Strategic Development</div>
+                <div id="researchTitle" class="researchTitle">Research Command</div>
+                <div class="researchSubtitle">Direct national research, manage branch queues, and invest Research Points into long-horizon upgrades.</div>
+              </div>
+              <button id="researchClose" class="btn subtle" type="button" aria-label="Close research panel">Close</button>
+            </div>
+
+            <div class="researchHeroBar">
+              <div class="researchMetricStrip" aria-label="Research point summary">
+                <article class="researchMetricCard isPrimary">
+                  <span class="researchMetricLabel">Research Points</span>
+                  <strong id="researchPointsValue" class="researchMetricValue">0 RP</strong>
+                  <span class="researchMetricMeta">Available budget</span>
+                </article>
+                <article class="researchMetricCard">
+                  <span class="researchMetricLabel">RP Per Day</span>
+                  <strong id="researchIncomeValue" class="researchMetricValue">+0 / day</strong>
+                  <span class="researchMetricMeta">Labs and cities</span>
+                </article>
+                <article class="researchMetricCard">
+                  <span class="researchMetricLabel">Research Labs</span>
+                  <strong id="researchLabsValue" class="researchMetricValue">0</strong>
+                  <span class="researchMetricMeta">Main RP source</span>
+                </article>
+                <article class="researchMetricCard">
+                  <span class="researchMetricLabel">City Contribution</span>
+                  <strong id="researchCitiesValue" class="researchMetricValue">+0 / day</strong>
+                  <span class="researchMetricMeta">Passive trickle</span>
+                </article>
+              </div>
+
+              <aside class="researchLabCallout" aria-label="Research lab overview">
+                <div class="researchLabTag">Research Lab</div>
+                <div class="researchLabHeadline">Core research structure</div>
+                <div class="researchLabCopy">Build Research Labs for <strong>750k Gold</strong> and <strong>350 Steel</strong>. Cities add a smaller RP stream so every developed empire still contributes.</div>
+              </aside>
+            </div>
+
+            <div class="researchTabs" role="tablist" aria-label="Research branches">
+              <button id="researchTabEconomy" class="btn subtle researchTabBtn isTabSelected" type="button" role="tab" aria-selected="true" data-research-tab="economy">
+                Economy
+              </button>
+              <button id="researchTabMilitary" class="btn subtle researchTabBtn" type="button" role="tab" aria-selected="false" data-research-tab="military">
+                Military
+              </button>
+              <button id="researchTabInfrastructure" class="btn subtle researchTabBtn" type="button" role="tab" aria-selected="false" data-research-tab="infrastructure">
+                Infrastructure
+              </button>
+            </div>
+
+            <div class="researchWorkspace">
+              <section class="researchTreePanel" aria-label="Research tree">
+                <div class="researchTreePanelHead">
+                  <div class="researchTreeCopy">
+                    <div id="researchBranchName" class="researchTreeTitle">Economy Branch</div>
+                    <div id="researchBranchDesc" class="researchTreeCaption">Scale gold flow, production, logistics, and long-range national efficiency.</div>
+                  </div>
+
+                  <div class="researchLegend" aria-label="Research status legend">
+                    <span class="researchLegendItem">
+                      <i class="researchLegendSwatch isAvailable" aria-hidden="true"></i>
+                      Available
+                    </span>
+                    <span class="researchLegendItem">
+                      <i class="researchLegendSwatch isResearching" aria-hidden="true"></i>
+                      Researching
+                    </span>
+                    <span class="researchLegendItem">
+                      <i class="researchLegendSwatch isCompleted" aria-hidden="true"></i>
+                      Completed
+                    </span>
+                    <span class="researchLegendItem">
+                      <i class="researchLegendSwatch isLocked" aria-hidden="true"></i>
+                      Locked
+                    </span>
+                  </div>
+                </div>
+
+                <div id="researchTreeViewport" class="researchTreeViewport" aria-label="Research canvas">
+                  <div id="researchTreeGrid" class="researchTreeGrid"></div>
+                </div>
+              </section>
+
+              <aside class="researchDetailPanel" aria-label="Research details">
+                <section class="researchDetailCard researchSelectionCard">
+                  <div class="researchInfoTag">Selected Node</div>
+
+                  <div class="researchInfoHeader">
+                    <div class="researchInfoIconShell" aria-hidden="true">
+                      <img id="researchInfoIconImg" class="researchInfoIconImg" alt="" hidden />
+                      <span id="researchInfoIconFallback" class="researchInfoIconFallback">RP</span>
+                      <span id="researchInfoTier" class="researchInfoTier">I</span>
+                    </div>
+                    <div class="researchInfoHeading">
+                      <div id="researchInfoBranch" class="researchInfoBranch">Economy Branch</div>
+                      <div id="researchInfoName" class="researchInfoName">Select Research</div>
+                      <div id="researchInfoStatus" class="researchInfoStatus muted">Choose a node to inspect its requirements and effect.</div>
+                    </div>
+                  </div>
+
+                  <div id="researchInfoDesc" class="researchInfoDesc muted">
+                    Research details will appear here.
+                  </div>
+
+                  <div class="researchInfoMeta">
+                    <div class="researchStat">
+                      <span class="researchStatLabel">Cost</span>
+                      <strong id="researchInfoPrice" class="researchStatValue">-</strong>
+                    </div>
+                    <div class="researchStat">
+                      <span class="researchStatLabel">Time</span>
+                      <strong id="researchInfoTime" class="researchStatValue">-</strong>
+                    </div>
+                    <div class="researchStat">
+                      <span class="researchStatLabel">Effect</span>
+                      <strong id="researchInfoEffect" class="researchStatValue">-</strong>
+                    </div>
+                    <div class="researchStat">
+                      <span class="researchStatLabel">Requirement</span>
+                      <strong id="researchInfoRequirement" class="researchStatValue">-</strong>
+                    </div>
+                  </div>
+
+                  <div id="researchActionHint" class="researchActionHint muted">One node can research at a time in each branch.</div>
+                  <button id="researchActionBtn" class="btn researchActionBtn" type="button">Start Research</button>
+                </section>
+              </aside>
+            </div>
+          </section>
+        </div>
+
+        <div id="tradeModal" class="tradeModal ui-interactive" hidden>
+          <div id="tradeBackdrop" class="tradeBackdrop"></div>
+          <section id="tradePanel" class="panel tradePanel" role="dialog" aria-modal="true" aria-labelledby="tradeTitle">
+            <div class="tradeHeader">
+              <div>
+                <div id="tradeTitle" class="tradeTitle">Trade Deals</div>
+                <div id="tradeTargetNation" class="tradeSubtitle muted">Set up resource agreements with other nations.</div>
+              </div>
+              <button id="tradeClose" class="btn subtle" type="button" aria-label="Close trade panel">Close</button>
+            </div>
+
+            <section class="tradeResourceStripSection" aria-labelledby="tradeResourceStripTitle">
+              <div class="tradeSectionHead tradeSectionHeadInline">
+                <div>
+                  <div id="tradeResourceStripTitle" class="tradeSectionTitle">Your Resources</div>
+                  <div class="tradeSectionCaption">Clean stockpile and production readout before you make a deal.</div>
+                </div>
+              </div>
+              <div id="tradeMyResources" class="tradeResourceGrid tradeResourceStrip"></div>
+            </section>
+
+            <div class="tradeTabs" role="tablist" aria-label="Trade panel sections">
+              <button
+                id="tradeTabBoard"
+                class="btn subtle tradeTabBtn isTabSelected"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="tradeViewBoard"
+                data-trade-tab="board"
+              >
+                <span class="tradeTabLabel">Trade Board</span>
+                <span id="tradeCountActive" class="tradeTabCount" aria-label="Number of active agreements">0</span>
+              </button>
+              <button
+                id="tradeTabOffers"
+                class="btn subtle tradeTabBtn"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="tradeViewOffers"
+                data-trade-tab="offers"
+              >
+                <span class="tradeTabLabel">Offers</span>
+                <span id="tradeCountOutgoing" class="tradeTabCount" aria-label="Number of outgoing offers">0</span>
+              </button>
+              <button
+                id="tradeTabRequests"
+                class="btn subtle tradeTabBtn"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="tradeViewRequests"
+                data-trade-tab="requests"
+              >
+                <span class="tradeTabLabel">Requests</span>
+                <span id="tradeCountIncoming" class="tradeTabCount" aria-label="Number of incoming requests">0</span>
+              </button>
+            </div>
+
+            <div class="tradeViews">
+              <section id="tradeViewBoard" class="tradeView isActive" role="tabpanel" aria-labelledby="tradeTabBoard" data-trade-view="board">
+                <div class="tradeBoardLayout">
+                  <section class="tradeSurfaceCard tradeComposerCard">
+                    <div class="tradeSectionHead">
+                      <div class="tradeSectionTitle">Create Offer</div>
+                      <div class="tradeSectionCaption">Pick an allied nation and set the barter terms.</div>
+                    </div>
+
+                    <div class="tradeSendStack">
+                      <label class="tradeField" for="tradeNationSelect">
+                        <span>Nation</span>
+                        <select id="tradeNationSelect" class="tradeInput"></select>
+                      </label>
+
+                      <div class="tradeExchangeGrid">
+                        <div class="tradeFieldSet">
+                          <div class="tradeSubTitle">You Send</div>
+                          <div class="tradeFieldRow">
+                            <label class="tradeField" for="tradeOfferGoodsSelect">
+                              <span>Resource</span>
+                              <select id="tradeOfferGoodsSelect" class="tradeInput">
+                                <option value="food">Food</option>
+                                <option value="steel">Steel</option>
+                                <option value="oil">Oil</option>
+                              </select>
+                            </label>
+                            <label class="tradeField" for="tradeOfferRateInput">
+                              <span>Rate / day</span>
+                              <input id="tradeOfferRateInput" class="tradeInput" type="number" min="1" max="5000" value="30" step="1" />
+                            </label>
+                          </div>
+                        </div>
+                        <div class="tradeFieldSet">
+                          <div class="tradeSubTitle">You Receive</div>
+                          <div class="tradeFieldRow">
+                            <label class="tradeField" for="tradeRequestGoodsSelect">
+                              <span>Resource</span>
+                              <select id="tradeRequestGoodsSelect" class="tradeInput">
+                                <option value="food">Food</option>
+                                <option value="steel">Steel</option>
+                                <option value="oil">Oil</option>
+                              </select>
+                            </label>
+                            <label class="tradeField" for="tradeRequestRateInput">
+                              <span>Rate / day</span>
+                              <input id="tradeRequestRateInput" class="tradeInput" type="number" min="1" max="5000" value="30" step="1" />
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+
+                      <label class="tradeField" for="tradeDurationInput">
+                        <span>Duration (minutes)</span>
+                        <input id="tradeDurationInput" class="tradeInput" type="number" min="1" max="60" value="5" step="1" />
+                      </label>
+
+                      <button id="tradeCreateBtn" class="btn tradeCreateBtn" type="button">Send Trade Offer</button>
+                    </div>
+                  </section>
+
+                  <section class="tradeSurfaceCard tradeBoardFeed">
+                    <div class="tradeSectionHead">
+                      <div class="tradeSectionTitle">Active Agreements</div>
+                      <div class="tradeSectionCaption">Live barter corridors currently moving resources.</div>
+                    </div>
+                    <div id="tradeDealsActive" class="tradeDealsList tradeDealsListActive"></div>
+                  </section>
+                </div>
+              </section>
+
+              <section id="tradeViewOffers" class="tradeView" role="tabpanel" aria-labelledby="tradeTabOffers" data-trade-view="offers" hidden>
+                <div class="tradeViewHeader">
+                  <div class="tradeSectionTitle">Offers</div>
+                  <div class="tradeSectionCaption">Pending offers you already sent to allied nations.</div>
+                </div>
+                <div id="tradeRequestsOutgoing" class="tradeDealsList tradeDealsListStandalone"></div>
+              </section>
+
+              <section id="tradeViewRequests" class="tradeView" role="tabpanel" aria-labelledby="tradeTabRequests" data-trade-view="requests" hidden>
+                <div class="tradeViewHeader">
+                  <div class="tradeSectionTitle">Requests</div>
+                  <div class="tradeSectionCaption">Incoming offers that are waiting for your decision.</div>
+                </div>
+                <div id="tradeRequestsIncoming" class="tradeDealsList tradeDealsListStandalone"></div>
+              </section>
+            </div>
+
+            <div class="tradeFooter">
+              <div id="tradeStatus" class="hint muted tradeStatus"></div>
+            </div>
+          </section>
+        </div>
+
+        <!-- Nation Intel panel (center) -->
+        <div id="intelPanel" class="panel intelPanel ui-interactive" hidden>
+          <div class="intelHeader">
+            <div>
+              <div class="intelTitle" id="intelTitle">Nation Intel</div>
+              <div class="intelMeta muted" id="intelMeta"></div>
+            </div>
+            <button id="intelClose" class="btn subtle" type="button">Close</button>
+          </div>
+
+          <div class="intelSection">
+            <div class="intelSectionTitle">Structures</div>
+            <div id="intelStructs" class="intelStructs"></div>
+          </div>
+
+          <div class="intelSection">
+            <div class="intelSectionTitle">Overview</div>
+            <div class="intelGrid">
+              <div class="intelStat">
+                <div class="intelLabel">Territory</div>
+                <div class="intelValue" id="intelLand">0</div>
+              </div>
+              <div class="intelStat">
+                <div class="intelLabel">Gold</div>
+                <div class="intelValue" id="intelGold">0</div>
+              </div>
+              <div class="intelStat">
+                <div class="intelLabel">Infantry</div>
+                <div class="intelValue" id="intelInf">0</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="intelSection">
+            <div class="intelSectionTitle">Population (est.)</div>
+            <div class="intelPopulation" id="intelPop">0</div>
+          </div>
+        </div>
+
+        <aside id="sideHud" class="ui-interactive">
+          <section class="panel">
+            <div class="panelTitle">Nation Stats</div>
+
+            <dl class="statsGrid">
+              <div class="statRow">
+                <dt><img class="statIcon" src="/UI_Icons/gold.png" alt="" aria-hidden="true" /><span>Gold</span></dt>
+                <dd>
+                  <div class="statMain"><span id="statGoldVal">0</span></div>
+                  <div class="statSub"><span class="delta" id="statGoldDelta">+0/s</span></div>
+                </dd>
+              </div>
+
+              <div class="statRow">
+                <dt><img class="statIcon" src="/UI_Icons/ResearchPoints.png" alt="" aria-hidden="true" /><span>Research Points</span></dt>
+                <dd>
+                  <div class="statMain"><span id="statResearchVal">0</span></div>
+                  <div class="statSub"><span class="delta" id="statResearchDelta">+0 RP/day</span></div>
+                </dd>
+              </div>
+
+              <div class="statRow">
+                <dt><img class="statIcon" src="/UI_Icons/population.png" alt="" aria-hidden="true" /><span>Population</span></dt>
+                <dd>
+                  <div class="statMain">
+                    <span id="statPopVal" class="statCurrent">0</span><span class="statDim"> / </span><span id="statPopCap" class="statMax">0</span>
+                  </div>
+                  <div class="statSub">
+                    <span class="delta" id="statPopDelta">+0/s</span>
+                  </div>
+                </dd>
+              </div>
+
+              <div class="statRow">
+                <dt><img class="statIcon" src="/UI_Icons/infantry.png" alt="" aria-hidden="true" /><span>Infantry</span></dt>
+                <dd>
+                  <div class="statMain">
+                    <span id="statInfVal" class="statCurrent">0</span><span class="statDim"> / </span><span id="statInfCap" class="statMax">0</span>
+                  </div>
+                  <div class="statSub"><span class="delta" id="statInfDelta">+0/s</span></div>
+                </dd>
+              </div>
+
+              <div class="statRow">
+                <dt><img class="statIcon" src="/UI_Icons/stability.png" alt="" aria-hidden="true" /><span>Stability</span></dt>
+                <dd>
+                  <div class="statMain"><span id="statStabilityVal">100%</span></div>
+                </dd>
+              </div>
+            </dl>
+
+            <div class="objective">
+              <div class="objectiveLabel">Top Priority</div>
+              <div class="objectiveValue">Eliminate all enemy capitals.</div>
+            </div>
+          </section>
+
+          <section id="resourcesCard" class="panel">
+            <div class="panelTitle">Resources</div>
+            <div class="resourcesCardRows">
+              <div class="resourceMiniRow">
+                <div class="resourceMiniLabel">
+                  <img class="resourceMiniIcon" src="/UI_Icons/TradeResources/Food.png" alt="" aria-hidden="true" />
+                  <span>Food</span>
+                </div>
+                <div class="resourceMiniMeta">
+                  <div class="resourceMiniValue" id="statFoodVal">0</div>
+                  <div class="resourceMiniDelta" id="statFoodDelta">+0/s</div>
+                </div>
+              </div>
+              <div class="resourceMiniRow">
+                <div class="resourceMiniLabel">
+                  <img class="resourceMiniIcon" src="/UI_Icons/TradeResources/Steel.png" alt="" aria-hidden="true" />
+                  <span>Steel</span>
+                </div>
+                <div class="resourceMiniMeta">
+                  <div class="resourceMiniValue" id="statSteelVal">0</div>
+                  <div class="resourceMiniDelta" id="statSteelDelta">+0/s</div>
+                </div>
+              </div>
+              <div class="resourceMiniRow">
+                <div class="resourceMiniLabel">
+                  <img class="resourceMiniIcon" src="/UI_Icons/TradeResources/Oil.png" alt="" aria-hidden="true" />
+                  <span>Oil</span>
+                </div>
+                <div class="resourceMiniMeta">
+                  <div class="resourceMiniValue" id="statOilVal">0</div>
+                  <div class="resourceMiniDelta" id="statOilDelta">+0/s</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section id="selectedCard" class="panel">
+            <div class="panelTitle">Selected</div>
+            <div class="selectedName" id="selectedName">None</div>
+            <div class="selectedDesc" id="selectedDesc">
+              Click a structure to inspect it. Pick a structure at bottom to build.
+            </div>
+
+            <div id="selectedMeta" class="selectedMeta muted"></div>
+          </section>
+
+          <section id="operationsCard" class="panel">
+            <div class="panelTitle">Operations</div>
+
+            <div class="opRow">
+              <div class="opLabel">Attack Ratio</div>
+              <div class="opValue"><span id="opRatioVal">20</span>%</div>
+            </div>
+            <input id="opRatio" class="slider" type="range" min="1" max="100" value="20" />
+            <div class="hint muted" style="margin-top: 2px;">Higher = larger share of infantry committed to active attacks.</div>
+
+            <div class="opRow" style="margin-top: 10px;">
+              <div class="opLabel">Mobilization</div>
+              <div class="opValue"><span id="opMobVal">30</span>%</div>
+            </div>
+            <input id="opMob" class="slider" type="range" min="10" max="100" value="30" />
+            <div class="hint muted" style="margin-top: 2px;">Higher = bigger army, weaker economy.</div>
+
+
+            <div class="opRow split">
+              <button id="opStart" class="btn" type="button" disabled>Expand</button>
+              <button id="opCancel" class="btn danger" type="button" disabled>Cancel</button>
+            </div>
+
+            <div id="opMsg" class="hint muted"></div>
+          </section>
+        </aside>
+
+        <nav id="quickLaunchBar" class="ui-interactive" aria-label="Quick launch">
+          <div class="barLeft">
+            <div class="barTitle">Quick Launch</div>
+          </div>
+
+          <div class="barButtons" role="group" aria-label="Quick launch buttons">
+            <button class="btn structureBtn quickLaunchBtn" id="btnQuickAtomic" type="button" title="Atomic Bomb (X)">
+              Atomic (X)
+            </button>
+            <button class="btn structureBtn quickLaunchBtn" id="btnQuickHydrogen" type="button" title="Hydrogen Bomb (V)">
+              Hydrogen (V)
+            </button>
+            <button class="btn structureBtn quickLaunchBtn" id="btnQuickTransportBoat" type="button" title="Transport (H)">
+              Transport (H)
+            </button>
+            <button class="btn structureBtn quickLaunchBtn" id="btnQuickPlane" type="button" title="Plane (F)">
+              Plane (F)
+            </button>
+          </div>
+        </nav>
+
+        <nav id="tradesLaunchBar" class="ui-interactive" aria-label="Trade quick launch">
+          <div class="barLeft">
+            <div class="barTitle">Trades</div>
+          </div>
+          <div class="barButtons" role="group" aria-label="Trade controls">
+            <button class="btn structureBtn quickLaunchBtn" id="btnTradesPanel" type="button" title="Open Trade Panel">
+              Trades
+            </button>
+          </div>
+        </nav>
+
+        <nav id="researchLaunchBar" class="ui-interactive" aria-label="Research quick launch">
+          <div class="barLeft">
+            <div class="barTitle">Research</div>
+          </div>
+          <div class="barButtons" role="group" aria-label="Research controls">
+            <button class="btn structureBtn quickLaunchBtn" id="btnResearchPanel" type="button" title="Open Research Command">
+              Research
+            </button>
+          </div>
+        </nav>
+
+        <nav id="structureBar" class="ui-interactive" aria-label="Structures">
+          <div class="barLeft">
+            <div class="barTitle">Build</div>
+            <div class="barSub muted" id="buildModeLabel" hidden aria-hidden="true">No build mode</div>
+          </div>
+
+          <div class="barButtons" role="group" aria-label="Structure buttons">
+            <button class="btn structureBtn" data-structure="city" id="btnCity" type="button">
+              City
+            </button>
+            <button class="btn structureBtn" data-structure="factory" id="btnFactory" type="button">
+              Factory
+            </button>
+            <button class="btn structureBtn" data-structure="barracks" id="btnBarracks" type="button">
+              Barracks
+            </button>
+            <button class="btn structureBtn" data-structure="defence_post" id="btnDefencePost" type="button">
+              Defence Post
+            </button>
+            <button class="btn structureBtn" data-structure="port" id="btnPort" type="button">
+              Port
+            </button>
+            <button class="btn structureBtn" data-structure="coastal_rig" id="btnCoastalRig" type="button">
+              Coastal Rig
+            </button>
+            <button class="btn structureBtn" data-structure="research_lab" id="btnResearchLab" type="button">
+              Research Lab
+            </button>
+            <button class="btn structureBtn" data-structure="missile_silo" id="btnMissileSilo" type="button">
+              Missile Silo
+            </button>
+            <button class="btn structureBtn" data-structure="abm_launcher" id="btnAbmLauncher" type="button">
+              ABM Launcher
+            </button>
+            <button class="btn structureBtn" data-structure="radar_station" id="btnRadarStation" type="button">
+              Radar Station
+            </button>
+            <button class="btn structureBtn" data-structure="airbase" id="btnAirbase" type="button">
+              Airbase
+            </button>
+          </div>
+
+        </nav>
+      </div>
+    </div>
+
+  </body>
+</html>

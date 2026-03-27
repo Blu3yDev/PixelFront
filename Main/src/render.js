@@ -2139,10 +2139,9 @@ export class Renderer {
   }
 
   panBy(dxScreen, dyScreen) {
-    // main.js feeds coords in "local * vp.dpr". Convert back to CSS pixels first.
     const v = this.getViewport();
-    const dxCss = (Number(dxScreen) || 0) / (v.dpr || 1);
-    const dyCss = (Number(dyScreen) || 0) / (v.dpr || 1);
+    const dxCss = Number(dxScreen) || 0;
+    const dyCss = Number(dyScreen) || 0;
 
     const dx = dxCss / v.zoom;
     const dy = dyCss / v.zoom;
@@ -2174,16 +2173,16 @@ export class Renderer {
     idx = clamp(idx + (sign > 0 ? 1 : -1), 0, levels.length - 1);
     const nextZoom = levels[idx];
 
-    // Pivot around cursor (canvas-local coords)
+    // Pivot around cursor (canvas-local CSS coords).
     let sx, sy;
     if (a && typeof a === "object") {
-      if (typeof a.offsetX === "number" && typeof a.offsetY === "number") {
-        sx = a.offsetX;
-        sy = a.offsetY;
-      } else if (typeof a.clientX === "number") {
+      if (typeof a.clientX === "number") {
         const rect = this.canvas.getBoundingClientRect();
         sx = a.clientX - rect.left;
         sy = a.clientY - rect.top;
+      } else if (typeof a.offsetX === "number" && typeof a.offsetY === "number") {
+        sx = a.offsetX;
+        sy = a.offsetY;
       } else {
         sx = 0; sy = 0;
       }
@@ -2447,18 +2446,18 @@ export class Renderer {
     ctx.restore();
   }
 
-  // main.js/input.js feed canvas-local coords (often multiplied by vp.dpr).
+  // main.js/input.js feed canvas-local CSS coords.
   screenToWorldCell(a, b, alreadyLocal = true) {
     let sx, sy;
 
     if (a && typeof a === "object") {
-      if (typeof a.offsetX === "number" && typeof a.offsetY === "number") {
-        sx = a.offsetX;
-        sy = a.offsetY;
-      } else if (typeof a.clientX === "number") {
+      if (typeof a.clientX === "number") {
         const rect = this.canvas.getBoundingClientRect();
         sx = a.clientX - rect.left;
         sy = a.clientY - rect.top;
+      } else if (typeof a.offsetX === "number" && typeof a.offsetY === "number") {
+        sx = a.offsetX;
+        sy = a.offsetY;
       } else {
         sx = 0; sy = 0;
       }
@@ -4601,6 +4600,138 @@ export class Renderer {
     ctx.restore();
   }
 
+  _drawDivisionsScreen(ctx, v, selectedDivisionId = 0) {
+    const world = this.world;
+    const list = Array.isArray(world?.divisions) ? world.divisions : [];
+    if (!list.length) return;
+
+    const zoom = Number(v.zoom) || 1;
+    const camDx = Number(v.dx) || 0;
+    const camDy = Number(v.dy) || 0;
+
+    ctx.save();
+    ctx.setTransform(v.dpr, 0, 0, v.dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+
+    const visible = [];
+    for (let i = 0; i < list.length; i++) {
+      const div = list[i];
+      const owner = div?.owner | 0;
+      if (!(owner > 0)) continue;
+      if (owner === OWNER.PLAYER) {
+        visible.push(div);
+        continue;
+      }
+      if (typeof world?._bordersTouch === "function" && world._bordersTouch(OWNER.PLAYER, owner)) {
+        visible.push(div);
+      }
+    }
+    if (!visible.length) return;
+
+    const ordered = visible.slice().sort((a, b) => {
+      const sa = ((a?.id | 0) === (selectedDivisionId | 0)) ? 1 : 0;
+      const sb = ((b?.id | 0) === (selectedDivisionId | 0)) ? 1 : 0;
+      return sa - sb;
+    });
+
+    for (let i = 0; i < ordered.length; i++) {
+      const div = ordered[i];
+      if (!div || !(Number(div.infantry) > 0)) continue;
+      const wx = Number.isFinite(Number(div.px)) ? Number(div.px) : ((Number(div.x) || 0) + 0.5);
+      const wy = Number.isFinite(Number(div.py)) ? Number(div.py) : ((Number(div.y) || 0) + 0.5);
+      const px = camDx + wx * zoom;
+      const py = camDy + wy * zoom;
+      if (px < -96 || py < -96 || px > v.canvasW + 96 || py > v.canvasH + 96) continue;
+
+      const owner = div.owner | 0;
+      const tint = world.getOwnerTint ? world.getOwnerTint(owner) : { r: 220, g: 220, b: 220 };
+      const fill = `rgb(${tint.r | 0},${tint.g | 0},${tint.b | 0})`;
+      const selected = (div.id | 0) === (selectedDivisionId | 0);
+      const baseR = Math.max(7, Math.min(16, Math.round(6 + zoom * 1.4)));
+
+      if (selected) {
+        const order = (div.order && typeof div.order === "object") ? div.order : null;
+        const orderIndices = Array.isArray(order?.indices) ? order.indices : [];
+        if (orderIndices.length > 0) {
+          const tileSize = Math.max(1, Math.ceil(zoom));
+          ctx.globalAlpha = 0.2;
+          ctx.fillStyle = order?.aggressive
+            ? "rgba(255, 118, 118, 0.72)"
+            : "rgba(255, 220, 142, 0.66)";
+          for (let j = 0; j < orderIndices.length; j++) {
+            const idx = orderIndices[j] | 0;
+            const ox = camDx + (idx % (world.w | 0)) * zoom;
+            const oy = camDy + ((idx / (world.w | 0)) | 0) * zoom;
+            if (ox > v.canvasW || oy > v.canvasH || (ox + tileSize) < 0 || (oy + tileSize) < 0) continue;
+            ctx.fillRect(Math.round(ox), Math.round(oy), tileSize, tileSize);
+          }
+        }
+
+        const rangePx = Math.max(baseR + 10, Math.round(Math.max(1, Number(div.attackRangeTiles) || 1) * zoom));
+        ctx.globalAlpha = 0.16;
+        ctx.fillStyle = "rgba(255, 218, 126, 0.18)";
+        ctx.beginPath();
+        ctx.arc(px, py, rangePx, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 0.95;
+        ctx.lineWidth = Math.max(1.5, Math.round(baseR * 0.18));
+        ctx.strokeStyle = "rgba(255, 233, 173, 0.92)";
+        ctx.beginPath();
+        ctx.arc(px, py, rangePx, 0, Math.PI * 2);
+        ctx.stroke();
+
+        if (order) {
+          const tx = camDx + (Number(order.centerX) || wx) * zoom;
+          const ty = camDy + (Number(order.centerY) || wy) * zoom;
+          ctx.setLineDash([8, 6]);
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = "rgba(255, 238, 198, 0.78)";
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(tx, ty);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = "rgba(255, 236, 170, 0.96)";
+          ctx.beginPath();
+          ctx.arc(tx, ty, Math.max(4, Math.round(baseR * 0.35)), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      ctx.globalAlpha = 0.98;
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.arc(px, py, baseR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = selected ? Math.max(2, Math.round(baseR * 0.18)) : Math.max(1, Math.round(baseR * 0.12));
+      ctx.strokeStyle = selected ? "rgba(255, 247, 223, 0.98)" : "rgba(16, 12, 9, 0.82)";
+      ctx.stroke();
+
+      const infText = `${Math.max(0, Math.round(Number(div.infantry) || 0))}/${Math.max(1, Math.round(Number(div.maxInfantry) || 1))}`;
+      const tagText = selected ? `${String(div.name || "Division")} | ${infText}` : infText;
+      ctx.font = selected ? "600 12px Georgia, serif" : "600 11px Georgia, serif";
+      const padX = 7;
+      const textW = Math.ceil(ctx.measureText(tagText).width);
+      const boxW = Math.max(44, textW + padX * 2);
+      const boxH = selected ? 24 : 20;
+      const boxX = Math.round(px - boxW * 0.5);
+      const boxY = Math.round(py - baseR - boxH - 8);
+      ctx.fillStyle = selected ? "rgba(18, 13, 11, 0.94)" : "rgba(14, 13, 15, 0.84)";
+      ctx.strokeStyle = selected ? "rgba(255, 228, 165, 0.84)" : "rgba(255, 255, 255, 0.14)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(boxX, boxY, boxW, boxH, 8);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "rgba(252, 246, 232, 0.98)";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(tagText, Math.round(px), Math.round(boxY + boxH * 0.5));
+    }
+
+    ctx.restore();
+  }
+
 
 
 
@@ -5948,6 +6079,7 @@ export class Renderer {
     const brushGhost = opts.brushGhost || null;
     const selectedStructureId = opts.selectedStructureId || 0;
     const selectedShipId = opts.selectedShipId || 0;
+    const selectedDivisionId = opts.selectedDivisionId || 0;
     const intentArrows = Array.isArray(opts.intentArrows) ? opts.intentArrows : null;
     const nukePreview = opts.nukePreview || null;
     const nukeFlights = Array.isArray(opts.nukeFlights) ? opts.nukeFlights : null;
@@ -6025,6 +6157,7 @@ export class Renderer {
     this._drawAirborneMissionsScreen(ctx, v, airborneMissions);
     this._drawSpawnPicksScreen(ctx, v);
     this._drawStructuresScreen(ctx, v, selectedStructureId);
+    this._drawDivisionsScreen(ctx, v, selectedDivisionId);
     if (cset.showShips !== false) this._drawShipsScreen(ctx, v, selectedShipId);
     if (cset.showNationLabels !== false) this._drawNationLabelsScreen(ctx, v);
     this._drawRubberLineScreen(ctx, v, rubberLine);

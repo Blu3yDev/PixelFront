@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="pf-supabase-url" content="%VITE_SUPABASE_URL%" />
+    <meta name="pf-supabase-anon-key" content="%VITE_SUPABASE_ANON_KEY%" />
+    <meta name="pf-supabase-feedback-table" content="feedbacks" />
+    <link rel="icon" type="image/png" href="/GameLogo/pflogo.png" />
+    <title>PixelFront | Feedback Board</title>
+    <link rel="stylesheet" href="../src/style.css" />
+    <link rel="stylesheet" href="../src/feedbacks.css" />
+  </head>
+
+  <body class="feedbackBoardPage">
+    <main class="feedbackBoardShell">
+      <section class="feedbackBoardHero">
+        <a class="feedbackBoardBackLink" href="../">Back To Main Menu</a>
+        <div class="feedbackBoardHeroCopy">
+          <p class="feedbackBoardEyebrow">Community Signal</p>
+          <h1 class="feedbackBoardTitle">Public Feedback Board</h1>
+          <p class="feedbackBoardLead">Recent notes published from the main menu land here so you can review bugs, ideas, and balance concerns in one place.</p>
+        </div>
+        <button id="feedbackBoardRefreshBtn" class="feedbackBoardRefreshBtn" type="button">Refresh</button>
+      </section>
+
+      <section class="feedbackBoardPanel" aria-label="Feedback stream">
+        <div class="feedbackBoardPanelHead">
+          <div>
+            <h2 class="feedbackBoardPanelTitle">Latest Reports</h2>
+            <p id="feedbackBoardStatus" class="feedbackBoardStatus">Loading feedback...</p>
+          </div>
+        </div>
+        <div id="feedbackBoardList" class="feedbackBoardList"></div>
+      </section>
+    </main>
+
+    <script type="module" src="../src/feedbacks.js"></script>
+  </body>
+</html>

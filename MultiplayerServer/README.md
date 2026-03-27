@@ -92,7 +92,7 @@ If your deploy does not include `/app/Main`, deploy from the repository root (so
 1. Deploy `MultiplayerServer` to Render as a Web Service.
 2. Wait for service URL, e.g. `https://pixelfront-multiplayer.onrender.com`.
 3. In Render env vars:
-   - `CORS_ORIGIN=https://YOURDOMAIN.com,https://www.YOURDOMAIN.com`
+   - `CORS_ORIGIN=https://YOURDOMAIN.com,https://www.YOURDOMAIN.com`[]
    - `MAX_PLAYERS_PER_LOBBY=8`
    - `LOBBY_IDLE_TTL_MS=21600000`
    - `MATCH_SNAPSHOT_INTERVAL_MS=60`

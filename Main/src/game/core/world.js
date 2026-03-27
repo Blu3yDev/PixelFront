@@ -24,6 +24,7 @@ import {
   CEASEFIRE_DECISION_S,
   CEASEFIRE_DURATION_S,
   EXPERIMENTAL_ATTACK_COLLISION,
+  GAME_MODE,
   MAX_ALLIES,
   MAP_MODE,
   NUKE_WARHEAD,
@@ -71,7 +72,8 @@ import {
   installResources,
   installStructures,
   installTrading,
-  installWar
+  installWar,
+  installDivisions
 } from "../systems/index.js";
 
 export { OWNER, BUILD_COST } from "../config.js";
@@ -515,6 +517,10 @@ export class World {
     this._mapMode = (mode === MAP_MODE.WORLD_MAP) ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
     this._earthData = opts?.earthData || null;
     this._countryClaimEnabled = opts?.countryClaimEnabled !== false;
+    this._gameMode = String(opts?.gameMode || GAME_MODE.CLASSIC).trim().toLowerCase() === GAME_MODE.DIVISIONS
+      ? GAME_MODE.DIVISIONS
+      : GAME_MODE.CLASSIC;
+    if (typeof this._resetDivisionState === "function") this._resetDivisionState();
 
     this._markAllNationsActive(18);
     this._configurePerfCadence();
@@ -855,6 +861,11 @@ export class World {
       if (Object.prototype.hasOwnProperty.call(opts, "countryClaimEnabled")) {
         this._countryClaimEnabled = opts.countryClaimEnabled !== false;
       }
+      if (Object.prototype.hasOwnProperty.call(opts, "gameMode")) {
+        this._gameMode = String(opts.gameMode || GAME_MODE.CLASSIC).trim().toLowerCase() === GAME_MODE.DIVISIONS
+          ? GAME_MODE.DIVISIONS
+          : GAME_MODE.CLASSIC;
+      }
     }
 
     // NEW: keep current seed
@@ -922,6 +933,7 @@ export class World {
     this._activeStructureBuildIds.clear();
     this.airborneMissions.length = 0;
     this._nextAirborneMissionId = 1;
+    if (typeof this._resetDivisionState === "function") this._resetDivisionState();
 
     // Reset navy state
     this.ships.length = 0;
@@ -1098,6 +1110,9 @@ export class World {
     perfStep("navyMs");
     this._tickNukes(SIM_DT_S);
     this._tickAirborne(SIM_DT_S);
+    if (typeof this._tickDivisions === "function") {
+      this._tickDivisions(SIM_DT_S);
+    }
     perfStep("nukesMs");
 
     const smoothPlayerOps = this._hasPlayerVisualOperation();
@@ -1123,6 +1138,9 @@ export class World {
     // AI decision logic is the largest CPU consumer at high nation counts.
     if ((this._simTick % this._aiStepTicks) === 0) {
       this._tickAI(this._aiStepS);
+      if (typeof this._tickDivisionAI === "function") {
+        this._tickDivisionAI(this._aiStepS);
+      }
     }
     perfStep("aiMs");
 
@@ -3901,6 +3919,19 @@ placeStructure(type, ownerId, x, y) {
     return { ok: false, reason: "Barracks are passive in this build (no manual training)." };
   }
 
+  _isGameplayLand(idxRaw) {
+    const idx = idxRaw | 0;
+    const total = Math.max(0, (this.w | 0) * (this.h | 0));
+    if (idx < 0 || idx >= total) return false;
+    if (this.land && idx < this.land.length && !!this.land[idx]) return true;
+
+    const ownerVal = (this.owner && idx < this.owner.length) ? (this.owner[idx] | 0) : 0;
+    if (ownerVal > OWNER.NONE) return true;
+
+    const biomeVal = (this.biome && idx < this.biome.length) ? (this.biome[idx] | 0) : BIOME.OCEAN_SHALLOW;
+    return biomeVal !== BIOME.OCEAN_DEEP && biomeVal !== BIOME.OCEAN_SHALLOW && biomeVal !== BIOME.CORAL_REEF;
+  }
+
   // Neutral expansion from player selection.
   // If the selection does not touch the border, we may launch a Transport to establish a beachhead (Sect 3).
   startNeutral(indices, attackerId = OWNER.PLAYER) {
@@ -3919,7 +3950,7 @@ placeStructure(type, ownerId, x, y) {
     const target = new Set();
     for (const idx0 of set) {
       const idx = idx0 | 0;
-      if (!this.land[idx]) continue;
+      if (!this._isGameplayLand(idx)) continue;
       if ((this.owner[idx] | 0) !== OWNER.NONE) continue;
       target.add(idx);
     }
@@ -3938,19 +3969,19 @@ placeStructure(type, ownerId, x, y) {
       let ni = 0;
       if (x > 0) {
         ni = idx - 1;
-        if (this.land[ni] && existingTarget.has(ni)) return true;
+        if (this._isGameplayLand(ni) && existingTarget.has(ni)) return true;
       }
       if (x + 1 < w) {
         ni = idx + 1;
-        if (this.land[ni] && existingTarget.has(ni)) return true;
+        if (this._isGameplayLand(ni) && existingTarget.has(ni)) return true;
       }
       if (y > 0) {
         ni = idx - w;
-        if (this.land[ni] && existingTarget.has(ni)) return true;
+        if (this._isGameplayLand(ni) && existingTarget.has(ni)) return true;
       }
       if (y + 1 < h) {
         ni = idx + w;
-        if (this.land[ni] && existingTarget.has(ni)) return true;
+        if (this._isGameplayLand(ni) && existingTarget.has(ni)) return true;
       }
       return false;
     };
@@ -4937,7 +4968,7 @@ placeStructure(type, ownerId, x, y) {
 
     const target = new Set();
     for (const idx of set) {
-      if (!this.land[idx]) continue;
+      if (!this._isGameplayLand(idx)) continue;
       if (this.owner[idx] !== D) continue;
       target.add(idx);
     }
@@ -5205,6 +5236,41 @@ placeStructure(type, ownerId, x, y) {
     return { ok: true, reason: "" };
   }
 
+  betrayAlliance(a, b) {
+    const A = a | 0, B = b | 0;
+    if (A <= 0 || B <= 0 || A === B) return { ok: false, reason: "Invalid target." };
+    if (!this.nation[A]?.alive || !this.nation[B]?.alive) return { ok: false, reason: "Target not alive." };
+
+    const rel = this.getRelation(A, B);
+    if (!rel.allied) return { ok: false, reason: "You are not allied." };
+    if (rel.atWar) return { ok: false, reason: "Already at war." };
+
+    this._clearPending(A, B);
+    this._clearCeasefirePending(A, B);
+    this._setAlliance(A, B, 0);
+    this._setCeasefire(A, B, 0);
+    this._setWar(A, B, true);
+    const warAttackDelayS = Math.max(0, Number(AI_WAR_DECLARED_ATTACK_DELAY_S) || 0);
+    if (warAttackDelayS > 0 && this._ai) {
+      const until = this.time + warAttackDelayS;
+      if (A !== OWNER.PLAYER && this._ai[A]) {
+        this._ai[A].warOffenseDelayUntil = Math.max(Number(this._ai[A].warOffenseDelayUntil) || 0, until);
+      }
+      if (B !== OWNER.PLAYER && this._ai[B]) {
+        this._ai[B].warOffenseDelayUntil = Math.max(Number(this._ai[B].warOffenseDelayUntil) || 0, until);
+      }
+    }
+
+    this._pushEvent(`${this._nameOf(A)} betrayed ${this._nameOf(B)}. War has begun.`, {
+      kind: "war_declared",
+      from: A,
+      to: B,
+      betrayal: true
+    });
+    this._markNationPairActivity(A, B, 20);
+    return { ok: true, reason: "" };
+  }
+
   makePeace(a, b) {
     const A = a | 0, B = b | 0;
     if (A <= 0 || B <= 0 || A === B) return { ok: false, reason: "Invalid target." };
@@ -5446,6 +5512,7 @@ installStructures(World);
 installWar(World);
 installNavy(World);
 installAirborne(World);
+installDivisions(World);
 installNuke(World);
 installAI(World);
 installBorders(World);

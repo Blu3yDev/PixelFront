@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="pf-supabase-url" content="https://zphpshadygtjjjwlemkz.supabase.co" />
+    <meta name="pf-supabase-anon-key" content="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpwaHBzaGFkeWd0ampqd2xlbWt6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxMjg2OTMsImV4cCI6MjA4NzcwNDY5M30.2nJwEx75asMoIAtwKJ_GPAYVpWUgt_bzfeABDrtSFus" />
+    <meta name="pf-supabase-feedback-table" content="%VITE_SUPABASE_FEEDBACK_TABLE%" />
+    <link rel="icon" type="image/png" href="/GameLogo/pflogo.png" />
+    <title>PixelFront | Feedback Board</title>
+    <script type="module" crossorigin src="/assets/feedbacks-uKk_RWii.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/feedbackApi-DQQn-TYh.js">
+    <link rel="stylesheet" crossorigin href="/assets/feedbackApi-BGLM-5Jx.css">
+    <link rel="stylesheet" crossorigin href="/assets/feedbacks-Td5muP48.css">
+  </head>
+
+  <body class="feedbackBoardPage">
+    <main class="feedbackBoardShell">
+      <section class="feedbackBoardHero">
+        <a class="feedbackBoardBackLink" href="../">Back To Main Menu</a>
+        <div class="feedbackBoardHeroCopy">
+          <p class="feedbackBoardEyebrow">Community Signal</p>
+          <h1 class="feedbackBoardTitle">Public Feedback Board</h1>
+          <p class="feedbackBoardLead">Recent notes published from the main menu land here so you can review bugs, ideas, and balance concerns in one place.</p>
+        </div>
+        <button id="feedbackBoardRefreshBtn" class="feedbackBoardRefreshBtn" type="button">Refresh</button>
+      </section>
+
+      <section class="feedbackBoardPanel" aria-label="Feedback stream">
+        <div class="feedbackBoardPanelHead">
+          <div>
+            <h2 class="feedbackBoardPanelTitle">Latest Reports</h2>
+            <p id="feedbackBoardStatus" class="feedbackBoardStatus">Loading feedback...</p>
+          </div>
+        </div>
+        <div id="feedbackBoardList" class="feedbackBoardList"></div>
+      </section>
+    </main>
+
+  </body>
+</html>

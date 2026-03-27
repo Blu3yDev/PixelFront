@@ -218,7 +218,13 @@ export function installEconomy(World) {
         const upkeepPerTick = (typeof this.getStructureOilUpkeepPerTick === "function")
           ? Math.max(0, Number(this.getStructureOilUpkeepPerTick(type)) || 0)
           : 0;
-        if (count > 0 && upkeepPerTick > 0 && this._oilUpkeepStructuresByOwner && this._oilUpkeepStructuresByOwner[ownerId]) {
+        const baseOperationalCount = Math.max(
+          0,
+          (typeof this._structureBaseOperationalCount === "function")
+            ? (this._structureBaseOperationalCount(st) | 0)
+            : count
+        );
+        if (baseOperationalCount > 0 && upkeepPerTick > 0 && this._oilUpkeepStructuresByOwner && this._oilUpkeepStructuresByOwner[ownerId]) {
           this._oilUpkeepStructuresByOwner[ownerId].push(st);
         }
       }

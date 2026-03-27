@@ -147,6 +147,230 @@ function frontlineWidthMul(frontlineCount, baseline = 8) {
   return Math.max(0.72, Math.min(2.45, m));
 }
 
+function frontlineShapeMul(world, attacker, defender, frontierRaw, baseline = 8) {
+  const frontier = Array.isArray(frontierRaw)
+    ? frontierRaw
+    : (frontierRaw && typeof frontierRaw[Symbol.iterator] === "function")
+      ? Array.from(frontierRaw)
+      : [];
+  const count = Math.max(0, frontier.length | 0);
+  if (count <= 0) return 0.34;
+
+  const sampleCap = Math.max(1, Math.min(30, count));
+  const stride = Math.max(1, Math.floor(count / sampleCap));
+  let samples = 0;
+  let supportSum = 0;
+  let supportedTiles = 0;
+
+  for (let i = 0; i < count && samples < sampleCap; i += stride) {
+    const idx = frontier[i] | 0;
+    const stats = collectFrontlineNeighborhood(world, attacker, defender, idx);
+    if (!stats) continue;
+    supportSum += attackSupportScoreFromStats(stats);
+    if ((stats.atk4 | 0) >= 2 || (stats.atkOuter | 0) >= 3) supportedTiles++;
+    samples++;
+  }
+  if (samples <= 0) return 0.22;
+
+  const avgSupport = clamp01(supportSum / samples);
+  const supportedFrac = clamp01(supportedTiles / samples);
+  const widthBase = Math.max(1, Number(baseline) || 8);
+  const widthRatio = Math.sqrt(Math.max(0.25, count / widthBase));
+  const widthCredit = Math.max(0.60, Math.min(1.10, 0.76 + ((widthRatio - 1) * 0.20)));
+  const supportMul = 0.14 + (avgSupport * 0.96) + (supportedFrac * 0.30);
+  return Math.max(0.18, Math.min(1.10, supportMul * widthCredit));
+}
+
+function collectFrontlineNeighborhood(world, attacker, defender, idx) {
+  const i = idx | 0;
+  if (!world?.land?.[i]) return null;
+
+  const A = attacker | 0;
+  const D = defender | 0;
+  const w = world.w | 0;
+  const h = world.h | 0;
+  const x = i % w;
+  const y = (i / w) | 0;
+  const owner = world.owner;
+  const land = world.land;
+
+  let atk4 = 0;
+  let def4 = 0;
+  let open4 = 0;
+  let other4 = 0;
+  let atk8 = 0;
+  let def8 = 0;
+  let neutral8 = 0;
+  let other8 = 0;
+  let land8 = 0;
+  let atkOuter = 0;
+  let defOuter = 0;
+  let neutralOuter = 0;
+  let otherOuter = 0;
+  let landOuter = 0;
+  let atkL = 0;
+  let atkR = 0;
+  let atkU = 0;
+  let atkD = 0;
+
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const xx = x + dx;
+      const yy = y + dy;
+      const cardinal = (dx === 0 || dy === 0);
+
+      if (xx < 0 || yy < 0 || xx >= w || yy >= h) {
+        if (cardinal) open4++;
+        continue;
+      }
+
+      const ni = yy * w + xx;
+      if (!land[ni]) {
+        if (cardinal) open4++;
+        continue;
+      }
+
+      land8++;
+      const o = owner[ni] | 0;
+      if (o === A) {
+        atk8++;
+        if (cardinal) {
+          atk4++;
+          if (dx < 0) atkL = 1;
+          else if (dx > 0) atkR = 1;
+          else if (dy < 0) atkU = 1;
+          else if (dy > 0) atkD = 1;
+        }
+      } else if (o === D) {
+        def8++;
+        if (cardinal) def4++;
+      } else if (o === OWNER.NONE) {
+        neutral8++;
+        if (cardinal) open4++;
+      } else {
+        other8++;
+        if (cardinal) other4++;
+      }
+    }
+  }
+
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) <= 1) continue;
+
+      const xx = x + dx;
+      const yy = y + dy;
+      if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+
+      const ni = yy * w + xx;
+      if (!land[ni]) continue;
+
+      landOuter++;
+      const o = owner[ni] | 0;
+      if (o === A) atkOuter++;
+      else if (o === D) defOuter++;
+      else if (o === OWNER.NONE) neutralOuter++;
+      else otherOuter++;
+    }
+  }
+
+  return {
+    atk4,
+    def4,
+    open4,
+    other4,
+    atk8,
+    def8,
+    neutral8,
+    other8,
+    land8,
+    atkOuter,
+    defOuter,
+    neutralOuter,
+    otherOuter,
+    landOuter,
+    atkL,
+    atkR,
+    atkU,
+    atkD
+  };
+}
+
+function attackSupportScoreFromStats(stats) {
+  if (!stats) return 0;
+  const {
+    atk4,
+    def4,
+    atk8,
+    def8,
+    neutral8,
+    other8,
+    land8,
+    atkOuter,
+    defOuter,
+    neutralOuter,
+    otherOuter,
+    landOuter,
+    atkL,
+    atkR,
+    atkU,
+    atkD
+  } = stats;
+
+  let score = 0;
+  if (atk4 >= 2) score += 0.46 + Math.max(0, atk4 - 2) * 0.14;
+  else if (atk4 === 1) score += 0.20;
+  score += Math.min(0.30, atk8 * 0.05);
+  score += Math.max(0, 3 - def4) * 0.04;
+  score -= Math.min(0.26, def8 * 0.03);
+  score -= Math.min(0.12, (neutral8 + other8) * 0.03);
+  score += Math.min(0.26, atkOuter * 0.05);
+  score += Math.min(0.10, Math.max(0, atkOuter - defOuter) * 0.025);
+  score -= Math.min(0.18, Math.max(0, defOuter - atkOuter) * 0.022);
+  score -= Math.min(0.08, (neutralOuter + otherOuter) * 0.02);
+
+  if (atk4 <= 1 && atkOuter <= 0) score *= 0.16;
+  else if (atk4 <= 1 && atkOuter <= 2) score *= 0.30;
+  else if (atk4 <= 1 && atk8 <= 2) score *= 0.42;
+  else if (atk4 <= 1) score *= 0.58;
+  if (def4 >= 3 && atk4 <= 1) score *= 0.82;
+  if (land8 >= 6 && def8 >= 6 && atk8 <= 2) score *= 0.72;
+  if (landOuter >= 8 && atkOuter <= 1 && defOuter >= 5) score *= 0.72;
+  const corridor = ((atkL && atkR) || (atkU && atkD)) && atk4 === 2;
+  if (corridor && def4 >= 2) score *= 0.38;
+  else if (corridor) score *= 0.52;
+
+  return clamp01(score);
+}
+
+function focusAttackLineEffortMul(supportRaw, frontierCountRaw, baseline = 6) {
+  const support = clamp01(supportRaw);
+  const frontlineCount = Math.max(1, Number(frontierCountRaw) || 1);
+  const widthBase = Math.max(1, Number(baseline) || 6);
+  const widthRatio = Math.sqrt(Math.max(0.08, frontlineCount / widthBase));
+  const widthCredit = Math.max(0.28, Math.min(1, widthRatio));
+  const thinPenalty = clamp01((0.74 - support) / 0.74);
+  return 1 + (thinPenalty * (0.72 + ((1 - widthCredit) * 1.10)));
+}
+
+function encirclementScoreFromStats(stats) {
+  if (!stats) return 0;
+  const { atk4, def4, open4, other4 } = stats;
+
+  let score = 0;
+  if (atk4 >= 2) score += (atk4 - 1) * 0.24;
+  if (atk4 === 4) score += 0.08;
+  if (def4 <= 1) score += 0.22;
+  if (open4 === 0) score += 0.18;
+  if (open4 <= 1 && atk4 >= 3) score += 0.06;
+  if (other4 === 0 && open4 === 0 && atk4 >= 3) score += 0.12;
+  score -= def4 * 0.06;
+
+  return clamp01(score);
+}
+
 export function installWar(World) {
   World.prototype._capitalSiegeReady = function(attackerId, defenderId, capIdx, overrun = 0) {
     const A = attackerId | 0;
@@ -740,9 +964,11 @@ export function installWar(World) {
         if (!Number.isFinite(nextWidthAt) || now >= nextWidthAt) {
           const front = this._collectFrontlineCandidates(A, D, 140, 3400);
           op._frontWidth = Math.max(1, (front?.length | 0) || 1);
+          op._frontShapeMul = frontlineShapeMul(this, A, D, front, 10);
           op._frontWidthAt = now + 0.25;
         }
         const widthMul = frontlineWidthMul(op._frontWidth, 10);
+        const frontShape = Math.max(0.30, Math.min(1.10, Number(op._frontShapeMul) || 0.70));
         const stability = this._stabilityFactor(A);
         const attackPressure = Math.max(1, attackingNow + WAR_CAPTURE_ATTACK_FLOOR);
         const superiorityMul = this._warSuperiorityMul(A, D, attackingNow);
@@ -750,9 +976,9 @@ export function installWar(World) {
         const collapseBoost = (!this.nation[D]?.capital || this.nation[D]?.collapsed)
           ? (1 + Math.min(2.2, overrun * 2.1))
           : 1;
-        const perSec = (BURST_CAPTURE_K * Math.sqrt(attackPressure)) * stability * pace * widthMul * superiorityMul * collapseBoost;
+        const perSec = (BURST_CAPTURE_K * Math.sqrt(attackPressure)) * stability * pace * widthMul * frontShape * superiorityMul * collapseBoost;
         op.carry += perSec * dt;
-        op.carry = Math.min(op.carry, BURST_CARRY_CAP * pace * collapseBoost);
+        op.carry = Math.min(op.carry, BURST_CARRY_CAP * pace * collapseBoost * Math.max(0.48, frontShape));
 
         const maxByTroops = Math.max(0, Math.floor(attackingNow / WAR_OCCUPY_TROOPS_PER_TILE));
         const burstFlipCap = Math.max(1, Math.round(BURST_MAX_FLIPS_PER_TICK * pace * opWorkMul * collapseBoost));
@@ -875,6 +1101,13 @@ export function installWar(World) {
           continue;
         }
 
+        const now = Number(this.time) || 0;
+        const nextShapeAt = Number(op._frontShapeAt || 0);
+        if (!Number.isFinite(nextShapeAt) || now >= nextShapeAt) {
+          op._frontShapeMul = frontlineShapeMul(this, A, D, op.frontier, 6);
+          op._frontShapeAt = now + 0.30;
+        }
+
         const attackingNow = this._initAttackPool(op);
         if (attackingNow < WAR_OCCUPY_TROOPS_PER_TILE) {
           if (A === OWNER.PLAYER) this._pushEvent("Focus attack ended (no attacking troops remaining).");
@@ -883,6 +1116,7 @@ export function installWar(World) {
         }
 
         const widthMul = frontlineWidthMul(op.frontier?.size || 1, 6);
+        const frontShape = Math.max(0.30, Math.min(1.10, Number(op._frontShapeMul) || 0.68));
         const stability = this._stabilityFactor(A);
         const attackPressure = Math.max(1, attackingNow + WAR_CAPTURE_ATTACK_FLOOR);
         const superiorityMul = this._warSuperiorityMul(A, D, attackingNow);
@@ -890,9 +1124,9 @@ export function installWar(World) {
         const collapseBoost = (!this.nation[D]?.capital || this.nation[D]?.collapsed)
           ? (1 + Math.min(2.2, overrun * 2.0))
           : 1;
-        const perSec = (OP_CAPTURE_K * Math.sqrt(attackPressure)) * stability * pace * widthMul * superiorityMul * collapseBoost;
+        const perSec = (OP_CAPTURE_K * Math.sqrt(attackPressure)) * stability * pace * widthMul * frontShape * superiorityMul * collapseBoost;
         op.carry += perSec * dt;
-        op.carry = Math.min(op.carry, OP_CARRY_CAP * pace * collapseBoost);
+        op.carry = Math.min(op.carry, OP_CARRY_CAP * pace * collapseBoost * Math.max(0.48, frontShape));
 
         let flips = 0;
         const opFlipCap = Math.max(1, Math.round(OP_MAX_FLIPS_PER_TICK * pace * opWorkMul * collapseBoost));
@@ -910,7 +1144,11 @@ export function installWar(World) {
             const support = this._attackSupportScore(A, D, idx);
             const baseWeakness = Math.max(weakness, overrun * 0.80);
             const effectiveWeakness = clamp01(baseWeakness * (0.18 + 0.82 * support));
-            const effort = this._captureEffortForWeakness(effectiveWeakness) * Math.max(0.40, 1 - 0.30 * overrun);
+            const lineEffortMul = focusAttackLineEffortMul(support, op.frontier?.size || 1, 6);
+            const effort =
+              this._captureEffortForWeakness(effectiveWeakness) *
+              lineEffortMul *
+              Math.max(0.40, 1 - 0.30 * overrun);
             const spend = WAR_OCCUPY_TROOPS_PER_TILE * effort;
             if (poolNow + 1e-6 < spend) break;
             const defInf = Math.max(0, Number(this.nation[D]?.infantry) || 0);

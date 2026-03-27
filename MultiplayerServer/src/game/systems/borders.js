@@ -1716,7 +1716,7 @@ export function installBorders(World) {
       return (op.kind === "neutral") ? OWNER.NONE : (op.defender | 0);
     }
 
-  World.prototype._opFrontierPriority = function(attackerId, idx) {
+  World.prototype._opFrontierPriority = function(attackerId, idx, op = null) {
       const A = attackerId | 0;
       const w = this.w | 0;
       const h = this.h | 0;
@@ -1745,7 +1745,13 @@ export function installBorders(World) {
       const mag = this._terrainCaptureMul(idx);
       const jitter = ((this._rng() * 8) | 0) + 10;
       const tickNow = ((this._simTick | 0) || 0);
-      return (jitter * (1 - ownedByMe * 0.5 + mag * 0.5)) + tickNow;
+      let supportPenalty = 0;
+      const defender = op ? (op.defender | 0) : 0;
+      if (defender > 0 && typeof this._attackSupportScore === "function") {
+        const support = clamp01(this._attackSupportScore(A, defender, idx));
+        supportPenalty = (1 - support) * 18;
+      }
+      return (jitter * (1 - ownedByMe * 0.5 + mag * 0.5)) + supportPenalty + tickNow;
     }
 
   World.prototype._isOpFrontierCandidate = function(op, attackerId, idx) {
@@ -1783,7 +1789,7 @@ export function installBorders(World) {
           op.frontier.delete(idx);
           continue;
         }
-        heapPush(q, idx, this._opFrontierPriority(A, idx));
+        heapPush(q, idx, this._opFrontierPriority(A, idx, op));
       }
       return heapSize(q);
     }
@@ -1913,7 +1919,7 @@ export function installBorders(World) {
 
         op.frontier.add(ni);
         if (isNeutral) op._neutralRingDirty = 1;
-        else heapPush(q, ni, this._opFrontierPriority(attacker, ni));
+        else heapPush(q, ni, this._opFrontierPriority(attacker, ni, op));
       };
 
       if (x > 0) tryAdd((idx - 1) | 0);

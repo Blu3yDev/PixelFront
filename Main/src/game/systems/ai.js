@@ -343,11 +343,13 @@ export function installAI(World) {
   World.prototype._aiDesiredAllyCount = function(id, persona) {
       const A = id | 0;
       const p = persona || AI_PERSONAS[0];
+      const runaway = this._aiRunawayNation(0.15);
 
       let desired = 1;
       if (clamp01(Number(p.diplomacy ?? 0.5)) >= 0.62) desired += 1;
       if (clamp01(Number(p.coalition ?? 0.5)) >= 0.70) desired += 1;
       if (this._anyWar(A)) desired += 1;
+      if (runaway.id && runaway.id !== A && runaway.share >= 0.18) desired += 1;
 
       return clampInt(desired, 1, 3);
     }
@@ -415,6 +417,9 @@ export function installAI(World) {
       const threat = threatId | 0;
       const coalition = clamp01(Number(p.coalition ?? 0.5));
       const runaway = this._aiRunawayNation(0.11 + (0.08 * (1 - coalition)));
+      const runawayPressure = runaway.id
+        ? clamp01((Math.max(0, Number(runaway.share) || 0) - 0.12) / 0.22)
+        : 0;
 
       let best = 0;
       let bestScore = -9e9;
@@ -444,9 +449,15 @@ export function installAI(World) {
         score -= bWars * 0.32;
         if (ratio < 0.45) score -= 0.28;
         if (ratio > 2.25) score -= 0.16;
+        if (runaway.id === B) score -= 1.10 * (0.65 + (0.35 * runawayPressure));
 
         if (threat && this._bordersTouch(B, threat)) score += 0.95;
-        if (runaway.id && B !== runaway.id && this._bordersTouch(B, runaway.id)) score += 0.70 * coalition;
+        if (runaway.id && B !== runaway.id && this._bordersTouch(B, runaway.id)) {
+          score += (0.70 + (0.55 * runawayPressure)) * coalition;
+        }
+        if (runaway.id && B !== runaway.id && (bStr > mine * (1.05 - (0.10 * runawayPressure)))) {
+          score += 0.18 * runawayPressure;
+        }
         if (this._bordersTouch(A, B)) score += 0.18;
         if (B === OWNER.PLAYER) score += 0.04;
 
@@ -482,6 +493,9 @@ export function installAI(World) {
       const coalition = clamp01(Number(p.coalition ?? 0.5));
       const threatTol = Math.max(0.75, Number(p.threatTolerance ?? 1.05));
       const runaway = this._aiRunawayNation(0.14);
+      const runawayPressure = runaway.id
+        ? clamp01((Math.max(0, Number(runaway.share) || 0) - 0.12) / 0.24)
+        : 0;
 
       let bestId = 0;
       let bestRatio = 0;
@@ -513,7 +527,7 @@ export function installAI(World) {
         minRatio += wars * 0.08;
         if (threat.id && threat.id !== B && threat.ratio > threatTol) minRatio += 0.08;
         if (warsB >= 1) minRatio -= 0.04;
-        if (runaway.id === B) minRatio -= 0.08 * coalition;
+        if (runaway.id === B) minRatio -= (0.08 + (0.10 * runawayPressure)) * coalition;
         if (!touching) minRatio += endgameMode ? 0.05 : 0.12;
         // Low-readiness states demand stronger local superiority before a declaration.
         minRatio += Math.max(0, 0.50 - readiness) * 0.70;
@@ -526,7 +540,10 @@ export function installAI(World) {
         score += (ratio - minRatio) * 1.55;
         score += landB * 0.0009;
         score += warsB * 0.08;
-        if (runaway.id === B) score += 0.55 * coalition;
+        if (runaway.id === B) score += (0.55 + (0.70 * runawayPressure)) * coalition;
+        if (runaway.id && B !== runaway.id && this._bordersTouch(B, runaway.id)) {
+          score += 0.10 * runawayPressure * coalition;
+        }
         if (threat.id === B) score += 0.35;
         if (this._countAllies(B) >= Math.max(1, MAX_ALLIES - 1)) score += 0.12;
         if (this._anyWar(B)) score += 0.10;
@@ -2747,6 +2764,9 @@ export function installAI(World) {
       const threat = this._aiStrongestNeighborThreat(A, myStr);
       const threatTol = Math.max(0.75, Number(p.threatTolerance ?? 1.05));
       const underThreat = threat.ratio > threatTol;
+      const runaway = this._aiRunawayNation(0.16);
+      const runawayStrong = !!(runaway.id && runaway.id !== A && runaway.share >= 0.18);
+      const runawayThreat = runawayStrong && ((threat.id | 0) === (runaway.id | 0));
 
       let mobT = p.mobTarget;
       let arT = p.attackTarget;
@@ -2768,6 +2788,14 @@ export function installAI(World) {
         mobT = Math.min(0.90, mobT + 0.10);
         arT = Math.min(0.82, arT + 0.03);
         if (atWar) arT = Math.max(arT, 0.38);
+      }
+      if (!atWar && runawayStrong) {
+        mobT = Math.min(0.84, mobT + 0.06);
+        arT = Math.min(0.74, arT + 0.04);
+      }
+      if (runawayThreat) {
+        mobT = Math.min(0.90, mobT + 0.05);
+        arT = Math.min(0.84, arT + 0.05);
       }
 
       // If economy is strained and peace is stable, cool down mobilization.
@@ -2837,6 +2865,10 @@ export function installAI(World) {
       const threat = this._aiStrongestNeighborThreat(A, myStr);
       const threatTol = Math.max(0.75, Number(p.threatTolerance ?? 1.05));
       const underThreat = threat.ratio > threatTol;
+      const coalitionBias = clamp01(Number(p.coalition ?? 0.5));
+      const runaway = this._aiRunawayNation(0.14 + (0.06 * (1 - coalitionBias)));
+      const runawayStrong = !!(runaway.id && runaway.id !== A && runaway.share >= 0.18);
+      const runawayBorder = runawayStrong && this._bordersTouch(A, runaway.id);
       const builtCore = cities + fac + barr;
       const buildContext = {
         atWar,
@@ -2883,6 +2915,9 @@ export function installAI(World) {
       if (atWar) desiredBarr += 1;
       if (atWar && troopFill < 0.55) desiredBarr += 1;
       if (underThreat && land >= 1400) desiredBarr += 1;
+      if (runawayStrong) desiredFac += 1;
+      if (runawayStrong && land >= 4200) desiredCities += 1;
+      if (runawayBorder) desiredBarr += 1;
 
       const candidates = [];
       const addCandidate = (type, score, pref = "any", extra = null) => {
@@ -2915,6 +2950,7 @@ export function installAI(World) {
         let score = 2.8 + (factoryGap * 1.55);
         score += steelPressure * 1.7;
         score += clamp01((1.35 - steelPS) / 1.35) * 0.75;
+        if (runawayStrong) score += 0.55;
         score *= 0.78 + ((p.buildW?.factory || 0.33) * 0.95);
         addCandidate("factory", score, "interior", {
           allowStack: true,
@@ -2929,6 +2965,7 @@ export function installAI(World) {
         score += (1 - troopFill) * 1.4;
         if (atWar) score += 1.25;
         if (underThreat) score += 0.95;
+        if (runawayBorder) score += 0.65;
         score *= 0.78 + ((p.buildW?.barracks || 0.33) * 0.95);
         addCandidate("barracks", score, atWar ? "border" : "any", {
           allowStack: !atWar,
@@ -2975,11 +3012,13 @@ export function installAI(World) {
       let desiredDefence = 0;
       if (atWar) desiredDefence = Math.max(1, Math.floor(land / 900));
       else if (underThreat) desiredDefence = Math.max(1, Math.floor(land / 1800));
+      if (runawayBorder) desiredDefence = Math.max(desiredDefence, 1 + Math.floor(land / 2200));
       desiredDefence = clampInt(desiredDefence, 0, 8);
       if (defencePosts < desiredDefence) {
         let score = 2.5 + ((desiredDefence - defencePosts) * 1.30);
         if (atWar) score += 1.10;
         if (underThreat) score += 0.75;
+        if (runawayBorder) score += 0.75;
         addCandidate("defence_post", score, "border", {
           allowStack: false,
           existingCount: defencePosts,
@@ -2992,6 +3031,7 @@ export function installAI(World) {
       if (land >= 8000 && cities >= 4 && fac >= 2) desiredLabs += 1;
       if (land >= 18000 && cities >= 7 && fac >= 4) desiredLabs += 1;
       if (atWar && underThreat) desiredLabs = Math.max(0, desiredLabs - 1);
+      if (runawayStrong && land >= 4200) desiredLabs += 1;
       desiredLabs = clampInt(desiredLabs, 0, 3);
       if (researchLabs < desiredLabs) {
         const rpPressure = clamp01(((0.45 + land / 6000) - researchIncome) / Math.max(0.5, 0.45 + land / 6000));
@@ -2999,6 +3039,7 @@ export function installAI(World) {
         score += rpPressure * 1.35;
         score += clamp01(Number(p.econ ?? 0.5)) * 0.22;
         if (atWar) score -= 0.45;
+        if (runawayStrong) score += 0.90;
         addCandidate("research_lab", score, "interior", {
           allowStack: true,
           stackBias: 0.12,
@@ -3169,14 +3210,22 @@ export function installAI(World) {
       const threat = this._aiStrongestNeighborThreat(A, myStr);
       const threatTol = Math.max(0.75, Number(p.threatTolerance ?? 1.05));
       const underThreat = threat.ratio > threatTol;
+      const runawayNow = this._aiRunawayNation(0.13 + (0.08 * (1 - coalition)));
+      const runawayStrong = !!(runawayNow.id && runawayNow.id !== A && runawayNow.share >= 0.18);
       const allyCount = this._countAllies(A);
       const desiredAllies = this._aiDesiredAllyCount(A, p);
       const pendingAllianceOut = this._aiPendingAllianceOutgoingCount(A);
-      const diplomacyWarmup = this.time >= ((underThreat || wars > 0) ? 12 : 30);
+      const diplomacyWarmup = this.time >= ((underThreat || wars > 0 || runawayStrong) ? 10 : 30);
       if (endgameMode && wars === 0 && endgame.activeWars <= 0) {
         const cooldownNow = Number(ai.warCooldownUntil) || 0;
         if (cooldownNow > this.time + 4) {
           ai.warCooldownUntil = this.time + 1.5 + this._rng() * 2.5;
+        }
+      }
+      if (!endgameMode && wars === 0 && runawayStrong) {
+        const cooldownNow = Number(ai.warCooldownUntil) || 0;
+        if (cooldownNow > this.time + 12) {
+          ai.warCooldownUntil = this.time + 4.0 + this._rng() * 8.0;
         }
       }
       const canSeekAlliance =
@@ -3392,10 +3441,14 @@ export function installAI(World) {
         }
       }
 
-      const runaway = this._aiRunawayNation(0.12 + (0.08 * (1 - coalition)));
+      const runaway = runawayNow;
+      const runawayPressure = runaway.id
+        ? clamp01((Math.max(0, Number(runaway.share) || 0) - 0.12) / 0.24)
+        : 0;
       const coalitionMoment =
         runaway.id &&
         runaway.id !== A &&
+        runawayPressure > 0.12 &&
         (this._bordersTouch(A, runaway.id) || (threat.id && threat.id === runaway.id));
 
       if (
@@ -3406,7 +3459,7 @@ export function installAI(World) {
         const focusThreat = coalitionMoment ? runaway.id : threat.id;
         const allyPick = this._aiPickAllianceCandidate(A, focusThreat, p, myStr);
         let askP = 0.04 + 0.18 * diplomacy;
-        if (coalitionMoment) askP += 0.12 * coalition;
+        if (coalitionMoment) askP += (0.10 + 0.16 * runawayPressure) * coalition;
         if (underThreat) askP += 0.12;
         if (!allyPick) {
           ai.allianceCooldownUntil = this.time + 10 + this._rng() * 16;
@@ -3457,6 +3510,9 @@ export function installAI(World) {
               declareP += 0.17 * readiness;
               if (warPick.ratio > 1.16) declareP += 0.04;
               if (warPick.ratio > 1.40) declareP += 0.06;
+              if (runaway.id && warPick.id === runaway.id) {
+                declareP += 0.09 + (0.10 * coalition * runawayPressure);
+              }
               if (underThreat && warPick.id !== threat.id) declareP -= 0.08;
               if (allyCount > 0) declareP += 0.05;
               if (this._aiHasOperation(A, "neutral") || this._aiHasOperation(A, "burst")) {

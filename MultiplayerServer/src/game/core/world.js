@@ -3832,6 +3832,19 @@ placeStructure(type, ownerId, x, y) {
     return { ok: false, reason: "Barracks are passive in this build (no manual training)." };
   }
 
+  _isGameplayLand(idxRaw) {
+    const idx = idxRaw | 0;
+    const total = Math.max(0, (this.w | 0) * (this.h | 0));
+    if (idx < 0 || idx >= total) return false;
+    if (this.land && idx < this.land.length && !!this.land[idx]) return true;
+
+    const ownerVal = (this.owner && idx < this.owner.length) ? (this.owner[idx] | 0) : 0;
+    if (ownerVal > OWNER.NONE) return true;
+
+    const biomeVal = (this.biome && idx < this.biome.length) ? (this.biome[idx] | 0) : BIOME.OCEAN_SHALLOW;
+    return biomeVal !== BIOME.OCEAN_DEEP && biomeVal !== BIOME.OCEAN_SHALLOW && biomeVal !== BIOME.CORAL_REEF;
+  }
+
   // Neutral expansion from player selection.
   // If the selection does not touch the border, we may launch a Transport to establish a beachhead (Sect 3).
   startNeutral(indices, attackerId = OWNER.PLAYER) {
@@ -3850,7 +3863,7 @@ placeStructure(type, ownerId, x, y) {
     const target = new Set();
     for (const idx0 of set) {
       const idx = idx0 | 0;
-      if (!this.land[idx]) continue;
+      if (!this._isGameplayLand(idx)) continue;
       if ((this.owner[idx] | 0) !== OWNER.NONE) continue;
       target.add(idx);
     }
@@ -3869,19 +3882,19 @@ placeStructure(type, ownerId, x, y) {
       let ni = 0;
       if (x > 0) {
         ni = idx - 1;
-        if (this.land[ni] && existingTarget.has(ni)) return true;
+        if (this._isGameplayLand(ni) && existingTarget.has(ni)) return true;
       }
       if (x + 1 < w) {
         ni = idx + 1;
-        if (this.land[ni] && existingTarget.has(ni)) return true;
+        if (this._isGameplayLand(ni) && existingTarget.has(ni)) return true;
       }
       if (y > 0) {
         ni = idx - w;
-        if (this.land[ni] && existingTarget.has(ni)) return true;
+        if (this._isGameplayLand(ni) && existingTarget.has(ni)) return true;
       }
       if (y + 1 < h) {
         ni = idx + w;
-        if (this.land[ni] && existingTarget.has(ni)) return true;
+        if (this._isGameplayLand(ni) && existingTarget.has(ni)) return true;
       }
       return false;
     };
@@ -4868,7 +4881,7 @@ placeStructure(type, ownerId, x, y) {
 
     const target = new Set();
     for (const idx of set) {
-      if (!this.land[idx]) continue;
+      if (!this._isGameplayLand(idx)) continue;
       if (this.owner[idx] !== D) continue;
       target.add(idx);
     }
@@ -5133,6 +5146,41 @@ placeStructure(type, ownerId, x, y) {
       to: B
     });
     this._markNationPairActivity(A, B, 18);
+    return { ok: true, reason: "" };
+  }
+
+  betrayAlliance(a, b) {
+    const A = a | 0, B = b | 0;
+    if (A <= 0 || B <= 0 || A === B) return { ok: false, reason: "Invalid target." };
+    if (!this.nation[A]?.alive || !this.nation[B]?.alive) return { ok: false, reason: "Target not alive." };
+
+    const rel = this.getRelation(A, B);
+    if (!rel.allied) return { ok: false, reason: "You are not allied." };
+    if (rel.atWar) return { ok: false, reason: "Already at war." };
+
+    this._clearPending(A, B);
+    this._clearCeasefirePending(A, B);
+    this._setAlliance(A, B, 0);
+    this._setCeasefire(A, B, 0);
+    this._setWar(A, B, true);
+    const warAttackDelayS = Math.max(0, Number(AI_WAR_DECLARED_ATTACK_DELAY_S) || 0);
+    if (warAttackDelayS > 0 && this._ai) {
+      const until = this.time + warAttackDelayS;
+      if (A !== OWNER.PLAYER && this._ai[A]) {
+        this._ai[A].warOffenseDelayUntil = Math.max(Number(this._ai[A].warOffenseDelayUntil) || 0, until);
+      }
+      if (B !== OWNER.PLAYER && this._ai[B]) {
+        this._ai[B].warOffenseDelayUntil = Math.max(Number(this._ai[B].warOffenseDelayUntil) || 0, until);
+      }
+    }
+
+    this._pushEvent(`${this._nameOf(A)} betrayed ${this._nameOf(B)}. War has begun.`, {
+      kind: "war_declared",
+      from: A,
+      to: B,
+      betrayal: true
+    });
+    this._markNationPairActivity(A, B, 20);
     return { ok: true, reason: "" };
   }
 

@@ -76,6 +76,10 @@ const MATCH_LAG_WARN_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_LAG_W
 const MATCH_SNAPSHOT_STATS_INTERVAL_MS = Math.max(200, Number(process.env.MATCH_SNAPSHOT_STATS_INTERVAL_MS || 420));
 const MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS = Math.max(280, Number(process.env.MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS || 650));
 const MATCH_SNAPSHOT_EVENTS_INTERVAL_MS = Math.max(420, Number(process.env.MATCH_SNAPSHOT_EVENTS_INTERVAL_MS || 900));
+const MATCH_EVENT_HISTORY_CAP = Math.max(120, Number(process.env.MATCH_EVENT_HISTORY_CAP || 320));
+const MATCH_SNAPSHOT_PLAYER_EVENTS_MAX = Math.max(6, Number(process.env.MATCH_SNAPSHOT_PLAYER_EVENTS_MAX || 18));
+const MATCH_SNAPSHOT_GLOBAL_EVENTS_MAX = Math.max(8, Number(process.env.MATCH_SNAPSHOT_GLOBAL_EVENTS_MAX || 32));
+const MATCH_SNAPSHOT_LEADERBOARD_MAX = Math.max(8, Number(process.env.MATCH_SNAPSHOT_LEADERBOARD_MAX || 18));
 const MATCH_MEMORY_SOFT_LIMIT_MB = Math.max(768, Number(process.env.MATCH_MEMORY_SOFT_LIMIT_MB || 6144));
 const MATCH_MEMORY_HARD_LIMIT_MB = Math.max(MATCH_MEMORY_SOFT_LIMIT_MB + 256, Number(process.env.MATCH_MEMORY_HARD_LIMIT_MB || 7424));
 const MATCH_MEMORY_HEADROOM_MB = Math.max(128, Number(process.env.MATCH_MEMORY_HEADROOM_MB || 320));
@@ -1157,6 +1161,7 @@ function downshiftSnapshotPayloadForWire(payloadRaw) {
   const out = { ...src };
 
   if (Object.prototype.hasOwnProperty.call(out, "events")) delete out.events;
+  if (Object.prototype.hasOwnProperty.call(out, "globalEvents")) delete out.globalEvents;
   if (Object.prototype.hasOwnProperty.call(out, "relations")) delete out.relations;
   if (Object.prototype.hasOwnProperty.call(out, "nationStats")) delete out.nationStats;
   if (Object.prototype.hasOwnProperty.call(out, "leaderboard")) delete out.leaderboard;
@@ -1165,11 +1170,118 @@ function downshiftSnapshotPayloadForWire(payloadRaw) {
     const ce = { ...out.changedEntities };
     if (Object.prototype.hasOwnProperty.call(ce, "structures")) delete ce.structures;
     if (Object.prototype.hasOwnProperty.call(ce, "operations")) delete ce.operations;
+    if (Object.prototype.hasOwnProperty.call(ce, "tradeDeals")) delete ce.tradeDeals;
+    if (Object.prototype.hasOwnProperty.call(ce, "tradeRequests")) delete ce.tradeRequests;
     if (Object.keys(ce).length > 0) out.changedEntities = ce;
     else delete out.changedEntities;
   }
 
   return out;
+}
+
+function trimSnapshotDecorationsForWire(payloadRaw, optionsRaw = null) {
+  const src = (payloadRaw && typeof payloadRaw === "object") ? payloadRaw : null;
+  if (!src) return payloadRaw;
+  const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : {};
+  let changed = false;
+  const out = { ...src };
+
+  const trimTail = (key, maxCountRaw) => {
+    const rows = Array.isArray(out[key]) ? out[key] : null;
+    const maxCount = Math.max(0, Number(maxCountRaw) | 0);
+    if (!rows) return;
+    if (maxCount <= 0) {
+      delete out[key];
+      changed = true;
+      return;
+    }
+    if (rows.length > maxCount) {
+      out[key] = rows.slice(-maxCount);
+      changed = true;
+    }
+  };
+
+  const trimHead = (key, maxCountRaw) => {
+    const rows = Array.isArray(out[key]) ? out[key] : null;
+    const maxCount = Math.max(0, Number(maxCountRaw) | 0);
+    if (!rows) return;
+    if (maxCount <= 0) {
+      delete out[key];
+      changed = true;
+      return;
+    }
+    if (rows.length > maxCount) {
+      out[key] = rows.slice(0, maxCount);
+      changed = true;
+    }
+  };
+
+  if (Object.prototype.hasOwnProperty.call(options, "playerEventsMax")) {
+    trimTail("events", options.playerEventsMax);
+  }
+  if (Object.prototype.hasOwnProperty.call(options, "globalEventsMax")) {
+    trimTail("globalEvents", options.globalEventsMax);
+  }
+  if (Object.prototype.hasOwnProperty.call(options, "leaderboardMax")) {
+    trimHead("leaderboard", options.leaderboardMax);
+  }
+  if (options.dropRelations && Object.prototype.hasOwnProperty.call(out, "relations")) {
+    delete out.relations;
+    changed = true;
+  }
+  if (options.dropGlobalEvents && Object.prototype.hasOwnProperty.call(out, "globalEvents")) {
+    delete out.globalEvents;
+    changed = true;
+  }
+
+  return changed ? out : src;
+}
+
+function encodeSnapshotPayloadForWire(payloadRaw, { critical = false } = {}) {
+  const src = (payloadRaw && typeof payloadRaw === "object") ? payloadRaw : {};
+  const encode = (candidateRaw) => {
+    const candidate = (candidateRaw && typeof candidateRaw === "object") ? candidateRaw : {};
+    const text = JSON.stringify(candidate);
+    return {
+      payload: candidate,
+      text,
+      byteLen: Buffer.byteLength(text)
+    };
+  };
+
+  let encoded = encode(src);
+  if (encoded.byteLen <= MATCH_SNAPSHOT_TARGET_BYTES) return encoded;
+
+  let candidate = trimSnapshotDecorationsForWire(encoded.payload, {
+    playerEventsMax: Math.max(6, Math.round(MATCH_SNAPSHOT_PLAYER_EVENTS_MAX * 0.72)),
+    globalEventsMax: Math.max(8, Math.round(MATCH_SNAPSHOT_GLOBAL_EVENTS_MAX * 0.56)),
+    leaderboardMax: Math.max(8, Math.round(MATCH_SNAPSHOT_LEADERBOARD_MAX * 0.72))
+  });
+  if (candidate !== encoded.payload) {
+    encoded = encode(candidate);
+    if (encoded.byteLen <= MATCH_SNAPSHOT_TARGET_BYTES) return encoded;
+  }
+
+  candidate = trimSnapshotDecorationsForWire(encoded.payload, {
+    playerEventsMax: 6,
+    globalEventsMax: critical ? Math.max(6, Math.round(MATCH_SNAPSHOT_GLOBAL_EVENTS_MAX * 0.38)) : 0,
+    leaderboardMax: 8,
+    dropRelations: !critical,
+    dropGlobalEvents: !critical
+  });
+  if (candidate !== encoded.payload) {
+    encoded = encode(candidate);
+    if (encoded.byteLen <= MATCH_SNAPSHOT_TARGET_BYTES) return encoded;
+  }
+
+  if (!critical) {
+    candidate = downshiftSnapshotPayloadForWire(encoded.payload);
+    if (candidate !== encoded.payload) {
+      encoded = encode(candidate);
+    }
+  }
+
+  return encoded;
 }
 
 function shouldUseLightweightFullSync(runtime, reasonRaw = "") {
@@ -1287,27 +1399,15 @@ function sendSnapshotPayload(lobby, runtime, sessionId, ws, payload, { critical 
     return { sent: false, backpressured: guard.buffered >= MATCH_BACKPRESSURE_SOFT_BYTES, disconnected: !!guard.disconnected };
   }
 
-  let text = "";
+  let encoded = null;
   try {
-    text = JSON.stringify(payload);
+    encoded = encodeSnapshotPayloadForWire(payload, { critical });
   } catch {
     return { sent: false, backpressured: false, disconnected: false };
   }
-
-  let byteLen = Buffer.byteLength(text);
-  if (!critical && byteLen > MATCH_SNAPSHOT_TARGET_BYTES_HARD) {
-    try {
-      const reduced = downshiftSnapshotPayloadForWire(payload);
-      const reducedText = JSON.stringify(reduced);
-      const reducedBytes = Buffer.byteLength(reducedText);
-      if (reducedBytes < byteLen) {
-        text = reducedText;
-        byteLen = reducedBytes;
-      }
-    } catch {
-      // Keep original payload when downshift fails.
-    }
-  }
+  const text = String(encoded?.text || "");
+  const byteLen = Math.max(0, Number(encoded?.byteLen) || 0);
+  if (!text) return { sent: false, backpressured: false, disconnected: false };
 
   try {
     ws.send(text);
@@ -1548,11 +1648,130 @@ function getPlayerFromLobbyOrThrow(lobby, sessionIdRaw, sessionTokenRaw = "") {
   return player;
 }
 
-function appendRuntimeTimelineEvent(runtime, textRaw, extraRaw = null) {
+const EVENT_RELEVANT_NATION_KEYS = Object.freeze([
+  "nationId",
+  "from",
+  "to",
+  "owner",
+  "attacker",
+  "defender",
+  "targetOwner",
+  "winner",
+  "winnerId",
+  "loser",
+  "loserId",
+  "missionDefender",
+  "launchTargetOwner"
+]);
+
+function ensureRuntimeEventHistory(runtime) {
+  if (!runtime || typeof runtime !== "object") return [];
+  if (!Array.isArray(runtime.eventHistory)) runtime.eventHistory = [];
+  return runtime.eventHistory;
+}
+
+function trimEventHistory(history) {
+  if (!Array.isArray(history)) return;
+  const cap = Math.max(60, MATCH_EVENT_HISTORY_CAP | 0);
+  if (history.length > cap) {
+    history.splice(0, history.length - cap);
+  }
+}
+
+function appendEventToWorldBucket(world, bucketKey, capKey, fallbackCap, ev) {
+  if (!world || !bucketKey || !capKey || !ev) return;
+  if (!Array.isArray(world[bucketKey])) world[bucketKey] = [];
+  world[bucketKey].push(ev);
+  const cap = Math.max(30, Number(world[capKey]) || fallbackCap);
+  if (world[bucketKey].length > cap) {
+    world[bucketKey].splice(0, world[bucketKey].length - cap);
+  }
+}
+
+function isRuntimeGlobalRelevantEvent(world, evRaw) {
+  const ev = (evRaw && typeof evRaw === "object") ? evRaw : null;
+  if (!ev) return false;
+  const kind = String(ev.kind || "").trim().toLowerCase();
+  if (kind === "player_joined" || kind === "player_left") return true;
+  if (typeof world?._isGlobalRelevantEvent === "function") {
+    try {
+      if (world._isGlobalRelevantEvent(ev.text, ev)) return true;
+    } catch {
+      // Fall back to key-based relevance when the shared helper throws.
+    }
+  }
+  return (
+    kind === "war_declared" ||
+    kind === "alliance_formed" ||
+    kind === "ally_request" ||
+    kind === "ceasefire_request" ||
+    kind === "nation_collapsed" ||
+    kind === "nation_eliminated" ||
+    kind === "nuke_incoming" ||
+    kind === "player_joined" ||
+    kind === "player_left"
+  );
+}
+
+function getRuntimeEventNationIds(evRaw) {
+  const ev = (evRaw && typeof evRaw === "object") ? evRaw : null;
+  if (!ev) return [];
+  const ids = new Set();
+  for (let i = 0; i < EVENT_RELEVANT_NATION_KEYS.length; i++) {
+    const key = EVENT_RELEVANT_NATION_KEYS[i];
+    const id = Math.max(0, Number(ev[key]) | 0);
+    if (id > 0) ids.add(id);
+  }
+  return Array.from(ids.values()).sort((a, b) => a - b);
+}
+
+function isRuntimeNationRelevantEvent(evRaw, nationIdRaw) {
+  const nationId = Math.max(1, Number(nationIdRaw) | 0);
+  const ids = getRuntimeEventNationIds(evRaw);
+  for (let i = 0; i < ids.length; i++) {
+    if ((ids[i] | 0) === nationId) return true;
+  }
+  return false;
+}
+
+function rememberRuntimeEvent(runtime, evRaw, { globalRelevant = null } = {}) {
+  if (!runtime || !evRaw || typeof evRaw !== "object") return null;
+  const history = ensureRuntimeEventHistory(runtime);
+  const event = cloneWire(evRaw) || null;
+  if (!event || typeof event !== "object") return null;
+  history.push({
+    event,
+    globalRelevant: globalRelevant == null
+      ? isRuntimeGlobalRelevantEvent(runtime.world, event)
+      : !!globalRelevant
+  });
+  trimEventHistory(history);
+  return event;
+}
+
+function installRuntimeEventMirror(world, runtime) {
+  if (!world || !runtime || typeof world !== "object" || typeof world._pushEvent !== "function") return;
+  if (world.__pfRuntimeEventMirrorInstalled) return;
+  const originalPushEvent = world._pushEvent.bind(world);
+  Object.defineProperty(world, "__pfRuntimeEventMirrorInstalled", {
+    value: true,
+    configurable: true,
+    enumerable: false,
+    writable: false
+  });
+  world._pushEvent = (text, extra = null) => {
+    const ev = originalPushEvent(text, extra);
+    if (ev) rememberRuntimeEvent(runtime, ev);
+    return ev;
+  };
+}
+
+function appendRuntimeTimelineEvent(runtime, textRaw, extraRaw = null, optionsRaw = null) {
   const world = runtime?.world;
   if (!world || typeof world !== "object") return null;
   const text = String(textRaw || "").trim();
   if (!text) return null;
+  const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : null;
 
   let id = Number(world._nextEventId) | 0;
   if (id <= 0) id = 1;
@@ -1564,19 +1783,19 @@ function appendRuntimeTimelineEvent(runtime, textRaw, extraRaw = null) {
     if (extra && typeof extra === "object") Object.assign(ev, extra);
   }
 
-  if (!Array.isArray(world.globalEvents)) world.globalEvents = [];
-  world.globalEvents.push(ev);
-  const globalCap = Math.max(30, Number(world._maxGlobalEvents) || 220);
-  if (world.globalEvents.length > globalCap) {
-    world.globalEvents.splice(0, world.globalEvents.length - globalCap);
+  const globalRelevant = options?.global != null
+    ? !!options.global
+    : isRuntimeGlobalRelevantEvent(world, ev);
+  const hostRelevant = isRuntimeNationRelevantEvent(ev, OWNER_PLAYER);
+
+  if (globalRelevant) {
+    appendEventToWorldBucket(world, "globalEvents", "_maxGlobalEvents", 220, ev);
+  }
+  if (hostRelevant) {
+    appendEventToWorldBucket(world, "events", "_maxEvents", 90, ev);
   }
 
-  if (!Array.isArray(world.events)) world.events = [];
-  world.events.push(ev);
-  const eventsCap = Math.max(30, Number(world._maxEvents) || 90);
-  if (world.events.length > eventsCap) {
-    world.events.splice(0, world.events.length - eventsCap);
-  }
+  rememberRuntimeEvent(runtime, ev, { globalRelevant });
 
   return ev;
 }
@@ -1854,6 +2073,7 @@ async function ensureLobbyRuntime(lobby) {
       mediumBackpressuredSockets: 0,
       playerLoadScale: 1,
       netStats: createRuntimeNetStats(),
+      eventHistory: [],
       tileDeltaBacklog: new Map(),
       ownerDeltaOverflowed: false,
       ownerSweepActive: false,
@@ -1862,6 +2082,7 @@ async function ensureLobbyRuntime(lobby) {
       nationToSession: new Map()
     };
     lobby.runtime = runtime;
+    installRuntimeEventMirror(world, runtime);
     applyRuntimeMatchStartModifiers(world, lobby.matchConfig);
     applyRuntimeMatchWorldRestrictions(world, lobby.matchConfig);
     ensureRuntimeAssignments(lobby, runtime);
@@ -2032,7 +2253,7 @@ function serializeLeaderboard(world) {
     return a.id - b.id;
   });
   for (let i = 0; i < rows.length; i++) rows[i].rank = i + 1;
-  return rows;
+  return rows.slice(0, Math.max(8, MATCH_SNAPSHOT_LEADERBOARD_MAX | 0));
 }
 
 function serializeRelations(world) {
@@ -2064,9 +2285,95 @@ function serializeRelations(world) {
   return rel;
 }
 
-function serializeEvents(world) {
-  const events = Array.isArray(world.globalEvents) ? world.globalEvents : [];
-  return cloneWire(events.slice(-180)) || [];
+function hasRuntimeEvents(runtime) {
+  return Array.isArray(runtime?.eventHistory) && runtime.eventHistory.length > 0;
+}
+
+function resolveSnapshotEventCaps(runtime, { fullSync = false, loadShedding = false, territoryPriority = false } = {}) {
+  const loadScale = Math.max(
+    1,
+    Number(runtime?.snapshotLoadScale) || 1,
+    Number(runtime?.memoryLoadScale) || 1,
+    Number(runtime?.playerLoadScale) || 1
+  );
+  const backpressured = (Number(runtime?.backpressuredSockets) | 0) > 0;
+  const pressured = backpressured || loadShedding || territoryPriority || loadScale > 1.25;
+
+  let playerEvents = fullSync
+    ? Math.max(10, MATCH_SNAPSHOT_PLAYER_EVENTS_MAX | 0)
+    : Math.max(8, Math.round((MATCH_SNAPSHOT_PLAYER_EVENTS_MAX | 0) * 0.72));
+  let globalEvents = fullSync
+    ? Math.max(14, MATCH_SNAPSHOT_GLOBAL_EVENTS_MAX | 0)
+    : Math.max(10, Math.round((MATCH_SNAPSHOT_GLOBAL_EVENTS_MAX | 0) * 0.72));
+
+  if (pressured) {
+    playerEvents = Math.max(6, Math.round(playerEvents * 0.70));
+    globalEvents = Math.max(8, Math.round(globalEvents * 0.56));
+  }
+  if (backpressured) {
+    playerEvents = Math.max(5, Math.round(playerEvents * 0.82));
+    globalEvents = Math.max(6, Math.round(globalEvents * 0.72));
+  }
+
+  return { playerEvents, globalEvents };
+}
+
+function serializeRuntimeGlobalEvents(runtime, maxCountRaw = MATCH_SNAPSHOT_GLOBAL_EVENTS_MAX) {
+  const history = Array.isArray(runtime?.eventHistory) ? runtime.eventHistory : [];
+  const maxCount = Math.max(4, Number(maxCountRaw) | 0);
+  const out = [];
+  for (let i = history.length - 1; i >= 0 && out.length < maxCount; i--) {
+    const entry = history[i];
+    if (!entry?.globalRelevant) continue;
+    if (!entry?.event || typeof entry.event !== "object") continue;
+    out.push(entry.event);
+  }
+  out.reverse();
+  return cloneWire(out) || [];
+}
+
+function serializeRuntimeNationEvents(runtime, assignedNationIdRaw, maxCountRaw = MATCH_SNAPSHOT_PLAYER_EVENTS_MAX) {
+  const assignedNationId = Math.max(1, Number(assignedNationIdRaw) | 0);
+  const history = Array.isArray(runtime?.eventHistory) ? runtime.eventHistory : [];
+  const maxCount = Math.max(4, Number(maxCountRaw) | 0);
+  const out = [];
+  for (let i = history.length - 1; i >= 0 && out.length < maxCount; i--) {
+    const entry = history[i];
+    const ev = entry?.event;
+    if (!ev || typeof ev !== "object") continue;
+    if (!isRuntimeNationRelevantEvent(ev, assignedNationId)) continue;
+    out.push(ev);
+  }
+  out.reverse();
+  return cloneWire(out) || [];
+}
+
+function attachSnapshotEventsForSession(packetRaw, runtime, assignedNationIdRaw, optionsRaw = null) {
+  const src = (packetRaw && typeof packetRaw === "object") ? packetRaw : null;
+  if (!src) return {};
+  const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : null;
+  const includeEvents = !!src._includeEvents;
+  const out = { ...src };
+  delete out._includeEvents;
+  delete out._loadShedding;
+  delete out._territoryPriority;
+  delete out._ownerOverflow;
+
+  if (!includeEvents) return out;
+  if (!hasRuntimeEvents(runtime)) {
+    out.events = [];
+    out.globalEvents = [];
+    return out;
+  }
+
+  const caps = resolveSnapshotEventCaps(runtime, {
+    fullSync: !!options?.fullSync,
+    loadShedding: !!options?.loadShedding,
+    territoryPriority: !!options?.territoryPriority
+  });
+  out.events = serializeRuntimeNationEvents(runtime, assignedNationIdRaw, caps.playerEvents);
+  out.globalEvents = serializeRuntimeGlobalEvents(runtime, caps.globalEvents);
+  return out;
 }
 
 function ensureTileDeltaBacklog(runtime) {
@@ -2437,6 +2744,7 @@ function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
   }
 
   if (Array.isArray(packet.events)) mapRows(packet.events, REMAP_ID_KEYS);
+  if (Array.isArray(packet.globalEvents)) mapRows(packet.globalEvents, REMAP_ID_KEYS);
   if (packet.worldMeta && typeof packet.worldMeta === "object") {
     remapDeepNationKeys(packet.worldMeta.gameOver, assigned, REMAP_ID_KEYS);
     remapDeepNationKeys(packet.worldMeta.matchOutcome, assigned, REMAP_ID_KEYS);
@@ -2664,12 +2972,14 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
     serverTime: now,
     code: lobby.code,
     tick: runtime.simTick | 0,
+    _includeEvents: includeEvents,
+    _loadShedding: loadShedding,
+    _territoryPriority: territoryPriority,
     worldMeta: serializeWorldMeta(lobby, runtime),
     changedEntities: serializeEntitiesDelta(world, runtime, fullSync),
     nationStats: includeStats ? serializeNationStats(world) : undefined,
     leaderboard: includeStats ? serializeLeaderboard(world) : undefined,
-    relations: includeRelations ? serializeRelations(world) : undefined,
-    events: includeEvents ? serializeEvents(world) : undefined
+    relations: includeRelations ? serializeRelations(world) : undefined
   };
 
   if (includeStats) runtime.lastStatsSnapshotAtMs = now;
@@ -2775,7 +3085,12 @@ function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual")
   const base = buildSnapshotPacket(lobby, runtime, { fullSync: true });
   const lightweight = shouldUseLightweightFullSync(runtime, reasonStr);
   if (lightweight) applyLightweightFullSyncOwner(runtime, base);
-  const mapped = remapSnapshotForSession(base, assignment.nationId);
+  const withEvents = attachSnapshotEventsForSession(base, runtime, assignment.nationId, {
+    fullSync: true,
+    loadShedding: !!base._loadShedding,
+    territoryPriority: !!base._territoryPriority
+  });
+  const mapped = remapSnapshotForSession(withEvents, assignment.nationId);
   mapped.type = "full_sync";
   mapped.reason = reasonStr;
   const hashMuted = !!mapped.ownerPackedOmitted;
@@ -2806,7 +3121,12 @@ function broadcastFullSync(lobby, runtime, reason = "resync") {
   for (const [sessionId, ws] of lobby.sockets.entries()) {
     const assignment = runtime.assignmentsBySession.get(sessionId);
     if (!assignment) continue;
-    const mapped = remapSnapshotForSession(base, assignment.nationId);
+    const withEvents = attachSnapshotEventsForSession(base, runtime, assignment.nationId, {
+      fullSync: true,
+      loadShedding: !!base._loadShedding,
+      territoryPriority: !!base._territoryPriority
+    });
+    const mapped = remapSnapshotForSession(withEvents, assignment.nationId);
     mapped.type = "full_sync";
     mapped.reason = reasonStr;
     const hashMuted = !!mapped.ownerPackedOmitted;
@@ -2866,7 +3186,7 @@ function broadcastSnapshotDelta(lobby, runtime) {
   const hasEntityDelta = !!(base.changedEntities && typeof base.changedEntities === "object" && Object.keys(base.changedEntities).length > 0);
   const hasStats = Array.isArray(base.nationStats) || Array.isArray(base.leaderboard);
   const hasRelations = !!(base.relations && typeof base.relations === "object");
-  const hasEvents = Array.isArray(base.events);
+  const hasEvents = !!base._includeEvents && hasRuntimeEvents(runtime);
   const hasActiveSpawnPhase = !!(base.worldMeta && base.worldMeta.spawnPhase && base.worldMeta.spawnPhase.active);
   if (!hasTileDelta && !hasEntityDelta && !hasStats && !hasRelations && !hasEvents && !hasActiveSpawnPhase && !includeStateHash) {
     return;
@@ -2877,7 +3197,12 @@ function broadcastSnapshotDelta(lobby, runtime) {
   for (const [sessionId, ws] of lobby.sockets.entries()) {
     const assignment = runtime.assignmentsBySession.get(sessionId);
     if (!assignment) continue;
-    const mapped = remapSnapshotForSession(base, assignment.nationId);
+    const withEvents = attachSnapshotEventsForSession(base, runtime, assignment.nationId, {
+      fullSync: false,
+      loadShedding: !!base._loadShedding,
+      territoryPriority: !!base._territoryPriority
+    });
+    const mapped = remapSnapshotForSession(withEvents, assignment.nationId);
     mapped.type = "snapshot_delta";
     if (includeStateHash && !ws?._stateHashMuted) {
       mapped.stateHash = computeStateHashForWorld(runtime.world, runtime.simTick, assignment.nationId);
@@ -3385,6 +3710,7 @@ function applyPostRegenerateRuntimeState(lobby, runtime, argsRaw) {
   runtime.lastOperationsSnapshotAtMs = 0;
   runtime.lastMobileSnapshotAtMs = 0;
   runtime.lastSnapshotAtMs = 0;
+  if (Array.isArray(runtime.eventHistory)) runtime.eventHistory.length = 0;
   if (runtime.tileDeltaBacklog && typeof runtime.tileDeltaBacklog.clear === "function") {
     runtime.tileDeltaBacklog.clear();
   }

@@ -246,6 +246,9 @@ async function main() {
     if (!fullSync || String(fullSync?.code || "") !== code) {
       throw new Error("Started match did not deliver a valid authoritative full_sync packet.");
     }
+    if (!Array.isArray(fullSync?.events) || !Array.isArray(fullSync?.globalEvents)) {
+      throw new Error("Started match full_sync is missing split event feeds.");
+    }
 
     const startedState = await requestJson("POST", "/api/lobbies/state", { code, sessionToken });
     const viewer = startedState?.data?.viewer || null;
@@ -285,6 +288,9 @@ async function main() {
     if (!reconnectFullSync || String(reconnectFullSync?.code || "") !== code) {
       throw new Error("Reconnect websocket did not receive a valid full_sync for the started match.");
     }
+    if (!Array.isArray(reconnectFullSync?.events) || !Array.isArray(reconnectFullSync?.globalEvents)) {
+      throw new Error("Reconnect full_sync is missing split event feeds.");
+    }
 
     try { reconnectWs.close(); } catch {}
     reconnectTracker.dispose();
@@ -303,6 +309,7 @@ async function main() {
         "lobby_start_accepts_session_token",
         "ws_receives_started_state",
         "started_match_delivers_full_sync",
+        "full_sync_includes_split_event_feeds",
         "started_match_accepts_authoritative_input",
         "started_match_reconnect_restores_full_sync"
       ],

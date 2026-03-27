@@ -1432,7 +1432,7 @@ const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 2300;
 const MULTIPLAYER_FULL_SYNC_REQUEST_MAX_COOLDOWN_MS = 12000;
 const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 2200;
 const MULTIPLAYER_HUD_STATUS_COOLDOWN_MS = 1200;
-const MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS = 240;
+const MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS = 300;
 const MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS = 12;
 const MULTIPLAYER_CATCHUP_HIDE_GAP_TICKS = 7;
 const MULTIPLAYER_CATCHUP_SHOW_MIN_MS = 700;
@@ -1440,12 +1440,12 @@ const MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS = 16;
 const MULTIPLAYER_CATCHUP_HARD_GAP_TICKS = 34;
 const MULTIPLAYER_CATCHUP_STICKY_MS = 240;
 const MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS = 160;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 4.6;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 7.2;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 11.5;
-const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 12;
-const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 24;
-const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 42;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 5.2;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 8.8;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 14.0;
+const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 14;
+const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 32;
+const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 56;
 const MULTIPLAYER_DRAIN_MIN_INTERVAL_MS = 4;
 const MULTIPLAYER_DEFERRED_UI_SYNC_INTERVAL_MS = 90;
 const MULTIPLAYER_HASH_VERIFY_MIN_INTERVAL_MS = 900;
@@ -2374,11 +2374,19 @@ function applyMultiplayerRelations(worldRef, rel) {
   }
 }
 
-function applyMultiplayerEvents(worldRef, eventsRaw) {
+function applyMultiplayerEvents(worldRef, eventsRaw, globalEventsRaw = undefined) {
   if (!worldRef) return;
-  const events = Array.isArray(eventsRaw) ? eventsRaw : [];
-  worldRef.globalEvents = Array.isArray(events) ? events : [];
-  worldRef.events = Array.isArray(events) ? events.slice() : [];
+  if (eventsRaw !== undefined) {
+    const events = Array.isArray(eventsRaw) ? eventsRaw : [];
+    worldRef.events = events.slice();
+    if (globalEventsRaw === undefined && !Array.isArray(worldRef.globalEvents)) {
+      worldRef.globalEvents = events.slice();
+    }
+  }
+  if (globalEventsRaw !== undefined) {
+    const globalEvents = Array.isArray(globalEventsRaw) ? globalEventsRaw : [];
+    worldRef.globalEvents = globalEvents.slice();
+  }
 }
 
 function applyMultiplayerWorldMeta(worldRef, packet) {
@@ -2466,20 +2474,20 @@ function flushMultiplayerPixelWrites(worldRef, ownerAppliedHint = 0) {
   let maxPasses = 4;
   let frameBudgetMs = 2.8;
   if (pendingWrites >= 24000 || gapTicks >= MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS) {
-    maxPasses = 7;
-    frameBudgetMs = 5.0;
+    maxPasses = 8;
+    frameBudgetMs = 5.8;
   }
   if (pendingWrites >= 90000 || gapTicks >= MULTIPLAYER_CATCHUP_HARD_GAP_TICKS) {
-    maxPasses = 10;
-    frameBudgetMs = 7.6;
+    maxPasses = 12;
+    frameBudgetMs = 9.2;
   }
   if (ownerApplied >= 18000) {
-    maxPasses = Math.max(maxPasses, 14);
-    frameBudgetMs = Math.max(frameBudgetMs, 10.5);
+    maxPasses = Math.max(maxPasses, 15);
+    frameBudgetMs = Math.max(frameBudgetMs, 11.5);
   }
   if (ownerApplied >= 50000) {
-    maxPasses = Math.max(maxPasses, 18);
-    frameBudgetMs = Math.max(frameBudgetMs, 14.0);
+    maxPasses = Math.max(maxPasses, 20);
+    frameBudgetMs = Math.max(frameBudgetMs, 15.2);
   }
   const hasPerfNow = (typeof performance !== "undefined" && performance && typeof performance.now === "function");
   const startMs = hasPerfNow ? performance.now() : 0;
@@ -2493,8 +2501,18 @@ function flushMultiplayerPixelWrites(worldRef, ownerAppliedHint = 0) {
 function maybeRefreshMultiplayerDerivedState(worldRef, force = false) {
   if (!worldRef || typeof worldRef !== "object") return;
   const now = Date.now();
-  if (!force && (now - multiplayerLastLabelRecomputeAtMs) < MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS) return;
+  const rawGap = Math.max(0, (multiplayerLatestServerTick | 0) - (multiplayerLastAppliedTick | 0));
+  const gapTicks = Math.max(0, rawGap - MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS);
+  let recomputeIntervalMs = MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS;
+  if (!force && gapTicks >= MULTIPLAYER_CATCHUP_HARD_GAP_TICKS) {
+    recomputeIntervalMs = Math.max(recomputeIntervalMs, 720);
+  } else if (!force && gapTicks >= MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS) {
+    recomputeIntervalMs = Math.max(recomputeIntervalMs, 420);
+  }
+  if (!force && (now - multiplayerLastLabelRecomputeAtMs) < recomputeIntervalMs) return;
   multiplayerLastLabelRecomputeAtMs = now;
+
+  if (!force && gapTicks >= MULTIPLAYER_CATCHUP_HARD_GAP_TICKS) return;
 
   try {
     if (force && typeof worldRef._rebuildLabelStats === "function") {
@@ -2768,8 +2786,8 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
   if (packet.relations && typeof packet.relations === "object") {
     applyMultiplayerRelations(worldRef, packet.relations);
   }
-  if (Array.isArray(packet.events)) {
-    applyMultiplayerEvents(worldRef, packet.events);
+  if (Array.isArray(packet.events) || Array.isArray(packet.globalEvents)) {
+    applyMultiplayerEvents(worldRef, packet.events, packet.globalEvents);
   }
   applyMultiplayerWorldMeta(worldRef, packet);
   maybeRefreshMultiplayerDerivedState(worldRef, isFullSync);
@@ -2864,8 +2882,8 @@ function applyAuthoritativePacketToWorld(worldRef, packet, optionsRaw = null) {
   if (packet.relations && typeof packet.relations === "object") {
     applyMultiplayerRelations(worldRef, packet.relations);
   }
-  if (Array.isArray(packet.events)) {
-    applyMultiplayerEvents(worldRef, packet.events);
+  if (Array.isArray(packet.events) || Array.isArray(packet.globalEvents)) {
+    applyMultiplayerEvents(worldRef, packet.events, packet.globalEvents);
   }
   applyMultiplayerWorldMeta(worldRef, packet);
   maybeRefreshMultiplayerDerivedState(worldRef, isFullSync);

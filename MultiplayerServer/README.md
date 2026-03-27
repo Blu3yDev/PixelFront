@@ -21,6 +21,8 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 3. Run `npm start`.
 4. Service starts on `http://localhost:8080`.
 5. Optional smoke test: `npm run smoke:lobby`
+   - Verifies create/join, token-based recovery, websocket auth, start, initial full sync,
+     authoritative input ack, and reconnect into a started match.
 
 ## API endpoints
 

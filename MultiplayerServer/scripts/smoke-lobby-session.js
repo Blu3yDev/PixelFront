@@ -54,46 +54,90 @@ function requestJson(method, route, body = null) {
   });
 }
 
-function waitForWsMessage(ws, predicate, timeoutMs = 10000) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error("Timed out waiting for websocket message."));
-    }, Math.max(1000, Number(timeoutMs) || 0));
+function createWsTracker(ws) {
+  const queue = [];
+  const waiters = [];
 
-    const onMessage = (raw) => {
-      let msg = null;
-      try {
-        msg = JSON.parse(String(raw || ""));
-      } catch {
-        return;
-      }
-      if (!predicate(msg)) return;
-      cleanup();
-      resolve(msg);
-    };
+  const onMessage = (raw) => {
+    let msg = null;
+    try {
+      msg = JSON.parse(String(raw || ""));
+    } catch {
+      return;
+    }
+    queue.push(msg);
+    flush();
+  };
 
-    const onError = (err) => {
-      cleanup();
-      reject(err);
-    };
+  const onError = (err) => {
+    failWaiters(err);
+  };
 
-    const onClose = () => {
-      cleanup();
-      reject(new Error("Websocket closed before the expected message arrived."));
-    };
+  const onClose = () => {
+    failWaiters(new Error("Websocket closed before the expected message arrived."));
+  };
 
-    function cleanup() {
-      clearTimeout(timeout);
+  function flush() {
+    for (let i = 0; i < waiters.length; i++) {
+      const waiter = waiters[i];
+      const idx = queue.findIndex((msg) => {
+        try {
+          return waiter.predicate(msg);
+        } catch {
+          return false;
+        }
+      });
+      if (idx < 0) continue;
+      const [match] = queue.splice(idx, 1);
+      clearTimeout(waiter.timeout);
+      waiters.splice(i, 1);
+      i--;
+      waiter.resolve(match);
+    }
+  }
+
+  function failWaiters(err) {
+    while (waiters.length > 0) {
+      const waiter = waiters.shift();
+      clearTimeout(waiter.timeout);
+      waiter.reject(err);
+    }
+  }
+
+  ws.on("message", onMessage);
+  ws.on("error", onError);
+  ws.on("close", onClose);
+
+  return {
+    next(predicate, timeoutMs = 10000) {
+      return new Promise((resolve, reject) => {
+        const idx = queue.findIndex((msg) => {
+          try {
+            return predicate(msg);
+          } catch {
+            return false;
+          }
+        });
+        if (idx >= 0) {
+          const [match] = queue.splice(idx, 1);
+          resolve(match);
+          return;
+        }
+        const timeout = setTimeout(() => {
+          const waiterIdx = waiters.findIndex((entry) => entry.reject === reject);
+          if (waiterIdx >= 0) waiters.splice(waiterIdx, 1);
+          reject(new Error("Timed out waiting for websocket message."));
+        }, Math.max(1000, Number(timeoutMs) || 0));
+        waiters.push({ predicate, resolve, reject, timeout });
+      });
+    },
+    dispose() {
       ws.off("message", onMessage);
       ws.off("error", onError);
       ws.off("close", onClose);
+      failWaiters(new Error("Websocket tracker disposed."));
     }
-
-    ws.on("message", onMessage);
-    ws.on("error", onError);
-    ws.on("close", onClose);
-  });
+  };
 }
 
 async function waitForHealth() {
@@ -167,14 +211,15 @@ async function main() {
     const hostWs = new WebSocket(
       `${WS_BASE_URL}/ws?code=${encodeURIComponent(code)}&sessionToken=${encodeURIComponent(sessionToken)}`
     );
+    const hostTracker = createWsTracker(hostWs);
 
-    const hello = await waitForWsMessage(hostWs, (msg) => msg?.type === "hello");
+    const hello = await hostTracker.next((msg) => msg?.type === "hello");
     if (String(hello?.viewer?.sessionId || "") !== sessionId) {
       throw new Error("Websocket token auth did not bind to the original host session.");
     }
 
     hostWs.send(JSON.stringify({ type: "ping", clientTime: Date.now() }));
-    await waitForWsMessage(hostWs, (msg) => msg?.type === "pong");
+    await hostTracker.next((msg) => msg?.type === "pong");
 
     const started = await requestJson("POST", "/api/lobbies/start", {
       code,
@@ -196,8 +241,53 @@ async function main() {
       throw new Error("Lobby start route did not mark the lobby as started.");
     }
 
-    await waitForWsMessage(hostWs, (msg) => !!msg?.lobby?.started);
+    await hostTracker.next((msg) => !!msg?.lobby?.started);
+    const fullSync = await hostTracker.next((msg) => msg?.type === "full_sync", 15000);
+    if (!fullSync || String(fullSync?.code || "") !== code) {
+      throw new Error("Started match did not deliver a valid authoritative full_sync packet.");
+    }
+
+    const startedState = await requestJson("POST", "/api/lobbies/state", { code, sessionToken });
+    const viewer = startedState?.data?.viewer || null;
+    const viewerPlayerId = String(viewer?.playerId || "").trim();
+    const viewerNationId = Math.max(0, Number(viewer?.nationId) | 0);
+    if (!viewerPlayerId || viewerNationId <= 0) {
+      throw new Error("Started lobby state did not expose authoritative player identity.");
+    }
+
+    hostWs.send(JSON.stringify({
+      type: "match_input",
+      playerId: viewerPlayerId,
+      nationId: viewerNationId,
+      seq: 1,
+      clientTime: Date.now(),
+      cmd: "set_attack_ratio",
+      args: [viewerNationId, 0.42]
+    }));
+    const ack = await hostTracker.next((msg) => msg?.type === "cmd_ack", 15000);
+    if ((Number(ack?.ackSeq) | 0) !== 1) {
+      throw new Error("Authoritative match input did not ack the expected sequence.");
+    }
+
     try { hostWs.close(); } catch {}
+    hostTracker.dispose();
+    await sleep(300);
+
+    const reconnectWs = new WebSocket(
+      `${WS_BASE_URL}/ws?code=${encodeURIComponent(code)}&sessionToken=${encodeURIComponent(sessionToken)}`
+    );
+    const reconnectTracker = createWsTracker(reconnectWs);
+    const reconnectHello = await reconnectTracker.next((msg) => msg?.type === "hello", 15000);
+    if (String(reconnectHello?.viewer?.sessionId || "") !== sessionId) {
+      throw new Error("Reconnect websocket did not recover the original host session.");
+    }
+    const reconnectFullSync = await reconnectTracker.next((msg) => msg?.type === "full_sync", 15000);
+    if (!reconnectFullSync || String(reconnectFullSync?.code || "") !== code) {
+      throw new Error("Reconnect websocket did not receive a valid full_sync for the started match.");
+    }
+
+    try { reconnectWs.close(); } catch {}
+    reconnectTracker.dispose();
     try { child.kill(); } catch {}
     await sleep(150);
 
@@ -211,7 +301,10 @@ async function main() {
         "state_accepts_session_token",
         "ws_accepts_session_token",
         "lobby_start_accepts_session_token",
-        "ws_receives_started_state"
+        "ws_receives_started_state",
+        "started_match_delivers_full_sync",
+        "started_match_accepts_authoritative_input",
+        "started_match_reconnect_restores_full_sync"
       ],
       stdoutTail: stdout.trim().split(/\r?\n/).filter(Boolean).slice(-8),
       stderrTail: stderr.trim().split(/\r?\n/).filter(Boolean).slice(-8)

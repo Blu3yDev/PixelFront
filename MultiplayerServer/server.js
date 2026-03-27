@@ -207,6 +207,7 @@ let runtimeModulesSrcDir = "";
 
 const lobbiesByCode = new Map(); // code -> lobby
 const playerIndex = new Map(); // sessionId -> code
+const playerTokenIndex = new Map(); // sessionToken -> code
 
 const COMMAND_METHOD = Object.freeze({
   set_attack_ratio: "setAttackRatio",
@@ -611,6 +612,41 @@ function sanitizePlayerFlag(raw) {
     return null;
   }
   return cloned;
+}
+
+function createLobbyPlayerRecord({ name = "", flag = null, joinedAt = nowMs() } = {}) {
+  const t = Math.max(0, Number(joinedAt) || nowMs());
+  return {
+    sessionId: randomUUID(),
+    sessionToken: randomUUID(),
+    playerId: randomUUID(),
+    name: sanitizeName(name),
+    flag: sanitizePlayerFlag(flag),
+    joinedAt: t,
+    lastSeenAt: t
+  };
+}
+
+function buildPlayerSessionView(player) {
+  return {
+    sessionId: String(player?.sessionId || "").trim(),
+    sessionToken: String(player?.sessionToken || "").trim()
+  };
+}
+
+function findPlayerInLobby(lobby, { sessionId = "", sessionToken = "" } = {}) {
+  if (!lobby || !Array.isArray(lobby.players) || lobby.players.length <= 0) return null;
+  const sid = String(sessionId || "").trim();
+  const token = String(sessionToken || "").trim();
+  if (sid) {
+    const bySession = lobby.players.find((p) => String(p?.sessionId || "") === sid);
+    if (bySession) return bySession;
+  }
+  if (token) {
+    const byToken = lobby.players.find((p) => String(p?.sessionToken || "") === token);
+    if (byToken) return byToken;
+  }
+  return null;
 }
 
 function sanitizeMatchConfig(raw) {
@@ -1502,11 +1538,13 @@ function getLobbyByCodeOrThrow(codeRaw) {
   return lobby;
 }
 
-function getPlayerFromLobbyOrThrow(lobby, sessionIdRaw) {
+function getPlayerFromLobbyOrThrow(lobby, sessionIdRaw, sessionTokenRaw = "") {
   const sessionId = String(sessionIdRaw || "").trim();
-  if (!sessionId) throw new Error("Missing sessionId.");
-  const player = lobby.players.find((p) => p.sessionId === sessionId);
+  const sessionToken = String(sessionTokenRaw || "").trim();
+  if (!sessionId && !sessionToken) throw new Error("Missing session identity.");
+  const player = findPlayerInLobby(lobby, { sessionId, sessionToken });
   if (!player) throw new Error("Session is not part of this lobby.");
+  player.lastSeenAt = nowMs();
   return player;
 }
 
@@ -3609,7 +3647,10 @@ function cleanupIdleLobbies() {
       : Math.max(60_000, LOBBY_IDLE_TTL_MS);
     const cutoff = now - ttlMs;
     if (lobby.updatedAt >= cutoff) continue;
-    for (const p of lobby.players) playerIndex.delete(p.sessionId);
+    for (const p of lobby.players) {
+      playerIndex.delete(p.sessionId);
+      playerTokenIndex.delete(String(p?.sessionToken || "").trim());
+    }
     for (const ws of lobby.sockets.values()) {
       try { ws.close(); } catch {}
     }
@@ -3710,10 +3751,8 @@ const server = createServer(async (req, res) => {
       const matchConfig = sanitizeMatchConfig(body?.matchConfig);
 
       const code = makeUniqueCode();
-      const sessionId = randomUUID();
-      const playerId = randomUUID();
       const t = nowMs();
-      const hostPlayer = { sessionId, playerId, name: playerName, flag: playerFlag, joinedAt: t };
+      const hostPlayer = createLobbyPlayerRecord({ name: playerName, flag: playerFlag, joinedAt: t });
       const lobby = {
         code,
         createdAt: t,
@@ -3730,10 +3769,14 @@ const server = createServer(async (req, res) => {
       };
 
       lobbiesByCode.set(code, lobby);
-      playerIndex.set(sessionId, code);
+      playerIndex.set(hostPlayer.sessionId, code);
+      playerTokenIndex.set(hostPlayer.sessionToken, code);
+      const session = buildPlayerSessionView(hostPlayer);
       writeJson(res, 200, {
         ok: true,
-        sessionId,
+        sessionId: session.sessionId,
+        sessionToken: session.sessionToken,
+        session,
         viewer: lobbyViewer(lobby, hostPlayer),
         lobby: lobbyView(lobby)
       });
@@ -3749,18 +3792,20 @@ const server = createServer(async (req, res) => {
       if (lobby.started) throw new Error("Lobby already started.");
       if (lobby.players.length >= Math.max(2, MAX_PLAYERS_PER_LOBBY)) throw new Error("Lobby is full.");
 
-      const sessionId = randomUUID();
-      const playerId = randomUUID();
       const t = nowMs();
-      const player = { sessionId, playerId, name: playerName, flag: playerFlag, joinedAt: t };
+      const player = createLobbyPlayerRecord({ name: playerName, flag: playerFlag, joinedAt: t });
       lobby.players.push(player);
       touchLobby(lobby);
-      playerIndex.set(sessionId, lobby.code);
+      playerIndex.set(player.sessionId, lobby.code);
+      playerTokenIndex.set(player.sessionToken, lobby.code);
       broadcastLobby(lobby, "lobby_update");
 
+      const session = buildPlayerSessionView(player);
       writeJson(res, 200, {
         ok: true,
-        sessionId,
+        sessionId: session.sessionId,
+        sessionToken: session.sessionToken,
+        session,
         viewer: lobbyViewer(lobby, player),
         lobby: lobbyView(lobby)
       });
@@ -3770,15 +3815,18 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && path === "/api/lobbies/state") {
       const body = await parseJsonBody(req);
       const code = String(body?.code || "").trim().toUpperCase();
-      const sessionId = String(body?.sessionId || "").trim();
       const lobby = getLobbyByCodeOrThrow(code);
-      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, sessionId);
+      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId, body?.sessionToken);
 
       if (lobby.started && !lobby.runtime) kickRuntimeInit(lobby, "state");
 
       touchLobby(lobby);
+      const session = buildPlayerSessionView(viewerPlayer);
       writeJson(res, 200, {
         ok: true,
+        sessionId: session.sessionId,
+        sessionToken: session.sessionToken,
+        session,
         viewer: lobbyViewer(lobby, viewerPlayer),
         lobby: lobbyView(lobby)
       });
@@ -3789,15 +3837,19 @@ const server = createServer(async (req, res) => {
       const body = await parseJsonBody(req);
       const code = String(body?.code || "").trim().toUpperCase();
       const lobby = getLobbyByCodeOrThrow(code);
-      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
+      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId, body?.sessionToken);
       if (viewerPlayer.sessionId !== lobby.hostSessionId) throw new Error("Only host can start.");
 
       if (!lobby.started) {
         await startLobbyMatch(lobby, body);
       }
 
+      const session = buildPlayerSessionView(viewerPlayer);
       writeJson(res, 200, {
         ok: true,
+        sessionId: session.sessionId,
+        sessionToken: session.sessionToken,
+        session,
         viewer: lobbyViewer(lobby, viewerPlayer),
         lobby: lobbyView(lobby)
       });
@@ -3808,12 +3860,13 @@ const server = createServer(async (req, res) => {
       const body = await parseJsonBody(req);
       const code = String(body?.code || "").trim().toUpperCase();
       const lobby = getLobbyByCodeOrThrow(code);
-      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
+      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId, body?.sessionToken);
       pushPlayerLeftEvent(lobby, viewerPlayer);
       removeRuntimeAssignmentForSession(lobby, viewerPlayer.sessionId);
 
       lobby.players = lobby.players.filter((p) => p.sessionId !== viewerPlayer.sessionId);
       playerIndex.delete(viewerPlayer.sessionId);
+      playerTokenIndex.delete(String(viewerPlayer.sessionToken || "").trim());
       closeLobbySocket(lobby, viewerPlayer.sessionId);
 
       if (lobby.runtime && lobby.started) {
@@ -3837,14 +3890,19 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && path.startsWith("/api/lobbies/")) {
       const code = decodeURIComponent(path.slice("/api/lobbies/".length));
       const sessionId = String(u.searchParams.get("sessionId") || "").trim();
+      const sessionToken = String(u.searchParams.get("sessionToken") || "").trim();
       const lobby = getLobbyByCodeOrThrow(code);
-      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, sessionId);
+      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, sessionId, sessionToken);
 
       if (lobby.started && !lobby.runtime) kickRuntimeInit(lobby, "state_legacy");
 
       touchLobby(lobby);
+      const session = buildPlayerSessionView(viewerPlayer);
       writeJson(res, 200, {
         ok: true,
+        sessionId: session.sessionId,
+        sessionToken: session.sessionToken,
+        session,
         viewer: lobbyViewer(lobby, viewerPlayer),
         lobby: lobbyView(lobby)
       });
@@ -3855,15 +3913,19 @@ const server = createServer(async (req, res) => {
       const code = decodeURIComponent(path.slice("/api/lobbies/".length, -"/start".length));
       const body = await parseJsonBody(req);
       const lobby = getLobbyByCodeOrThrow(code);
-      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
+      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId, body?.sessionToken);
       if (viewerPlayer.sessionId !== lobby.hostSessionId) throw new Error("Only host can start.");
 
       if (!lobby.started) {
         await startLobbyMatch(lobby, body);
       }
 
+      const session = buildPlayerSessionView(viewerPlayer);
       writeJson(res, 200, {
         ok: true,
+        sessionId: session.sessionId,
+        sessionToken: session.sessionToken,
+        session,
         viewer: lobbyViewer(lobby, viewerPlayer),
         lobby: lobbyView(lobby)
       });
@@ -3874,12 +3936,13 @@ const server = createServer(async (req, res) => {
       const code = decodeURIComponent(path.slice("/api/lobbies/".length, -"/leave".length));
       const body = await parseJsonBody(req);
       const lobby = getLobbyByCodeOrThrow(code);
-      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId);
+      const viewerPlayer = getPlayerFromLobbyOrThrow(lobby, body?.sessionId, body?.sessionToken);
       pushPlayerLeftEvent(lobby, viewerPlayer);
       removeRuntimeAssignmentForSession(lobby, viewerPlayer.sessionId);
 
       lobby.players = lobby.players.filter((p) => p.sessionId !== viewerPlayer.sessionId);
       playerIndex.delete(viewerPlayer.sessionId);
+      playerTokenIndex.delete(String(viewerPlayer.sessionToken || "").trim());
       closeLobbySocket(lobby, viewerPlayer.sessionId);
 
       if (lobby.runtime && lobby.started) {
@@ -3926,37 +3989,39 @@ server.on("upgrade", (req, socket, head) => {
     }
 
     const sessionId = String(u.searchParams.get("sessionId") || "").trim();
+    const sessionToken = String(u.searchParams.get("sessionToken") || "").trim();
     const requestedCode = String(u.searchParams.get("code") || "").trim().toUpperCase();
-    if (!sessionId) {
-      wsDebug("reject: missing sessionId", { requestedCode });
+    if (!sessionId && !sessionToken) {
+      wsDebug("reject: missing session identity", { requestedCode });
       socket.destroy();
       return;
     }
 
     const indexCode = String(playerIndex.get(sessionId) || "").trim().toUpperCase();
-    const code = requestedCode || indexCode;
+    const tokenCode = String(playerTokenIndex.get(sessionToken) || "").trim().toUpperCase();
+    const code = requestedCode || indexCode || tokenCode;
     if (!code) {
-      wsDebug("reject: missing code", { sessionId });
+      wsDebug("reject: missing code", { sessionId, sessionToken });
       socket.destroy();
       return;
     }
 
     const lobby = lobbiesByCode.get(code);
     if (!lobby) {
-      wsDebug("reject: lobby not found", { code, sessionId });
+      wsDebug("reject: lobby not found", { code, sessionId, sessionToken });
       socket.destroy();
       return;
     }
 
-    const player = lobby.players.find((p) => p.sessionId === sessionId);
+    const player = findPlayerInLobby(lobby, { sessionId, sessionToken });
     if (!player) {
-      wsDebug("reject: session not in lobby", { code, sessionId });
+      wsDebug("reject: session not in lobby", { code, sessionId, sessionToken });
       socket.destroy();
       return;
     }
 
     wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit("connection", ws, req, { code, sessionId });
+      wss.emit("connection", ws, req, { code, sessionId: player.sessionId });
     });
   } catch {
     wsDebug("reject: upgrade exception");

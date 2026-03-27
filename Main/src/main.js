@@ -1205,18 +1205,20 @@ function buildMultiplayerMatchConfigWire(matchConfig = null, worldSpec = null) {
   };
 }
 
-function buildMultiplayerWsUrl(codeRaw, sessionIdRaw) {
+function buildMultiplayerWsUrl(codeRaw, sessionIdRaw, sessionTokenRaw = "") {
   const base = String(MULTIPLAYER_API_BASE || "").trim();
   const code = String(codeRaw || "").trim().toUpperCase();
   const sessionId = String(sessionIdRaw || "").trim();
-  if (!base || !code || !sessionId) return "";
+  const sessionToken = String(sessionTokenRaw || "").trim();
+  if (!base || !code || (!sessionId && !sessionToken)) return "";
   try {
     const u = new URL(base);
     u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
     u.pathname = "/ws";
     u.search = "";
     u.searchParams.set("code", code);
-    u.searchParams.set("sessionId", sessionId);
+    if (sessionId) u.searchParams.set("sessionId", sessionId);
+    if (sessionToken) u.searchParams.set("sessionToken", sessionToken);
     return u.toString();
   } catch {
     return "";
@@ -1497,7 +1499,8 @@ function normalizeMultiplayerSession(raw) {
   if (!raw || typeof raw !== "object") return null;
   const code = String(raw.code || "").trim().toUpperCase();
   const sessionId = String(raw.sessionId || "").trim();
-  if (!code || !sessionId) return null;
+  const sessionToken = String(raw.sessionToken || "").trim();
+  if (!code || (!sessionId && !sessionToken)) return null;
   const startedAt = Math.max(0, Number(raw.startedAt) || 0);
   const isHost = !!raw.isHost;
   const playerId = String(raw.playerId || "").trim();
@@ -1506,6 +1509,7 @@ function normalizeMultiplayerSession(raw) {
     enabled: true,
     code,
     sessionId,
+    sessionToken,
     playerId,
     nationId,
     startedAt,
@@ -1644,7 +1648,12 @@ function setActiveMultiplayerSession(raw) {
 }
 
 function isMultiplayerMatchEnabled() {
-  return !!(activeMultiplayerSession && activeMultiplayerSession.enabled && activeMultiplayerSession.code && activeMultiplayerSession.sessionId);
+  return !!(
+    activeMultiplayerSession &&
+    activeMultiplayerSession.enabled &&
+    activeMultiplayerSession.code &&
+    (activeMultiplayerSession.sessionId || activeMultiplayerSession.sessionToken)
+  );
 }
 
 function hasMultiplayerIdentity() {
@@ -3243,6 +3252,7 @@ function isTerminalMultiplayerSessionErrorMessage(msgRaw) {
   if (msg.includes("lobby not found")) return true;
   if (msg.includes("session is not part of this lobby")) return true;
   if (msg.includes("missing sessionid")) return true;
+  if (msg.includes("missing session identity")) return true;
   if (msg.includes("invalid lobby code")) return true;
   return false;
 }
@@ -3256,9 +3266,10 @@ async function probeActiveMultiplayerSessionState() {
   const sess = activeMultiplayerSession;
   const payload = {
     code: String(sess?.code || "").trim().toUpperCase(),
-    sessionId: String(sess?.sessionId || "").trim()
+    sessionId: String(sess?.sessionId || "").trim(),
+    sessionToken: String(sess?.sessionToken || "").trim()
   };
-  if (!payload.code || !payload.sessionId) {
+  if (!payload.code || (!payload.sessionId && !payload.sessionToken)) {
     return { checked: false, valid: false, terminal: true, reason: "Missing lobby identity." };
   }
 
@@ -3291,6 +3302,11 @@ async function probeActiveMultiplayerSessionState() {
   if (res.ok && (data == null || data.ok !== false)) {
     const viewer = (data?.viewer && typeof data.viewer === "object") ? data.viewer : null;
     if (activeMultiplayerSession && viewer) {
+      const nextSession = (data?.session && typeof data.session === "object") ? data.session : null;
+      const sid = String(nextSession?.sessionId || data?.sessionId || "").trim();
+      const token = String(nextSession?.sessionToken || data?.sessionToken || "").trim();
+      if (sid) activeMultiplayerSession.sessionId = sid;
+      if (token) activeMultiplayerSession.sessionToken = token;
       const pid = String(viewer.playerId || "").trim();
       const nid = Math.max(0, Number(viewer.nationId) | 0);
       if (pid) activeMultiplayerSession.playerId = pid;
@@ -3317,7 +3333,11 @@ function connectMultiplayerMatchSocket() {
   if (!isMultiplayerMatchEnabled()) return;
   if (multiplayerSessionTerminated) return;
   if (typeof WebSocket === "undefined") return;
-  const url = buildMultiplayerWsUrl(activeMultiplayerSession.code, activeMultiplayerSession.sessionId);
+  const url = buildMultiplayerWsUrl(
+    activeMultiplayerSession.code,
+    activeMultiplayerSession.sessionId,
+    activeMultiplayerSession.sessionToken
+  );
   if (!url) return;
 
   clearMultiplayerMatchSocket();
@@ -7655,6 +7675,7 @@ function createMainMenuController(options = null) {
   };
 
   let multiplayerSessionId = "";
+  let multiplayerSessionToken = "";
   let multiplayerPollTimer = 0;
   let multiplayerPollInFlight = false;
   let multiplayerLastKnownStart = false;
@@ -7676,8 +7697,72 @@ function createMainMenuController(options = null) {
   let multiplayerViewerPlayerId = "";
   let multiplayerViewerNationId = 0;
   const MULTIPLAYER_HEALTH_CACHE_MS = 15000;
+  const MULTIPLAYER_SESSION_STORAGE_KEY = "pf-multiplayer-lobby-session-v1";
 
   const hasMultiplayerApi = () => !!MULTIPLAYER_API_BASE;
+
+  const readPersistedMultiplayerLobbySession = () => {
+    let raw = "";
+    try {
+      raw = String(globalThis?.localStorage?.getItem?.(MULTIPLAYER_SESSION_STORAGE_KEY) || "");
+    } catch {
+      raw = "";
+    }
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      const code = String(parsed?.code || "").trim().toUpperCase();
+      const sessionId = String(parsed?.sessionId || "").trim();
+      const sessionToken = String(parsed?.sessionToken || "").trim();
+      if (!/^[A-Z0-9]{4,8}$/.test(code)) return null;
+      if (!sessionId && !sessionToken) return null;
+      return {
+        code,
+        sessionId,
+        sessionToken,
+        playerId: String(parsed?.playerId || "").trim(),
+        nationId: Math.max(0, Number(parsed?.nationId) | 0),
+        isHost: !!parsed?.isHost,
+        updatedAtMs: Math.max(0, Number(parsed?.updatedAtMs) || 0)
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const clearPersistedMultiplayerLobbySession = () => {
+    try {
+      globalThis?.localStorage?.removeItem?.(MULTIPLAYER_SESSION_STORAGE_KEY);
+    } catch {
+      // Ignore storage cleanup failures.
+    }
+  };
+
+  const syncPersistedMultiplayerLobbySession = (overrides = null) => {
+    const src = (overrides && typeof overrides === "object") ? overrides : {};
+    const code = String(src.code ?? activeMultiplayerLobby?.code ?? "").trim().toUpperCase();
+    const sessionId = String(src.sessionId ?? multiplayerSessionId ?? "").trim();
+    const sessionToken = String(src.sessionToken ?? multiplayerSessionToken ?? "").trim();
+    if (!/^[A-Z0-9]{4,8}$/.test(code) || (!sessionId && !sessionToken)) {
+      clearPersistedMultiplayerLobbySession();
+      return null;
+    }
+    const payload = {
+      code,
+      sessionId,
+      sessionToken,
+      playerId: String(src.playerId ?? multiplayerViewerPlayerId ?? "").trim(),
+      nationId: Math.max(0, Number(src.nationId ?? multiplayerViewerNationId) | 0),
+      isHost: !!(src.isHost ?? activeMultiplayerLobby?.host ?? (playMenuMode === "multiplayer_host")),
+      updatedAtMs: Date.now()
+    };
+    try {
+      globalThis?.localStorage?.setItem?.(MULTIPLAYER_SESSION_STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+      // Ignore storage write failures.
+    }
+    return payload;
+  };
 
   const shouldUseLegacyRoutes = (err) => {
     const status = Number(err?.status) || 0;
@@ -7696,6 +7781,7 @@ function createMainMenuController(options = null) {
     if (msg.includes("lobby not found")) return true;
     if (msg.includes("session is not part of this lobby")) return true;
     if (msg.includes("missing sessionid")) return true;
+    if (msg.includes("missing session identity")) return true;
     if (msg.includes("invalid lobby code")) return true;
     return false;
   };
@@ -7707,6 +7793,26 @@ function createMainMenuController(options = null) {
     const nid = Math.max(0, Number(viewer.nationId) | 0);
     if (pid) multiplayerViewerPlayerId = pid;
     if (nid > 0) multiplayerViewerNationId = nid;
+    syncPersistedMultiplayerLobbySession();
+  };
+
+  const applyLobbySessionAuth = (payloadRaw) => {
+    const payload = (payloadRaw && typeof payloadRaw === "object") ? payloadRaw : {};
+    const session = (payload.session && typeof payload.session === "object") ? payload.session : null;
+    const sessionId = String(session?.sessionId || payload.sessionId || "").trim();
+    const sessionToken = String(session?.sessionToken || payload.sessionToken || "").trim();
+    if (sessionId) multiplayerSessionId = sessionId;
+    if (sessionToken) multiplayerSessionToken = sessionToken;
+    if (sessionId || sessionToken) {
+      syncPersistedMultiplayerLobbySession({
+        sessionId: sessionId || multiplayerSessionId,
+        sessionToken: sessionToken || multiplayerSessionToken
+      });
+    }
+    return {
+      sessionId: String(multiplayerSessionId || "").trim(),
+      sessionToken: String(multiplayerSessionToken || "").trim()
+    };
   };
 
   const toLobbyModel = (rawLobby, opts = null) => {
@@ -7797,6 +7903,16 @@ function createMainMenuController(options = null) {
     multiplayerPollInFlight = false;
   };
 
+  const buildMultiplayerSessionAuthPayload = (codeRaw, sessionIdRaw = multiplayerSessionId, sessionTokenRaw = multiplayerSessionToken) => {
+    const code = String(codeRaw || "").trim().toUpperCase();
+    const sessionId = String(sessionIdRaw || "").trim();
+    const sessionToken = String(sessionTokenRaw || "").trim();
+    const payload = { code };
+    if (sessionId) payload.sessionId = sessionId;
+    if (sessionToken) payload.sessionToken = sessionToken;
+    return payload;
+  };
+
   const multiplayerFetch = async (path, init = null) => {
     const url = `${MULTIPLAYER_API_BASE}${path}`;
     const method = String(init?.method || "GET").toUpperCase();
@@ -7866,15 +7982,20 @@ function createMainMenuController(options = null) {
     throw (lastErr || new Error("Multiplayer request failed."));
   };
 
-  const fetchLobbyStatePayload = async (codeRaw, sessionIdRaw) => {
+  const fetchLobbyStatePayload = async (codeRaw, sessionIdRaw = multiplayerSessionId, sessionTokenRaw = multiplayerSessionToken) => {
     const code = String(codeRaw || "").trim().toUpperCase();
     const sessionId = String(sessionIdRaw || "").trim();
+    const sessionToken = String(sessionTokenRaw || "").trim();
     const codeEnc = encodeURIComponent(code);
     const sidEnc = encodeURIComponent(sessionId);
+    const tokenEnc = encodeURIComponent(sessionToken);
+    const legacyAuthQuery = sessionId
+      ? `sessionId=${sidEnc}${sessionToken ? `&sessionToken=${tokenEnc}` : ""}`
+      : `sessionToken=${tokenEnc}`;
 
     if (multiplayerApiMode === "legacy") {
       try {
-        return await multiplayerFetch(`/api/lobbies/${codeEnc}?sessionId=${sidEnc}`);
+        return await multiplayerFetch(`/api/lobbies/${codeEnc}?${legacyAuthQuery}`);
       } catch (err) {
         if ((Number(err?.status) || 0) === 404) multiplayerApiMode = "auto";
         else throw err;
@@ -7884,20 +8005,21 @@ function createMainMenuController(options = null) {
     try {
       const payload = await multiplayerFetch("/api/lobbies/state", {
         method: "POST",
-        body: { code, sessionId }
+        body: buildMultiplayerSessionAuthPayload(code, sessionId, sessionToken)
       });
       multiplayerApiMode = "modern";
       return payload;
     } catch (err) {
       if (!shouldUseLegacyRoutes(err)) throw err;
       multiplayerApiMode = "legacy";
-      return await multiplayerFetch(`/api/lobbies/${codeEnc}?sessionId=${sidEnc}`);
+      return await multiplayerFetch(`/api/lobbies/${codeEnc}?${legacyAuthQuery}`);
     }
   };
 
-  const startLobbyOnServer = async (codeRaw, sessionIdRaw, matchConfig, worldSpec = null) => {
+  const startLobbyOnServer = async (codeRaw, sessionIdRaw, sessionTokenRaw, matchConfig, worldSpec = null) => {
     const code = String(codeRaw || "").trim().toUpperCase();
     const sessionId = String(sessionIdRaw || "").trim();
+    const sessionToken = String(sessionTokenRaw || "").trim();
     const codeEnc = encodeURIComponent(code);
     const wireWorldSpec = buildMultiplayerWorldSpecWire(matchConfig, worldSpec);
     const wireMatchConfig = buildMultiplayerMatchConfigWire(matchConfig, wireWorldSpec);
@@ -7916,14 +8038,22 @@ function createMainMenuController(options = null) {
       try {
         return await multiplayerFetch(`/api/lobbies/${codeEnc}/start`, {
           method: "POST",
-          body: { sessionId, matchConfig: wireMatchConfig, worldSpec: wireWorldSpec }
+          body: {
+            ...buildMultiplayerSessionAuthPayload(code, sessionId, sessionToken),
+            matchConfig: wireMatchConfig,
+            worldSpec: wireWorldSpec
+          }
         });
       } catch (err) {
         if (shouldRetryStart(err)) {
           await sleep(280);
           return await multiplayerFetch(`/api/lobbies/${codeEnc}/start`, {
             method: "POST",
-            body: { sessionId, matchConfig: wireMatchConfig, worldSpec: wireWorldSpec }
+            body: {
+              ...buildMultiplayerSessionAuthPayload(code, sessionId, sessionToken),
+              matchConfig: wireMatchConfig,
+              worldSpec: wireWorldSpec
+            }
           });
         }
         if ((Number(err?.status) || 0) === 404) multiplayerApiMode = "auto";
@@ -7934,7 +8064,11 @@ function createMainMenuController(options = null) {
     try {
       const payload = await multiplayerFetch("/api/lobbies/start", {
         method: "POST",
-        body: { code, sessionId, matchConfig: wireMatchConfig, worldSpec: wireWorldSpec }
+        body: {
+          ...buildMultiplayerSessionAuthPayload(code, sessionId, sessionToken),
+          matchConfig: wireMatchConfig,
+          worldSpec: wireWorldSpec
+        }
       });
       multiplayerApiMode = "modern";
       return payload;
@@ -7943,7 +8077,11 @@ function createMainMenuController(options = null) {
         await sleep(280);
         const retryPayload = await multiplayerFetch("/api/lobbies/start", {
           method: "POST",
-          body: { code, sessionId, matchConfig: wireMatchConfig, worldSpec: wireWorldSpec }
+          body: {
+            ...buildMultiplayerSessionAuthPayload(code, sessionId, sessionToken),
+            matchConfig: wireMatchConfig,
+            worldSpec: wireWorldSpec
+          }
         });
         multiplayerApiMode = "modern";
         return retryPayload;
@@ -7952,21 +8090,26 @@ function createMainMenuController(options = null) {
       multiplayerApiMode = "legacy";
       return await multiplayerFetch(`/api/lobbies/${codeEnc}/start`, {
         method: "POST",
-        body: { sessionId, matchConfig: wireMatchConfig, worldSpec: wireWorldSpec }
+        body: {
+          ...buildMultiplayerSessionAuthPayload(code, sessionId, sessionToken),
+          matchConfig: wireMatchConfig,
+          worldSpec: wireWorldSpec
+        }
       });
     }
   };
 
-  const leaveLobbyOnServer = async (codeRaw, sessionIdRaw) => {
+  const leaveLobbyOnServer = async (codeRaw, sessionIdRaw = multiplayerSessionId, sessionTokenRaw = multiplayerSessionToken) => {
     const code = String(codeRaw || "").trim().toUpperCase();
     const sessionId = String(sessionIdRaw || "").trim();
+    const sessionToken = String(sessionTokenRaw || "").trim();
     const codeEnc = encodeURIComponent(code);
 
     if (multiplayerApiMode === "legacy") {
       try {
         return await multiplayerFetch(`/api/lobbies/${codeEnc}/leave`, {
           method: "POST",
-          body: { sessionId }
+          body: buildMultiplayerSessionAuthPayload(code, sessionId, sessionToken)
         });
       } catch (err) {
         if ((Number(err?.status) || 0) === 404) multiplayerApiMode = "auto";
@@ -7977,7 +8120,7 @@ function createMainMenuController(options = null) {
     try {
       const payload = await multiplayerFetch("/api/lobbies/leave", {
         method: "POST",
-        body: { code, sessionId }
+        body: buildMultiplayerSessionAuthPayload(code, sessionId, sessionToken)
       });
       multiplayerApiMode = "modern";
       return payload;
@@ -7986,7 +8129,7 @@ function createMainMenuController(options = null) {
       multiplayerApiMode = "legacy";
       return await multiplayerFetch(`/api/lobbies/${codeEnc}/leave`, {
         method: "POST",
-        body: { sessionId }
+        body: buildMultiplayerSessionAuthPayload(code, sessionId, sessionToken)
       });
     }
   };
@@ -8047,7 +8190,9 @@ function createMainMenuController(options = null) {
     }
   };
 
-  const lobbyWsUrl = (codeRaw, sessionIdRaw) => buildMultiplayerWsUrl(codeRaw, sessionIdRaw);
+  const lobbyWsUrl = (codeRaw, sessionIdRaw = multiplayerSessionId, sessionTokenRaw = multiplayerSessionToken) => (
+    buildMultiplayerWsUrl(codeRaw, sessionIdRaw, sessionTokenRaw)
+  );
 
   const closeLobbySocket = () => {
     if (lobbyPingTimer) {
@@ -8069,9 +8214,9 @@ function createMainMenuController(options = null) {
   };
 
   const connectLobbySocket = () => {
-    if (!activeMultiplayerLobby?.code || !multiplayerSessionId || !hasMultiplayerApi()) return;
+    if (!activeMultiplayerLobby?.code || (!multiplayerSessionId && !multiplayerSessionToken) || !hasMultiplayerApi()) return;
     if (typeof WebSocket === "undefined") return;
-    const url = lobbyWsUrl(activeMultiplayerLobby.code, multiplayerSessionId);
+    const url = lobbyWsUrl(activeMultiplayerLobby.code, multiplayerSessionId, multiplayerSessionToken);
     if (!url) return;
 
     closeLobbySocket();
@@ -8115,6 +8260,10 @@ function createMainMenuController(options = null) {
         host: !!viewer?.isHost
       });
       multiplayerLastKnownStart = !!activeMultiplayerLobby?.started;
+      syncPersistedMultiplayerLobbySession({
+        code: activeMultiplayerLobby?.code,
+        isHost: !!activeMultiplayerLobby?.host
+      });
       refreshMultiplayerUI();
       if (activeMultiplayerLobby?.started) {
         launchStartedLobbyMatch(activeMultiplayerLobby, String(viewer?.name || "") || playerNameFromInput(), viewer);
@@ -8136,16 +8285,21 @@ function createMainMenuController(options = null) {
   };
 
   const pullLobbyState = async ({ quiet = false } = {}) => {
-    if (!activeMultiplayerLobby?.code || !multiplayerSessionId || !hasMultiplayerApi()) return;
+    if (!activeMultiplayerLobby?.code || (!multiplayerSessionId && !multiplayerSessionToken) || !hasMultiplayerApi()) return;
     if (quiet && lobbySocketConnected) return;
     if (multiplayerPollInFlight) return;
     multiplayerPollInFlight = true;
     try {
-      const payload = await fetchLobbyStatePayload(activeMultiplayerLobby.code, multiplayerSessionId);
+      const payload = await fetchLobbyStatePayload(activeMultiplayerLobby.code, multiplayerSessionId, multiplayerSessionToken);
+      applyLobbySessionAuth(payload);
       const viewer = payload?.viewer && typeof payload.viewer === "object" ? payload.viewer : null;
       applyViewerIdentity(viewer);
       activeMultiplayerLobby = toLobbyModel(payload?.lobby, {
         host: !!viewer?.isHost
+      });
+      syncPersistedMultiplayerLobbySession({
+        code: activeMultiplayerLobby?.code,
+        isHost: !!activeMultiplayerLobby?.host
       });
       if (activeMultiplayerLobby.started && !multiplayerLastKnownStart && !quiet) {
         setStatus(activeMultiplayerLobby.host
@@ -8163,11 +8317,13 @@ function createMainMenuController(options = null) {
         stopLobbyPolling();
         closeLobbySocket();
         multiplayerSessionId = "";
+        multiplayerSessionToken = "";
         multiplayerViewerPlayerId = "";
         multiplayerViewerNationId = 0;
         activeMultiplayerLobby = null;
         multiplayerAutoStartTriggered = false;
         playMenuMode = "singleplayer";
+        clearPersistedMultiplayerLobbySession();
         refreshMultiplayerUI();
         if (!quiet) {
           setView("multiplayer");
@@ -8188,13 +8344,87 @@ function createMainMenuController(options = null) {
     }, 2500);
   };
 
+  const restorePersistedMultiplayerLobby = async () => {
+    if (!hasMultiplayerApi()) return false;
+    if (activeMultiplayerLobby?.code || multiplayerSessionId || multiplayerSessionToken) return false;
+    const stored = readPersistedMultiplayerLobbySession();
+    if (!stored) return false;
+
+    multiplayerSessionId = stored.sessionId;
+    multiplayerSessionToken = stored.sessionToken;
+    multiplayerViewerPlayerId = stored.playerId || multiplayerViewerPlayerId;
+    if ((stored.nationId | 0) > 0) multiplayerViewerNationId = stored.nationId | 0;
+    playMenuMode = stored.isHost ? "multiplayer_host" : "singleplayer";
+    activeMultiplayerLobby = {
+      code: stored.code,
+      host: !!stored.isHost,
+      players: [],
+      started: false,
+      matchConfig: null,
+      start: null
+    };
+    multiplayerLastKnownStart = false;
+    multiplayerAutoStartTriggered = false;
+    lobbyRttMs = 0;
+    syncPersistedMultiplayerLobbySession({
+      code: stored.code,
+      sessionId: stored.sessionId,
+      sessionToken: stored.sessionToken,
+      playerId: stored.playerId,
+      nationId: stored.nationId,
+      isHost: stored.isHost
+    });
+    refreshMultiplayerUI();
+    setView(stored.isHost ? "play" : "mplobby");
+    setStatus(`Restoring lobby ${stored.code}...`);
+
+    try {
+      const payload = await fetchLobbyStatePayload(stored.code, stored.sessionId, stored.sessionToken);
+      applyLobbySessionAuth(payload);
+      const viewer = payload?.viewer && typeof payload.viewer === "object" ? payload.viewer : null;
+      applyViewerIdentity(viewer);
+      activeMultiplayerLobby = toLobbyModel(payload?.lobby, {
+        host: !!viewer?.isHost || !!stored.isHost
+      });
+      multiplayerLastKnownStart = !!activeMultiplayerLobby?.started;
+      syncPersistedMultiplayerLobbySession({
+        code: activeMultiplayerLobby?.code,
+        isHost: !!activeMultiplayerLobby?.host
+      });
+      refreshMultiplayerUI();
+      startLobbyPolling();
+      connectLobbySocket();
+      if (activeMultiplayerLobby?.started) {
+        await launchStartedLobbyMatch(activeMultiplayerLobby, String(viewer?.name || "") || playerNameFromInput(), viewer);
+      } else {
+        setStatus(`Reconnected to lobby ${stored.code}.`);
+      }
+      return true;
+    } catch (err) {
+      stopLobbyPolling();
+      closeLobbySocket();
+      multiplayerSessionId = "";
+      multiplayerSessionToken = "";
+      multiplayerViewerPlayerId = "";
+      multiplayerViewerNationId = 0;
+      activeMultiplayerLobby = null;
+      multiplayerAutoStartTriggered = false;
+      playMenuMode = "singleplayer";
+      clearPersistedMultiplayerLobbySession();
+      refreshMultiplayerUI();
+      setView("multiplayer");
+      setStatus(err?.message || "Saved multiplayer session expired. Create or join again.");
+      return false;
+    }
+  };
+
   const launchStartedLobbyMatch = async (lobby, viewerName, viewerRaw = null) => {
     if (!lobby || !lobby.started || multiplayerAutoStartTriggered) return;
     if (!onStartRequested) return;
     if (viewerRaw) applyViewerIdentity(viewerRaw);
     multiplayerAutoStartTriggered = true;
 
-    if (!hasMultiplayerApi() || !multiplayerSessionId) {
+    if (!hasMultiplayerApi() || (!multiplayerSessionId && !multiplayerSessionToken)) {
       multiplayerAutoStartTriggered = false;
       setStatus("Multiplayer API not configured. Cannot launch authoritative match.");
       return;
@@ -8203,13 +8433,18 @@ function createMainMenuController(options = null) {
     let authoritativeLobby = lobby;
     let authoritativeViewer = viewerRaw;
     try {
-      const payload = await fetchLobbyStatePayload(lobby.code, multiplayerSessionId);
+      const payload = await fetchLobbyStatePayload(lobby.code, multiplayerSessionId, multiplayerSessionToken);
+      applyLobbySessionAuth(payload);
       authoritativeViewer = payload?.viewer && typeof payload.viewer === "object" ? payload.viewer : viewerRaw;
       applyViewerIdentity(authoritativeViewer);
       authoritativeLobby = toLobbyModel(payload?.lobby, {
         host: !!authoritativeViewer?.isHost
       });
       activeMultiplayerLobby = authoritativeLobby;
+      syncPersistedMultiplayerLobbySession({
+        code: authoritativeLobby?.code,
+        isHost: !!authoritativeLobby?.host
+      });
       refreshMultiplayerUI();
     } catch (err) {
       // Best effort verification. If API is temporarily unavailable, continue
@@ -8237,6 +8472,7 @@ function createMainMenuController(options = null) {
       multiplayer: {
         code: String(authoritativeLobby.code || "").trim().toUpperCase(),
         sessionId: String(multiplayerSessionId || "").trim(),
+        sessionToken: String(multiplayerSessionToken || "").trim(),
         startedAt: Number(authoritativeLobby?.start?.startedAt) || 0,
         serverTick: 0,
         playerId: String(multiplayerViewerPlayerId || "").trim(),
@@ -10216,7 +10452,7 @@ function createMainMenuController(options = null) {
           setStatus("Set VITE_MULTIPLAYER_API_URL to enable multiplayer start.");
           return;
         }
-        if (!activeMultiplayerLobby?.code || !multiplayerSessionId) {
+        if (!activeMultiplayerLobby?.code || (!multiplayerSessionId && !multiplayerSessionToken)) {
           setStatus("Lobby session missing. Recreate the lobby.");
           return;
         }
@@ -10226,7 +10462,14 @@ function createMainMenuController(options = null) {
           const prevLabel = startBtn.textContent || "Start";
           startBtn.textContent = "Starting...";
           const worldSpec = buildMultiplayerWorldSpecWire(cfg);
-          const payload = await startLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId, cfg, worldSpec);
+          const payload = await startLobbyOnServer(
+            activeMultiplayerLobby.code,
+            multiplayerSessionId,
+            multiplayerSessionToken,
+            cfg,
+            worldSpec
+          );
+          applyLobbySessionAuth(payload);
           const viewer = (payload?.viewer && typeof payload.viewer === "object") ? payload.viewer : null;
           if (viewer) applyViewerIdentity(viewer);
           if (payload?.lobby) {
@@ -10234,6 +10477,10 @@ function createMainMenuController(options = null) {
               host: true
             });
             multiplayerLastKnownStart = !!activeMultiplayerLobby?.started;
+            syncPersistedMultiplayerLobbySession({
+              code: activeMultiplayerLobby?.code,
+              isHost: true
+            });
             refreshMultiplayerUI();
             if (activeMultiplayerLobby?.started) {
               void launchStartedLobbyMatch(activeMultiplayerLobby, String(viewer?.name || "") || playerNameFromInput(), viewer);
@@ -10324,18 +10571,22 @@ function createMainMenuController(options = null) {
             worldSpec
           }
         });
-        const sessionId = String(payload?.sessionId || "");
+        const session = applyLobbySessionAuth(payload);
+        const sessionId = String(session?.sessionId || "");
         if (!sessionId || !payload?.lobby) {
           setStatus("Create failed: invalid server response.");
           return;
         }
         applyViewerIdentity(payload?.viewer);
-        multiplayerSessionId = sessionId;
         playMenuMode = "multiplayer_host";
         activeMultiplayerLobby = toLobbyModel(payload.lobby, { host: true });
         multiplayerLastKnownStart = !!activeMultiplayerLobby.started;
         multiplayerAutoStartTriggered = false;
         lobbyRttMs = 0;
+        syncPersistedMultiplayerLobbySession({
+          code: activeMultiplayerLobby?.code,
+          isHost: true
+        });
         refreshMultiplayerUI();
         startLobbyPolling();
         connectLobbySocket();
@@ -10389,19 +10640,23 @@ function createMainMenuController(options = null) {
             playerFlag: sanitizeFlag(activePlayerFlag)
           }
         });
-        const sessionId = String(payload?.sessionId || "");
+        const session = applyLobbySessionAuth(payload);
+        const sessionId = String(session?.sessionId || "");
         if (!sessionId || !payload?.lobby) {
           setStatus("Join failed: invalid server response.");
           return;
         }
         applyViewerIdentity(payload?.viewer);
         if (joinCodeInput) joinCodeInput.value = code;
-        multiplayerSessionId = sessionId;
         activeMultiplayerLobby = toLobbyModel(payload.lobby, { host: false });
         multiplayerLastKnownStart = !!activeMultiplayerLobby.started;
         multiplayerAutoStartTriggered = false;
         playMenuMode = "singleplayer";
         lobbyRttMs = 0;
+        syncPersistedMultiplayerLobbySession({
+          code: activeMultiplayerLobby?.code,
+          isHost: false
+        });
         refreshMultiplayerUI();
         startLobbyPolling();
         connectLobbySocket();
@@ -10429,8 +10684,8 @@ function createMainMenuController(options = null) {
   if (mpLobbyBackBtn) {
     mpLobbyBackBtn.addEventListener("click", async () => {
       try {
-        if (hasMultiplayerApi() && activeMultiplayerLobby?.code && multiplayerSessionId) {
-          await leaveLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId);
+        if (hasMultiplayerApi() && activeMultiplayerLobby?.code && (multiplayerSessionId || multiplayerSessionToken)) {
+          await leaveLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId, multiplayerSessionToken);
         }
       } catch {
         // Best-effort leave.
@@ -10438,10 +10693,12 @@ function createMainMenuController(options = null) {
       stopLobbyPolling();
       closeLobbySocket();
       multiplayerSessionId = "";
+      multiplayerSessionToken = "";
       multiplayerViewerPlayerId = "";
       multiplayerViewerNationId = 0;
       activeMultiplayerLobby = null;
       multiplayerAutoStartTriggered = false;
+      clearPersistedMultiplayerLobbySession();
       refreshMultiplayerUI();
       setView("multiplayer");
       setStatus("Left lobby.");
@@ -10888,6 +11145,7 @@ function createMainMenuController(options = null) {
   persistMatchConfigFromForm();
   syncInteractiveState();
   setView("home");
+  void restorePersistedMultiplayerLobby();
 
   void loadEarthCountryBotCap()
     .then((cap) => {

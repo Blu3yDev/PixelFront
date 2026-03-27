@@ -3,6 +3,7 @@
 This service powers:
 - Create lobby
 - Join by code
+- Recover lobby after refresh/reconnect via persisted session token
 - Poll lobby state
 - Start lobby (host only)
 - Leave lobby
@@ -31,10 +32,21 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 - `WS /ws?code=...&sessionId=...`
   - Lobby realtime events (`hello`, `lobby_update`, `started`, `pong`)
   - In-match authoritative events (`snapshot_delta`, `full_sync`, `cmd_ack`, `cmd_reject`)
+  - `sessionToken` may be sent alongside `sessionId` for reconnect-friendly auth
 - Legacy compatibility:
   - `GET /api/lobbies/:code?sessionId=...`
   - `POST /api/lobbies/:code/start`
   - `POST /api/lobbies/:code/leave`
+
+Create/join/state/start responses now include:
+- `sessionId`
+- `sessionToken`
+- `session`
+  - `{ sessionId, sessionToken }`
+
+The frontend persists that session identity locally so a tab refresh can restore
+the same lobby seat and, if the match already started, relaunch into the same
+authoritative match.
 
 ## Environment variables
 
@@ -140,8 +152,8 @@ If your deploy does not include `/app/Main`, deploy from the repository root (so
 
 - If `/api/lobbies/state` returns `400` repeatedly:
   - Session/lobby is stale (common after backend restart, because lobbies are in-memory).
-  - Create a fresh lobby and rejoin.
-  - Frontend now auto-resets stale sessions, but old tabs may need hard refresh.
+  - Frontend now tries to restore the saved session automatically using the persisted session token.
+  - If the backend was restarted and the lobby no longer exists, the saved session is cleared and players must create a fresh lobby.
 
 - If players load different worlds:
   - Make sure both frontend and backend are fully redeployed to latest code.

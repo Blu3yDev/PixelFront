@@ -3761,7 +3761,7 @@ const server = createServer(async (req, res) => {
         startedAt: 0,
         matchSeed: 0,
         matchWorldSpec: null,
-        hostSessionId: sessionId,
+        hostSessionId: hostPlayer.sessionId,
         players: [hostPlayer],
         matchConfig,
         sockets: new Map(),

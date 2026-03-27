@@ -20,6 +20,7 @@ It uses in-memory storage for now (good for prototyping, not production persiste
 2. Run `npm install`.
 3. Run `npm start`.
 4. Service starts on `http://localhost:8080`.
+5. Optional smoke test: `npm run smoke:lobby`
 
 ## API endpoints
 

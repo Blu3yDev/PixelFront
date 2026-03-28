@@ -518,14 +518,14 @@ async function main() {
     const startedState = await requestJson("POST", "/api/lobbies/state", { code, sessionToken });
     const viewer = startedState?.data?.viewer || null;
     const viewerPlayerId = String(viewer?.playerId || "").trim();
-    const viewerNationId = Math.max(0, Number(viewer?.nationId) | 0);
+    const viewerNationId = Math.max(0, Number(viewer?.canonicalNationId ?? viewer?.nationId) | 0);
     if (!viewerPlayerId || viewerNationId <= 0) {
       throw new Error("Started lobby state did not expose authoritative player identity.");
     }
     const guestStartedState = await requestJson("POST", "/api/lobbies/state", { code, sessionToken: guestSessionToken });
     const guestViewer = guestStartedState?.data?.viewer || null;
     const guestViewerPlayerId = String(guestViewer?.playerId || "").trim();
-    const guestViewerNationId = Math.max(0, Number(guestViewer?.nationId) | 0);
+    const guestViewerNationId = Math.max(0, Number(guestViewer?.canonicalNationId ?? guestViewer?.nationId) | 0);
     if (!guestViewerPlayerId || guestViewerNationId <= 0) {
       throw new Error("Guest started lobby state did not expose authoritative player identity.");
     }
@@ -772,3 +772,4 @@ async function main() {
 }
 
 await main();
+

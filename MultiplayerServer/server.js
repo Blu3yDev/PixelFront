@@ -2235,10 +2235,18 @@ function getRuntimeAssignment(lobby, sessionId) {
 
 function lobbyViewer(lobby, player) {
   const assignment = getRuntimeAssignment(lobby, player?.sessionId);
+  const canonicalNationId = Math.max(0, Number(assignment?.nationId) | 0);
+  const localNationId = canonicalNationId > 0
+    ? Math.max(0, mapCanonicalToLocalNationId(canonicalNationId, canonicalNationId) | 0)
+    : 0;
   return {
     sessionId: String(player?.sessionId || ""),
     playerId: String(player?.playerId || player?.sessionId || "").trim(),
-    nationId: Math.max(0, Number(assignment?.nationId) | 0),
+    // Snapshot packets are remapped per-session so the local player is nation 1.
+    // Expose that same local id here so HUD/stat lookups stay aligned for guests.
+    nationId: localNationId,
+    localNationId,
+    canonicalNationId,
     isHost: String(player?.sessionId || "") === String(lobby?.hostSessionId || ""),
     name: String(player?.name || "Player"),
     flag: cloneWire(player?.flag) || null
@@ -4365,12 +4373,21 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
     }
     input.playerId = assignment.playerId;
   }
-  if ((input.nationId | 0) !== (assignment.nationId | 0)) {
+  const canonicalNationId = assignment.nationId | 0;
+  const localNationId = mapCanonicalToLocalNationId(canonicalNationId, canonicalNationId) | 0;
+  const inputNationId = input.nationId | 0;
+  const inputNationMatchesIdentity = (
+    inputNationId === canonicalNationId ||
+    inputNationId === localNationId
+  );
+  if (!inputNationMatchesIdentity) {
     if (!isSpawnPickCmd) {
       wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: input.seq, serverTickProcessed: runtime.simTick | 0, reason: "Nation identity mismatch." });
       return;
     }
-    input.nationId = assignment.nationId | 0;
+    input.nationId = canonicalNationId;
+  } else {
+    input.nationId = canonicalNationId;
   }
   if ((input.seq | 0) <= 0) {
     wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: 0, serverTickProcessed: runtime.simTick | 0, reason: "Invalid sequence number." });
@@ -5031,3 +5048,4 @@ setInterval(cleanupIdleLobbies, 60000).unref();
 server.listen(PORT, () => {
   console.log(`[multiplayer-server] listening on :${PORT}`);
 });
+

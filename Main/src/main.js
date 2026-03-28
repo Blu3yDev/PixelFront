@@ -8336,6 +8336,8 @@ function createMainMenuController(options = null) {
       const apiBase = String(MULTIPLAYER_API_BASE || "").trim();
       const build = String(health?.build || "").trim();
       const runtimeSrc = String(health?.runtimeMainSrc || "").trim();
+      const runtimeReady = health?.runtimeModulesReady;
+      const runtimeError = String(health?.runtimeModulesError || "").trim();
       if (!build) {
         console.warn(`[Multiplayer] backend missing build metadata at ${apiBase || "(unknown URL)"}; deploy is stale.`);
         multiplayerHealthOk = false;
@@ -8343,6 +8345,19 @@ function createMainMenuController(options = null) {
         multiplayerHealthBuild = build;
         multiplayerHealthRuntimeSrc = runtimeSrc;
         multiplayerHealthReason = `Multiplayer backend is outdated at ${apiBase || "(unknown URL)"}. Redeploy Railway from latest server code.`;
+        refreshMultiplayerUI();
+        return {
+          ok: false,
+          reason: multiplayerHealthReason
+        };
+      }
+      if (runtimeReady === false) {
+        console.warn(`[Multiplayer] backend runtime modules unavailable at ${apiBase || "(unknown URL)"}: ${runtimeError || "unknown error"}`);
+        multiplayerHealthOk = false;
+        multiplayerHealthCheckedAtMs = Date.now();
+        multiplayerHealthBuild = build;
+        multiplayerHealthRuntimeSrc = runtimeSrc;
+        multiplayerHealthReason = runtimeError || `Multiplayer backend is missing shared runtime files at ${apiBase || "(unknown URL)"}.`;
         refreshMultiplayerUI();
         return {
           ok: false,

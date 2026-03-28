@@ -478,6 +478,23 @@ function resolveRuntimeModulePaths() {
   throw new Error(hint);
 }
 
+function probeRuntimeModuleAvailability() {
+  try {
+    const resolved = resolveRuntimeModulePaths();
+    return {
+      ok: true,
+      srcDir: String(resolved?.srcDir || "").trim(),
+      error: ""
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      srcDir: "",
+      error: String(err?.message || err || "Failed to locate shared game runtime modules.")
+    };
+  }
+}
+
 async function loadRuntimeModules() {
   if (runtimeModulesPromise) return runtimeModulesPromise;
   runtimeModulesPromise = (async () => {
@@ -4415,12 +4432,15 @@ const server = createServer(async (req, res) => {
     const path = u.pathname;
 
     if (req.method === "GET" && path === "/health") {
+      const runtimeProbe = probeRuntimeModuleAvailability();
       writeJson(res, 200, {
         ok: true,
         uptimeS: Math.round(process.uptime()),
         build: SERVER_BUILD_ID,
         instanceId: SERVER_INSTANCE_ID,
-        runtimeMainSrc: runtimeModulesSrcDir || "",
+        runtimeMainSrc: runtimeModulesSrcDir || runtimeProbe.srcDir || "",
+        runtimeModulesReady: runtimeProbe.ok,
+        runtimeModulesError: runtimeProbe.ok ? "" : runtimeProbe.error,
         limits: {
           maxWorldWidth: MATCH_MAX_WORLD_WIDTH,
           maxWorldHeight: MATCH_MAX_WORLD_HEIGHT,

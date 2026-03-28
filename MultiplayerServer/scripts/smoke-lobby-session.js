@@ -253,7 +253,13 @@ async function main() {
   child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
 
   try {
-    await waitForHealth();
+    const health = await waitForHealth();
+    if (!health?.runtimeModulesReady) {
+      throw new Error(`Health check reported runtime modules unavailable: ${String(health?.runtimeModulesError || "unknown error")}`);
+    }
+    if (!String(health?.runtimeMainSrc || "").trim()) {
+      throw new Error("Health check did not expose the authoritative runtimeMainSrc path.");
+    }
 
     const created = await requestJson("POST", "/api/lobbies/create", {
       playerName: "Host",
@@ -520,6 +526,7 @@ async function main() {
         "state_accepts_session_token",
         "ws_accepts_session_token",
         "lobby_start_accepts_session_token",
+        "health_reports_runtime_modules_ready",
         "ws_receives_started_state",
         "started_match_delivers_full_sync",
         "full_sync_includes_split_event_feeds",

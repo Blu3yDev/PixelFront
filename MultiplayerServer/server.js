@@ -47,6 +47,10 @@ const MATCH_FULL_SYNC_HUMAN_OWNER_PRIORITY_SPAWN_MAX_TILES = Math.max(
   MATCH_FULL_SYNC_HUMAN_OWNER_PRIORITY_MAX_TILES,
   Number(process.env.MATCH_FULL_SYNC_HUMAN_OWNER_PRIORITY_SPAWN_MAX_TILES || 90000)
 );
+const MATCH_FULL_SYNC_CLAIMED_RESET_MAX_TILES = Math.max(
+  1000,
+  Number(process.env.MATCH_FULL_SYNC_CLAIMED_RESET_MAX_TILES || 60000)
+);
 const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(34, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 56));
 const MATCH_ENTITY_DELTA_INTERVAL_MAX_MS = Math.max(
   MATCH_ENTITY_DELTA_INTERVAL_MS,
@@ -87,6 +91,11 @@ const MATCH_WIRE_SOFT_AI_COUNT = Math.max(8, Number(process.env.MATCH_WIRE_SOFT_
 const MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS = Math.max(4000, Number(process.env.MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS || 22000));
 const MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS = Math.max(MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS, Number(process.env.MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS || 45000));
 const MATCH_SPAWN_READY_WAIT_MAX_MS = Math.max(10000, Number(process.env.MATCH_SPAWN_READY_WAIT_MAX_MS || 90000));
+const MATCH_POST_COMMAND_SNAPSHOT_COALESCE_MS = Math.max(10, Number(process.env.MATCH_POST_COMMAND_SNAPSHOT_COALESCE_MS || 28));
+const MATCH_POST_COMMAND_SNAPSHOT_FORCE_MS = Math.max(
+  MATCH_POST_COMMAND_SNAPSHOT_COALESCE_MS,
+  Number(process.env.MATCH_POST_COMMAND_SNAPSHOT_FORCE_MS || 96)
+);
 const MATCH_LAG_WARN_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_LAG_WARN_INTERVAL_MS || 5000));
 const MATCH_SNAPSHOT_STATS_INTERVAL_MS = Math.max(200, Number(process.env.MATCH_SNAPSHOT_STATS_INTERVAL_MS || 420));
 const MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS = Math.max(280, Number(process.env.MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS || 650));
@@ -2196,6 +2205,10 @@ async function ensureLobbyRuntime(lobby) {
       ownerSweepCursor: 0,
       lastTerritoryPulseAtMs: 0,
       lastSpawnPhaseActive: !!(world?._spawnPhase && world._spawnPhase.active),
+      pendingCommandSnapshotPolicy: null,
+      pendingCommandSnapshotAtMs: 0,
+      pendingCommandSnapshotForceAtMs: 0,
+      lastDeferredCommandSnapshotAtMs: 0,
       assignmentsBySession: new Map(),
       nationToSession: new Map(),
       playerLoadedBySession: new Map(),
@@ -2239,10 +2252,18 @@ function getRuntimeAssignment(lobby, sessionId) {
 
 function lobbyViewer(lobby, player) {
   const assignment = getRuntimeAssignment(lobby, player?.sessionId);
+  const canonicalNationId = Math.max(0, Number(assignment?.nationId) | 0);
+  const localNationId = canonicalNationId > 0
+    ? Math.max(0, mapCanonicalToLocalNationId(canonicalNationId, canonicalNationId) | 0)
+    : 0;
   return {
     sessionId: String(player?.sessionId || ""),
     playerId: String(player?.playerId || player?.sessionId || "").trim(),
-    nationId: Math.max(0, Number(assignment?.nationId) | 0),
+    // Snapshot packets are remapped per-session so the local player is nation 1.
+    // Expose that same local id here so HUD/stat lookups stay aligned for guests.
+    nationId: localNationId,
+    localNationId,
+    canonicalNationId,
     isHost: String(player?.sessionId || "") === String(lobby?.hostSessionId || ""),
     name: String(player?.name || "Player"),
     flag: cloneWire(player?.flag) || null
@@ -2820,6 +2841,38 @@ function appendHumanOwnerPriorityChunk(world, runtime, changedTiles, maxAddition
     humanNationIds.push(id);
   }
   return appendPriorityOwnerTilesForNationIds(world, humanNationIds, changedTiles, maxAdditionalRaw);
+}
+
+function appendAllClaimedOwnerTiles(world, changedTilesRaw, maxAdditionalRaw) {
+  const changedTiles = Array.isArray(changedTilesRaw) ? changedTilesRaw : [];
+  const ownerArr = world?.owner;
+  const landArr = world?.land;
+  if (!ownerArr || !landArr || ownerArr.length !== landArr.length || ownerArr.length <= 0) {
+    return changedTiles;
+  }
+
+  const maxAdditional = Math.max(0, Number(maxAdditionalRaw) | 0);
+  if (maxAdditional <= 0) return changedTiles;
+
+  const seenTiles = new Set();
+  for (let i = 0; i < changedTiles.length; i++) {
+    const row = changedTiles[i];
+    const idx = Math.max(0, Number(Array.isArray(row) ? row[0] : row?.idx) | 0);
+    seenTiles.add(idx);
+  }
+
+  let remaining = maxAdditional;
+  for (let idx = 0; idx < ownerArr.length && remaining > 0; idx++) {
+    if (!landArr[idx]) continue;
+    const owner = Number(ownerArr[idx]) | 0;
+    if (owner <= 0) continue;
+    if (seenTiles.has(idx)) continue;
+    changedTiles.push([idx, owner]);
+    seenTiles.add(idx);
+    remaining--;
+  }
+
+  return changedTiles;
 }
 
 function serializeEntitiesDelta(world, runtime, forceFull = false, optionsRaw = null) {
@@ -3431,8 +3484,18 @@ function buildSnapshotPacket(
       Math.max(120000, Number(MATCH_FULL_SYNC_OWNER_PACKED_SAFE_TILES) | 0)
     );
     const allowOwnerPacked = ownerTileCount > 0 && ownerTileCount <= safeOwnerPackedTiles;
-    // Join-time full syncs during untouched spawn phase are huge and redundant.
-    if (allowOwnerPacked && (!spawnActive || claimedTiles > 0)) {
+    const canUseClaimedResetSync = claimedTiles > 0 && claimedTiles <= MATCH_FULL_SYNC_CLAIMED_RESET_MAX_TILES;
+    // Early-match territory is sparse enough that a neutral reset + claimed-territory snapshot
+    // is both smaller and more reliable than a giant owner-packed payload.
+    if (canUseClaimedResetSync) {
+      packet.ownerResetToNeutral = true;
+      packet.ownerPackedOmitted = true;
+      delete packet.ownerPacked;
+      delete packet.ownerPackedFormat;
+      if (!Array.isArray(packet.changedTiles)) packet.changedTiles = [];
+      packet.changedTiles.length = 0;
+      appendAllClaimedOwnerTiles(world, packet.changedTiles, claimedTiles);
+    } else if (allowOwnerPacked && (!spawnActive || claimedTiles > 0)) {
       if (nationCount <= 255) {
         packet.ownerPacked = encodeOwnerPackedBase64U8(world.owner);
         packet.ownerPackedFormat = "u8";
@@ -3863,7 +3926,6 @@ function flushRuntimeTick(lobby, runtime, now) {
   } else if ((Number(runtime.spawnPhaseClockStartedAtMs) || 0) <= 0) {
     runtime.spawnPhaseClockStartedAtMs = now;
   }
-
   const lastPumpAt = Number(runtime.lastPumpAtMs) || now;
   const deltaRawMs = Math.max(0, now - lastPumpAt);
   runtime.lastPumpAtMs = now;
@@ -4031,7 +4093,12 @@ function flushRuntimeTick(lobby, runtime, now) {
   if (territoryPulseDue && broadcastTerritoryPulse(lobby, runtime)) {
     runtime.lastTerritoryPulseAtMs = now;
   }
-  if (due || forceDue || acceleratedDue) {
+  const deferredCommandSnapshotPolicy = consumeDeferredCommandSnapshot(runtime, now);
+  if (deferredCommandSnapshotPolicy) {
+    runtime.lastSnapshotAtMs = now;
+    runtime.lastTerritoryPulseAtMs = now;
+    broadcastSnapshotDelta(lobby, runtime, deferredCommandSnapshotPolicy);
+  } else if (due || forceDue || acceleratedDue) {
     runtime.lastSnapshotAtMs = now;
     runtime.lastTerritoryPulseAtMs = now;
     broadcastSnapshotDelta(lobby, runtime);
@@ -4190,6 +4257,52 @@ function hasForcedCommandSnapshotPolicy(policyRaw) {
     policy.forceOperations ||
     policy.forceMobile
   );
+}
+
+function mergeCommandSnapshotPolicy(intoRaw, addRaw) {
+  const into = (intoRaw && typeof intoRaw === "object") ? intoRaw : createCommandSnapshotPolicy();
+  const add = (addRaw && typeof addRaw === "object") ? addRaw : null;
+  if (!add) return into;
+  into.forceStats = !!(into.forceStats || add.forceStats);
+  into.forceRelations = !!(into.forceRelations || add.forceRelations);
+  into.forceEvents = !!(into.forceEvents || add.forceEvents);
+  into.forceStructures = !!(into.forceStructures || add.forceStructures);
+  into.forceOperations = !!(into.forceOperations || add.forceOperations);
+  into.forceMobile = !!(into.forceMobile || add.forceMobile);
+  return into;
+}
+
+function scheduleDeferredCommandSnapshot(runtime, policyRaw, now = nowMs(), { urgent = false } = {}) {
+  if (!runtime || typeof runtime !== "object") return false;
+  const merged = mergeCommandSnapshotPolicy(
+    mergeCommandSnapshotPolicy(createCommandSnapshotPolicy(), runtime.pendingCommandSnapshotPolicy),
+    policyRaw
+  );
+  runtime.pendingCommandSnapshotPolicy = merged;
+  const delayMs = urgent
+    ? MATCH_POST_COMMAND_SNAPSHOT_COALESCE_MS
+    : Math.max(MATCH_POST_COMMAND_SNAPSHOT_COALESCE_MS, Math.round(MATCH_POST_COMMAND_SNAPSHOT_COALESCE_MS * 1.35));
+  const targetAt = now + delayMs;
+  const forceAt = now + MATCH_POST_COMMAND_SNAPSHOT_FORCE_MS;
+  const currentTargetAt = Math.max(0, Number(runtime.pendingCommandSnapshotAtMs) || 0);
+  const currentForceAt = Math.max(0, Number(runtime.pendingCommandSnapshotForceAtMs) || 0);
+  runtime.pendingCommandSnapshotAtMs = currentTargetAt > 0 ? Math.min(currentTargetAt, targetAt) : targetAt;
+  runtime.pendingCommandSnapshotForceAtMs = currentForceAt > 0 ? Math.min(currentForceAt, forceAt) : forceAt;
+  return true;
+}
+
+function consumeDeferredCommandSnapshot(runtime, now = nowMs()) {
+  if (!runtime || typeof runtime !== "object") return null;
+  const policy = runtime.pendingCommandSnapshotPolicy;
+  if (!policy) return null;
+  const dueAt = Math.max(0, Number(runtime.pendingCommandSnapshotAtMs) || 0);
+  const forceAt = Math.max(0, Number(runtime.pendingCommandSnapshotForceAtMs) || 0);
+  if (dueAt > 0 && now < dueAt && (forceAt <= 0 || now < forceAt)) return null;
+  runtime.pendingCommandSnapshotPolicy = null;
+  runtime.pendingCommandSnapshotAtMs = 0;
+  runtime.pendingCommandSnapshotForceAtMs = 0;
+  runtime.lastDeferredCommandSnapshotAtMs = now;
+  return mergeCommandSnapshotPolicy(createCommandSnapshotPolicy(), policy);
 }
 
 function resolveCommandSnapshotPolicy(cmdRaw) {
@@ -4378,6 +4491,10 @@ function applyPostRegenerateRuntimeState(lobby, runtime, argsRaw) {
   runtime.lastOperationsSnapshotAtMs = 0;
   runtime.lastMobileSnapshotAtMs = 0;
   runtime.lastSnapshotAtMs = 0;
+  runtime.pendingCommandSnapshotPolicy = null;
+  runtime.pendingCommandSnapshotAtMs = 0;
+  runtime.pendingCommandSnapshotForceAtMs = 0;
+  runtime.lastDeferredCommandSnapshotAtMs = 0;
   runtime.spawnPhaseReadyStartedAtMs = nowMs();
   runtime.spawnPhaseClockStartedAtMs = 0;
   if (runtime.playerLoadedBySession && typeof runtime.playerLoadedBySession.clear === "function") {
@@ -4443,12 +4560,21 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
     }
     input.playerId = assignment.playerId;
   }
-  if ((input.nationId | 0) !== (assignment.nationId | 0)) {
+  const canonicalNationId = assignment.nationId | 0;
+  const localNationId = mapCanonicalToLocalNationId(canonicalNationId, canonicalNationId) | 0;
+  const inputNationId = input.nationId | 0;
+  const inputNationMatchesIdentity = (
+    inputNationId === canonicalNationId ||
+    inputNationId === localNationId
+  );
+  if (!inputNationMatchesIdentity) {
     if (!isSpawnPickCmd) {
       wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: input.seq, serverTickProcessed: runtime.simTick | 0, reason: "Nation identity mismatch." });
       return;
     }
-    input.nationId = assignment.nationId | 0;
+    input.nationId = canonicalNationId;
+  } else {
+    input.nationId = canonicalNationId;
   }
   if ((input.seq | 0) <= 0) {
     wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: 0, serverTickProcessed: runtime.simTick | 0, reason: "Invalid sequence number." });
@@ -4509,20 +4635,41 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
       if (allowActorFastSync) {
         sendFullSyncToSession(lobby, runtime, sessionId, ws, `post_cmd_${cmd}`);
       }
-      runtime.lastSnapshotAtMs = nowMs();
-      broadcastSnapshotDelta(lobby, runtime, snapshotPolicy);
-      return;
     }
 
     const now = nowMs();
     const immediatePostCmdMinMs = Math.max(18, Math.round(MATCH_SNAPSHOT_INTERVAL_MIN_MS * 0.55));
     const sinceImmediatePostCmdMs = now - (Number(runtime.lastImmediatePostCommandSnapshotAtMs) || 0);
+    const stepMs = simDtMs();
+    const backlogMs = Math.max(0, Number(runtime.simAccMs) || 0);
+    const worldW = Math.max(0, Number(runtime?.world?.w ?? runtime?.world?.W) | 0);
+    const worldH = Math.max(0, Number(runtime?.world?.h ?? runtime?.world?.H) | 0);
+    const area = Math.max(1, worldW * worldH);
+    const aiCount = Math.max(0, Number(runtime?.world?._ai?.length || 0) - 1);
+    const heavyWorld = area > MATCH_RUNTIME_SAFE_MAX_WORLD_TILES || aiCount > MATCH_RUNTIME_SAFE_MAX_AI_COUNT;
+    const connectedPlayers = Math.max(
+      1,
+      Number(lobby?.sockets?.size) || Number(runtime?.assignmentsBySession?.size) || Number(lobby?.players?.length) || 1
+    );
+    const recentSnapshotMs = now - Math.max(0, Number(runtime.lastSnapshotAtMs) || 0);
+    const congested = (
+      (Number(runtime.backpressuredSockets) | 0) > 0 ||
+      (Number(runtime.mediumBackpressuredSockets) | 0) > 0
+    );
+    const shouldCoalescePostCommandSnapshot = (
+      connectedPlayers >= 3 ||
+      heavyWorld ||
+      congested ||
+      backlogMs > stepMs ||
+      recentSnapshotMs < MATCH_POST_COMMAND_SNAPSHOT_COALESCE_MS
+    );
     const shouldForceImmediateSnapshot = (
       shouldForceImmediatePostCommandSnapshot(cmd) &&
       ws &&
       ws.readyState === WebSocket.OPEN &&
       socketBufferedAmount(ws) <= MATCH_BACKPRESSURE_RECOVERY_SYNC_BUFFER_BYTES &&
-      sinceImmediatePostCmdMs >= immediatePostCmdMinMs
+      sinceImmediatePostCmdMs >= immediatePostCmdMinMs &&
+      !shouldCoalescePostCommandSnapshot
     );
     if (shouldForceImmediateSnapshot) {
       runtime.lastImmediatePostCommandSnapshotAtMs = now;
@@ -4531,19 +4678,20 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
       return;
     }
 
-    const stepMs = simDtMs();
-    const backlogMs = Math.max(0, Number(runtime.simAccMs) || 0);
-    const worldW = Math.max(0, Number(runtime?.world?.w ?? runtime?.world?.W) | 0);
-    const worldH = Math.max(0, Number(runtime?.world?.h ?? runtime?.world?.H) | 0);
-    const area = Math.max(1, worldW * worldH);
-    const aiCount = Math.max(0, Number(runtime?.world?._ai?.length || 0) - 1);
-    const heavyWorld = area > MATCH_RUNTIME_SAFE_MAX_WORLD_TILES || aiCount > MATCH_RUNTIME_SAFE_MAX_AI_COUNT;
-    if (allowActorFastSync && !heavyWorld) {
+    if (cmd !== "pick_spawn" && allowActorFastSync && !heavyWorld && connectedPlayers <= 4 && !shouldCoalescePostCommandSnapshot) {
       sendFullSyncToSession(lobby, runtime, sessionId, ws, `post_cmd_${cmd}`);
     }
+    if (cmd === "pick_spawn") {
+      scheduleDeferredCommandSnapshot(runtime, snapshotPolicy, now, { urgent: true });
+      return;
+    }
     if (mustEchoCommandState || (!heavyWorld && backlogMs <= (stepMs * 1.5))) {
-      runtime.lastSnapshotAtMs = nowMs();
-      broadcastSnapshotDelta(lobby, runtime, snapshotPolicy);
+      if (shouldCoalescePostCommandSnapshot) {
+        scheduleDeferredCommandSnapshot(runtime, snapshotPolicy, now, { urgent: mustEchoCommandState });
+      } else {
+        runtime.lastSnapshotAtMs = now;
+        broadcastSnapshotDelta(lobby, runtime, snapshotPolicy);
+      }
     }
   } catch {
     // Keep command success path resilient; periodic snapshots continue.

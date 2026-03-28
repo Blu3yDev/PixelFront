@@ -1557,7 +1557,8 @@ function normalizeMultiplayerSession(raw) {
     startedAt,
     serverTick: Math.max(0, Number(raw.serverTick) || 0),
     isHost,
-    worldSpec: sanitizeMultiplayerWorldSpec(raw.worldSpec)
+    worldSpec: sanitizeMultiplayerWorldSpec(raw.worldSpec),
+    loadReportedAt: Math.max(0, Number(raw.loadReportedAt) || 0)
   };
 }
 
@@ -1657,6 +1658,26 @@ function clearMultiplayerMatchSocket() {
     // Ignore close errors.
   }
   multiplayerMatchSocket = null;
+}
+
+function maybeReportMultiplayerClientLoaded(startedAtRaw = 0) {
+  if (!isMultiplayerMatchEnabled()) return false;
+  const sess = activeMultiplayerSession;
+  const ws = multiplayerMatchSocket;
+  if (!sess || !ws || ws.readyState !== WebSocket.OPEN) return false;
+  const startedAt = Math.max(0, Number(startedAtRaw) || Number(sess.startedAt) || 0);
+  if (startedAt <= 0) return false;
+  if ((Number(sess.loadReportedAt) || 0) === startedAt) return false;
+  try {
+    ws.send(JSON.stringify({
+      type: "client_loaded",
+      startedAt
+    }));
+    sess.loadReportedAt = startedAt;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function sendMultiplayerMatchPing(ws = multiplayerMatchSocket) {
@@ -3696,6 +3717,7 @@ function connectMultiplayerMatchSocket() {
 
   ws.onopen = () => {
     multiplayerMatchConnected = true;
+    if (activeMultiplayerSession) activeMultiplayerSession.loadReportedAt = 0;
     multiplayerConnectFailureStreak = 0;
     multiplayerSessionProbeInFlight = false;
     multiplayerSessionTerminated = false;
@@ -3750,6 +3772,9 @@ function connectMultiplayerMatchSocket() {
       }
       const startedAt = Math.max(0, Number(msg?.lobby?.start?.startedAt) || 0);
       if (startedAt > 0 && activeMultiplayerSession) {
+        if ((Number(activeMultiplayerSession.startedAt) || 0) !== startedAt) {
+          activeMultiplayerSession.loadReportedAt = 0;
+        }
         activeMultiplayerSession.startedAt = startedAt;
       }
       const helloTick = Math.max(0, Number(msg?.match?.tick) || 0);
@@ -3767,6 +3792,9 @@ function connectMultiplayerMatchSocket() {
       }
       const startedAt = Math.max(0, Number(msg?.lobby?.start?.startedAt) || 0);
       if (startedAt > 0 && activeMultiplayerSession) {
+        if ((Number(activeMultiplayerSession.startedAt) || 0) !== startedAt) {
+          activeMultiplayerSession.loadReportedAt = 0;
+        }
         activeMultiplayerSession.startedAt = startedAt;
       }
       const viewer = (msg?.viewer && typeof msg.viewer === "object") ? msg.viewer : null;
@@ -3840,6 +3868,7 @@ function connectMultiplayerMatchSocket() {
     if (type === "full_sync") {
       resetMultiplayerSnapshotState();
       applyMultiplayerSnapshotPacket(msg, true);
+      maybeReportMultiplayerClientLoaded(Math.max(0, Number(msg?.worldMeta?.startedAt) || 0));
       flushDeferredMultiplayerCommands();
       return;
     }
@@ -17992,3 +18021,4 @@ function clampPct(value, fallback = 100) {
 }
 
 // --- END unchanged block ---
+

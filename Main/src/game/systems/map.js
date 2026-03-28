@@ -3387,10 +3387,27 @@ World.prototype._applyRiverWetlands = function(sea) {
 
       const total = Math.max(1, (phase.totalNations | 0) || (self._nationCount | 0));
       const picked = phase.pickedCount | 0;
+      const playerPicked = !!phase.picked[OWNER.PLAYER];
+      const waitingForPlayers = !!phase.waitingForPlayers;
+      const readyPlayers = Math.max(0, Number(phase.readyPlayers) | 0);
+      const totalPlayers = Math.max(0, Number(phase.totalPlayers) | 0);
+      if (waitingForPlayers) {
+        const loadLabel = totalPlayers > 0
+          ? `Waiting For Players ${readyPlayers}/${totalPlayers}`
+          : "Waiting For Players";
+        return {
+          active: true,
+          progress01: 0,
+          picked,
+          total,
+          playerPicked,
+          label: loadLabel
+        };
+      }
+
       const progress01 = clamp01(phase.elapsedS / Math.max(0.001, Number(phase.durationS) || 0.001));
       const remainS = Math.max(0, (Number(phase.durationS) || 0) - (Number(phase.elapsedS) || 0));
       const remainText = `${Math.ceil(remainS)}s`;
-      const playerPicked = !!phase.picked[OWNER.PLAYER];
       const mode = String(phase.mode || "tile");
       const label = mode === "country"
         ? (playerPicked
@@ -3984,6 +4001,7 @@ World.prototype._applyRiverWetlands = function(sea) {
       }
     }
 }
+
 
 
 

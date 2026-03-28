@@ -86,6 +86,7 @@ const MATCH_WIRE_SOFT_WORLD_TILES = Math.max(400000, Number(process.env.MATCH_WI
 const MATCH_WIRE_SOFT_AI_COUNT = Math.max(8, Number(process.env.MATCH_WIRE_SOFT_AI_COUNT || 90));
 const MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS = Math.max(4000, Number(process.env.MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS || 22000));
 const MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS = Math.max(MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS, Number(process.env.MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS || 45000));
+const MATCH_SPAWN_READY_WAIT_MAX_MS = Math.max(10000, Number(process.env.MATCH_SPAWN_READY_WAIT_MAX_MS || 90000));
 const MATCH_LAG_WARN_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_LAG_WARN_INTERVAL_MS || 5000));
 const MATCH_SNAPSHOT_STATS_INTERVAL_MS = Math.max(200, Number(process.env.MATCH_SNAPSHOT_STATS_INTERVAL_MS || 420));
 const MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS = Math.max(280, Number(process.env.MATCH_SNAPSHOT_RELATIONS_INTERVAL_MS || 650));
@@ -2196,7 +2197,10 @@ async function ensureLobbyRuntime(lobby) {
       lastTerritoryPulseAtMs: 0,
       lastSpawnPhaseActive: !!(world?._spawnPhase && world._spawnPhase.active),
       assignmentsBySession: new Map(),
-      nationToSession: new Map()
+      nationToSession: new Map(),
+      playerLoadedBySession: new Map(),
+      spawnPhaseReadyStartedAtMs: nowMs(),
+      spawnPhaseClockStartedAtMs: 0
     };
     lobby.runtime = runtime;
     installRuntimeEventMirror(world, runtime);
@@ -2235,18 +2239,10 @@ function getRuntimeAssignment(lobby, sessionId) {
 
 function lobbyViewer(lobby, player) {
   const assignment = getRuntimeAssignment(lobby, player?.sessionId);
-  const canonicalNationId = Math.max(0, Number(assignment?.nationId) | 0);
-  const localNationId = canonicalNationId > 0
-    ? Math.max(0, mapCanonicalToLocalNationId(canonicalNationId, canonicalNationId) | 0)
-    : 0;
   return {
     sessionId: String(player?.sessionId || ""),
     playerId: String(player?.playerId || player?.sessionId || "").trim(),
-    // Snapshot packets are remapped per-session so the local player is nation 1.
-    // Expose that same local id here so HUD/stat lookups stay aligned for guests.
-    nationId: localNationId,
-    localNationId,
-    canonicalNationId,
+    nationId: Math.max(0, Number(assignment?.nationId) | 0),
     isHost: String(player?.sessionId || "") === String(lobby?.hostSessionId || ""),
     name: String(player?.name || "Player"),
     flag: cloneWire(player?.flag) || null
@@ -2291,7 +2287,56 @@ function broadcastLobby(lobby, type = "lobby_update") {
   }
 }
 
-function serializeSpawnPhase(raw, world = null) {
+function computeSpawnLoadBarrierState(lobby, runtime, now = nowMs()) {
+  const world = runtime?.world;
+  const phase = world?._spawnPhase;
+  if (!phase || !phase.active) {
+    return {
+      blocking: false,
+      waitingForPlayers: false,
+      forcedOpen: false,
+      readyPlayers: 0,
+      totalPlayers: 0,
+      startedAt: 0,
+      waitElapsedMs: 0,
+      waitRemainingMs: 0
+    };
+  }
+
+  const loadState = (runtime && typeof runtime === "object") ? runtime.playerLoadedBySession : null;
+  const startedAt = Math.max(0, Number(lobby?.startedAt) || 0);
+  const readyStartedAt = Math.max(0, Number(runtime?.spawnPhaseReadyStartedAtMs) || 0);
+  const players = Array.isArray(lobby?.players) ? lobby.players : [];
+  let totalPlayers = 0;
+  let readyPlayers = 0;
+  for (let i = 0; i < players.length; i++) {
+    const sessionId = String(players[i]?.sessionId || "").trim();
+    if (!sessionId) continue;
+    totalPlayers++;
+    const readyAt = Math.max(0, Number(loadState?.get?.(sessionId)) || 0);
+    if (readyStartedAt > 0) {
+      if (readyAt >= readyStartedAt) readyPlayers++;
+    } else if (readyAt > 0) {
+      readyPlayers++;
+    }
+  }
+
+  const allReady = totalPlayers > 0 && readyPlayers >= totalPlayers;
+  const waitElapsedMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;
+  const forcedOpen = !allReady && waitElapsedMs >= MATCH_SPAWN_READY_WAIT_MAX_MS;
+  return {
+    blocking: !allReady && !forcedOpen,
+    waitingForPlayers: !allReady,
+    forcedOpen,
+    readyPlayers,
+    totalPlayers,
+    startedAt,
+    waitElapsedMs,
+    waitRemainingMs: Math.max(0, MATCH_SPAWN_READY_WAIT_MAX_MS - waitElapsedMs)
+  };
+}
+
+function serializeSpawnPhase(raw, world = null, extra = null) {
   const src = (raw && typeof raw === "object") ? raw : null;
   if (!src) return null;
   const out = cloneWire(src) || {};
@@ -2321,6 +2366,14 @@ function serializeSpawnPhase(raw, world = null) {
       pickedSpawns.push([id, x, y]);
     }
     if (pickedSpawns.length > 0) out.pickedSpawns = pickedSpawns;
+  }
+  if (extra && typeof extra === "object") {
+    out.waitingForPlayers = !!extra.waitingForPlayers;
+    out.spawnCountdownBlocked = !!extra.blocking;
+    out.spawnCountdownForced = !!extra.forcedOpen;
+    out.readyPlayers = Math.max(0, Number(extra.readyPlayers) | 0);
+    out.totalPlayers = Math.max(0, Number(extra.totalPlayers) | 0);
+    out.readyWaitRemainingMs = Math.max(0, Number(extra.waitRemainingMs) || 0);
   }
   delete out.picked;
   return out;
@@ -2367,7 +2420,7 @@ function serializeWorldMeta(lobby, runtime) {
     focusOpId: Number(world.focusOpId) | 0,
     humanNationIds,
     humanPlayers: serializeHumanPlayers(lobby, runtime),
-    spawnPhase: serializeSpawnPhase(world._spawnPhase, world)
+    spawnPhase: serializeSpawnPhase(world._spawnPhase, world, computeSpawnLoadBarrierState(lobby, runtime))
   };
 }
 
@@ -3711,7 +3764,10 @@ function applySpawnPhaseFailsafe(lobby, runtime, now) {
   const world = runtime?.world;
   const phase = world?._spawnPhase;
   if (!phase || !phase.active) return false;
-  const startedAt = Math.max(0, Number(lobby?.startedAt) || 0);
+  const barrier = computeSpawnLoadBarrierState(lobby, runtime, now);
+  if (barrier.blocking) return false;
+  const gateStartedAt = Math.max(0, Number(runtime?.spawnPhaseClockStartedAtMs) || 0);
+  const startedAt = gateStartedAt > 0 ? gateStartedAt : Math.max(0, Number(lobby?.startedAt) || 0);
   if (!startedAt) return false;
   const elapsedMs = Math.max(0, now - startedAt);
   if (elapsedMs < MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS) return false;
@@ -3801,12 +3857,21 @@ function flushRuntimeTick(lobby, runtime, now) {
     ? Math.min(2.6, 1 + ((Math.sqrt(connectedPlayers / 2) - 1) * 0.85))
     : 1;
   runtime.playerLoadScale = playerLoadScale;
+  const spawnBarrier = computeSpawnLoadBarrierState(lobby, runtime, now);
+  if (spawnBarrier.blocking) {
+    runtime.spawnPhaseClockStartedAtMs = 0;
+  } else if ((Number(runtime.spawnPhaseClockStartedAtMs) || 0) <= 0) {
+    runtime.spawnPhaseClockStartedAtMs = now;
+  }
+
   const lastPumpAt = Number(runtime.lastPumpAtMs) || now;
   const deltaRawMs = Math.max(0, now - lastPumpAt);
   runtime.lastPumpAtMs = now;
 
-  const addMs = Math.min(MATCH_MAX_BACKLOG_MS, deltaRawMs);
-  runtime.simAccMs = Math.max(0, Number(runtime.simAccMs) || 0) + addMs;
+  const addMs = spawnBarrier.blocking ? 0 : Math.min(MATCH_MAX_BACKLOG_MS, deltaRawMs);
+  runtime.simAccMs = spawnBarrier.blocking
+    ? 0
+    : (Math.max(0, Number(runtime.simAccMs) || 0) + addMs);
   if (runtime.simAccMs > MATCH_MAX_BACKLOG_MS) runtime.simAccMs = MATCH_MAX_BACKLOG_MS;
 
   let steps = 0;
@@ -4313,6 +4378,11 @@ function applyPostRegenerateRuntimeState(lobby, runtime, argsRaw) {
   runtime.lastOperationsSnapshotAtMs = 0;
   runtime.lastMobileSnapshotAtMs = 0;
   runtime.lastSnapshotAtMs = 0;
+  runtime.spawnPhaseReadyStartedAtMs = nowMs();
+  runtime.spawnPhaseClockStartedAtMs = 0;
+  if (runtime.playerLoadedBySession && typeof runtime.playerLoadedBySession.clear === "function") {
+    runtime.playerLoadedBySession.clear();
+  }
   if (Array.isArray(runtime.eventHistory)) runtime.eventHistory.length = 0;
   if (runtime.tileDeltaBacklog && typeof runtime.tileDeltaBacklog.clear === "function") {
     runtime.tileDeltaBacklog.clear();
@@ -4373,21 +4443,12 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
     }
     input.playerId = assignment.playerId;
   }
-  const canonicalNationId = assignment.nationId | 0;
-  const localNationId = mapCanonicalToLocalNationId(canonicalNationId, canonicalNationId) | 0;
-  const inputNationId = input.nationId | 0;
-  const inputNationMatchesIdentity = (
-    inputNationId === canonicalNationId ||
-    inputNationId === localNationId
-  );
-  if (!inputNationMatchesIdentity) {
+  if ((input.nationId | 0) !== (assignment.nationId | 0)) {
     if (!isSpawnPickCmd) {
       wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: input.seq, serverTickProcessed: runtime.simTick | 0, reason: "Nation identity mismatch." });
       return;
     }
-    input.nationId = canonicalNationId;
-  } else {
-    input.nationId = canonicalNationId;
+    input.nationId = assignment.nationId | 0;
   }
   if ((input.seq | 0) <= 0) {
     wsSend(ws, { type: "cmd_reject", serverTime: nowMs(), ackSeq: 0, serverTickProcessed: runtime.simTick | 0, reason: "Invalid sequence number." });
@@ -4553,6 +4614,32 @@ function attachSocketToLobby(lobby, sessionId, ws) {
         const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, "lobby_state_request");
         ws.initialSyncPending = !fullSync?.sent;
       }
+      return;
+    }
+
+    if (type === "client_loaded") {
+      if (!lobby.started) return;
+      let runtime = lobby.runtime;
+      if (!runtime) {
+        try {
+          runtime = await ensureLobbyRuntime(lobby);
+        } catch (err) {
+          runtime = null;
+          wsSend(ws, {
+            type: "error",
+            serverTime: nowMs(),
+            reason: runtimeInitClientReason(err)
+          });
+        }
+      }
+      if (!runtime) return;
+      const currentStartedAt = Math.max(0, Number(lobby?.startedAt) || 0);
+      const reportedStartedAt = Math.max(0, Number(msg?.startedAt) || 0);
+      if (reportedStartedAt > 0 && currentStartedAt > 0 && reportedStartedAt !== currentStartedAt) return;
+      if (runtime.playerLoadedBySession && typeof runtime.playerLoadedBySession.set === "function") {
+        runtime.playerLoadedBySession.set(String(sessionId || ""), nowMs());
+      }
+      runtime.lastSnapshotAtMs = 0;
       return;
     }
 

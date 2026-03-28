@@ -1,0 +1,12 @@
+{
+  "name": "pixelfront-monorepo",
+  "private": true,
+  "workspaces": [
+    "MultiplayerServer"
+  ],
+  "scripts": {
+    "start": "npm run start -w MultiplayerServer",
+    "start:multiplayer": "npm run start -w MultiplayerServer",
+    "smoke:lobby": "npm run smoke:lobby -w MultiplayerServer"
+  }
+}

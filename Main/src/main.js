@@ -224,15 +224,17 @@ const DEFAULT_PERFORMANCE_PROFILE = Object.freeze({
   showLabels: true,
   showShips: true,
   showAtmosphere: true,
+  renderScale: 1,
+  lowPowerOverlays: false,
   overlayCadenceMul: 1,
   simCadenceMul: 1,
   uiCadenceMul: 1
 });
 const PERFORMANCE_PROFILE_TIERS = Object.freeze([
-  Object.freeze({ qualityTier: 0, workerEnabled: false, maxPixelUploadBinsPerFrame: 0, showLabels: true, showShips: true, showAtmosphere: true, overlayCadenceMul: 1.00, simCadenceMul: 1.00, uiCadenceMul: 1.00 }),
-  Object.freeze({ qualityTier: 1, workerEnabled: false, maxPixelUploadBinsPerFrame: 220, showLabels: true, showShips: true, showAtmosphere: true, overlayCadenceMul: 1.08, simCadenceMul: 1.10, uiCadenceMul: 1.10 }),
-  Object.freeze({ qualityTier: 2, workerEnabled: false, maxPixelUploadBinsPerFrame: 160, showLabels: true, showShips: true, showAtmosphere: true, overlayCadenceMul: 1.16, simCadenceMul: 1.24, uiCadenceMul: 1.22 }),
-  Object.freeze({ qualityTier: 3, workerEnabled: false, maxPixelUploadBinsPerFrame: 112, showLabels: true, showShips: true, showAtmosphere: true, overlayCadenceMul: 1.26, simCadenceMul: 1.42, uiCadenceMul: 1.34 })
+  Object.freeze({ qualityTier: 0, workerEnabled: false, maxPixelUploadBinsPerFrame: 0, showLabels: true, showShips: true, showAtmosphere: true, renderScale: 1.00, lowPowerOverlays: false, overlayCadenceMul: 1.00, simCadenceMul: 1.00, uiCadenceMul: 1.00 }),
+  Object.freeze({ qualityTier: 1, workerEnabled: false, maxPixelUploadBinsPerFrame: 220, showLabels: true, showShips: true, showAtmosphere: true, renderScale: 1.00, lowPowerOverlays: false, overlayCadenceMul: 1.08, simCadenceMul: 1.10, uiCadenceMul: 1.10 }),
+  Object.freeze({ qualityTier: 2, workerEnabled: false, maxPixelUploadBinsPerFrame: 160, showLabels: true, showShips: true, showAtmosphere: false, renderScale: 0.90, lowPowerOverlays: true, overlayCadenceMul: 1.16, simCadenceMul: 1.24, uiCadenceMul: 1.22 }),
+  Object.freeze({ qualityTier: 3, workerEnabled: false, maxPixelUploadBinsPerFrame: 112, showLabels: false, showShips: true, showAtmosphere: false, renderScale: 0.78, lowPowerOverlays: true, overlayCadenceMul: 1.26, simCadenceMul: 1.42, uiCadenceMul: 1.34 })
 ]);
 const SOLO_WORKER_COMMAND_STRATEGY = Object.freeze({
   setAttackRatio: "always",
@@ -277,17 +279,22 @@ function createPerformanceProfileForWorld(tierRaw, worldRef = null) {
   const base = PERFORMANCE_PROFILE_TIERS[tier] || DEFAULT_PERFORMANCE_PROFILE;
   const worldTiles = Math.max(1, Number(worldRef?.w || 0) * Number(worldRef?.h || 0) || 1);
   let cap = Math.max(0, Number(base.maxPixelUploadBinsPerFrame) || 0);
+  let renderScale = Math.max(0.65, Math.min(1, Number(base.renderScale) || 1));
   if (cap > 0) {
     if (worldTiles >= 7_000_000) cap = Math.max(72, Math.round(cap * 0.68));
     else if (worldTiles >= 2_000_000) cap = Math.max(96, Math.round(cap * 0.82));
   }
+  if (worldTiles >= 7_000_000) renderScale = Math.max(0.68, renderScale * 0.92);
+  else if (worldTiles >= 2_000_000) renderScale = Math.max(0.82, renderScale * 0.96);
   return {
     qualityTier: base.qualityTier,
     workerEnabled: base.workerEnabled,
     maxPixelUploadBinsPerFrame: cap,
-    showLabels: true,
-    showShips: true,
-    showAtmosphere: true,
+    showLabels: base.showLabels !== false,
+    showShips: base.showShips !== false,
+    showAtmosphere: base.showAtmosphere !== false,
+    renderScale,
+    lowPowerOverlays: base.lowPowerOverlays === true,
     overlayCadenceMul: Number(base.overlayCadenceMul) || 1,
     simCadenceMul: Number(base.simCadenceMul) || 1,
     uiCadenceMul: Number(base.uiCadenceMul) || 1
@@ -3871,6 +3878,9 @@ function connectMultiplayerMatchSocket() {
           const reason = String(probe.reason || "Multiplayer lobby is no longer available on the server.").trim();
           multiplayerSessionTerminated = true;
           clearMultiplayerDeferredCommandQueue();
+          if (mainMenuController && typeof mainMenuController.clearMultiplayerSessionPersistence === "function") {
+            mainMenuController.clearMultiplayerSessionPersistence();
+          }
           if (multiplayerMatchReconnectTimer) {
             clearTimeout(multiplayerMatchReconnectTimer);
             multiplayerMatchReconnectTimer = 0;
@@ -6712,6 +6722,9 @@ async function startGameFromMainMenu(payload = null) {
   }
   if (!multiplayerSession) {
     setActiveMultiplayerSession(null);
+    if (mainMenuController && typeof mainMenuController.forgetMultiplayerSession === "function") {
+      void mainMenuController.forgetMultiplayerSession({ leaveServer: false });
+    }
   } else {
     setActiveMultiplayerSession(multiplayerSession);
   }
@@ -6787,6 +6800,9 @@ function leaveCurrentGameToMainMenu() {
 
   if (isMultiplayerMatchEnabled()) {
     setActiveMultiplayerSession(null);
+    if (mainMenuController && typeof mainMenuController.forgetMultiplayerSession === "function") {
+      void mainMenuController.forgetMultiplayerSession({ leaveServer: true });
+    }
   }
 
   matchSummary.hide();
@@ -8050,14 +8066,39 @@ function createMainMenuController(options = null) {
   const MULTIPLAYER_HEALTH_CACHE_MS = 15000;
   const MULTIPLAYER_SESSION_STORAGE_KEY = "pf-multiplayer-lobby-session-v1";
 
+  const getMultiplayerSessionStorage = () => {
+    try {
+      return globalThis?.sessionStorage || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const getLegacyMultiplayerSessionStorage = () => {
+    try {
+      return globalThis?.localStorage || null;
+    } catch {
+      return null;
+    }
+  };
+
   const hasMultiplayerApi = () => !!MULTIPLAYER_API_BASE;
 
   const readPersistedMultiplayerLobbySession = () => {
+    const storage = getMultiplayerSessionStorage();
+    const legacyStorage = getLegacyMultiplayerSessionStorage();
     let raw = "";
     try {
-      raw = String(globalThis?.localStorage?.getItem?.(MULTIPLAYER_SESSION_STORAGE_KEY) || "");
+      raw = String(storage?.getItem?.(MULTIPLAYER_SESSION_STORAGE_KEY) || "");
     } catch {
       raw = "";
+    }
+    if (!raw) {
+      try {
+        legacyStorage?.removeItem?.(MULTIPLAYER_SESSION_STORAGE_KEY);
+      } catch {
+        // Ignore legacy storage cleanup failures.
+      }
     }
     if (!raw) return null;
     try {
@@ -8083,7 +8124,12 @@ function createMainMenuController(options = null) {
 
   const clearPersistedMultiplayerLobbySession = () => {
     try {
-      globalThis?.localStorage?.removeItem?.(MULTIPLAYER_SESSION_STORAGE_KEY);
+      getMultiplayerSessionStorage()?.removeItem?.(MULTIPLAYER_SESSION_STORAGE_KEY);
+    } catch {
+      // Ignore storage cleanup failures.
+    }
+    try {
+      getLegacyMultiplayerSessionStorage()?.removeItem?.(MULTIPLAYER_SESSION_STORAGE_KEY);
     } catch {
       // Ignore storage cleanup failures.
     }
@@ -8108,11 +8154,48 @@ function createMainMenuController(options = null) {
       updatedAtMs: Date.now()
     };
     try {
-      globalThis?.localStorage?.setItem?.(MULTIPLAYER_SESSION_STORAGE_KEY, JSON.stringify(payload));
+      const storage = getMultiplayerSessionStorage() || getLegacyMultiplayerSessionStorage();
+      storage?.setItem?.(MULTIPLAYER_SESSION_STORAGE_KEY, JSON.stringify(payload));
+      if (storage && storage === getMultiplayerSessionStorage()) {
+        getLegacyMultiplayerSessionStorage()?.removeItem?.(MULTIPLAYER_SESSION_STORAGE_KEY);
+      }
     } catch {
       // Ignore storage write failures.
     }
     return payload;
+  };
+
+  const resetMultiplayerLobbySessionState = ({ keepMenuMode = false } = {}) => {
+    stopLobbyPolling();
+    closeLobbySocket();
+    multiplayerSessionId = "";
+    multiplayerSessionToken = "";
+    multiplayerViewerPlayerId = "";
+    multiplayerViewerNationId = 0;
+    activeMultiplayerLobby = null;
+    multiplayerLastKnownStart = false;
+    multiplayerAutoStartTriggered = false;
+    lobbyRttMs = 0;
+    if (!keepMenuMode) playMenuMode = "singleplayer";
+    clearPersistedMultiplayerLobbySession();
+    refreshMultiplayerUI();
+  };
+
+  const forgetMultiplayerLobbySession = async ({ leaveServer = false, keepMenuMode = false } = {}) => {
+    const code = String(activeMultiplayerLobby?.code || "").trim().toUpperCase();
+    const sessionId = String(multiplayerSessionId || "").trim();
+    const sessionToken = String(multiplayerSessionToken || "").trim();
+    const shouldLeaveServer = !!(leaveServer && hasMultiplayerApi() && code && (sessionId || sessionToken));
+
+    resetMultiplayerLobbySessionState({ keepMenuMode });
+
+    if (shouldLeaveServer) {
+      try {
+        await leaveLobbyOnServer(code, sessionId, sessionToken);
+      } catch {
+        // Best-effort leave after local cleanup.
+      }
+    }
   };
 
   const shouldUseLegacyRoutes = (err) => {
@@ -8680,17 +8763,7 @@ function createMainMenuController(options = null) {
       }
     } catch (err) {
       if (isTerminalLobbyStateError(err)) {
-        stopLobbyPolling();
-        closeLobbySocket();
-        multiplayerSessionId = "";
-        multiplayerSessionToken = "";
-        multiplayerViewerPlayerId = "";
-        multiplayerViewerNationId = 0;
-        activeMultiplayerLobby = null;
-        multiplayerAutoStartTriggered = false;
-        playMenuMode = "singleplayer";
-        clearPersistedMultiplayerLobbySession();
-        refreshMultiplayerUI();
+        resetMultiplayerLobbySessionState();
         if (!quiet) {
           setView("multiplayer");
           setStatus("Lobby session expired. Create or join again.");
@@ -8767,17 +8840,7 @@ function createMainMenuController(options = null) {
       }
       return true;
     } catch (err) {
-      stopLobbyPolling();
-      closeLobbySocket();
-      multiplayerSessionId = "";
-      multiplayerSessionToken = "";
-      multiplayerViewerPlayerId = "";
-      multiplayerViewerNationId = 0;
-      activeMultiplayerLobby = null;
-      multiplayerAutoStartTriggered = false;
-      playMenuMode = "singleplayer";
-      clearPersistedMultiplayerLobbySession();
-      refreshMultiplayerUI();
+      resetMultiplayerLobbySessionState();
       setView("multiplayer");
       setStatus(err?.message || "Saved multiplayer session expired. Create or join again.");
       return false;
@@ -11049,23 +11112,7 @@ function createMainMenuController(options = null) {
   }
   if (mpLobbyBackBtn) {
     mpLobbyBackBtn.addEventListener("click", async () => {
-      try {
-        if (hasMultiplayerApi() && activeMultiplayerLobby?.code && (multiplayerSessionId || multiplayerSessionToken)) {
-          await leaveLobbyOnServer(activeMultiplayerLobby.code, multiplayerSessionId, multiplayerSessionToken);
-        }
-      } catch {
-        // Best-effort leave.
-      }
-      stopLobbyPolling();
-      closeLobbySocket();
-      multiplayerSessionId = "";
-      multiplayerSessionToken = "";
-      multiplayerViewerPlayerId = "";
-      multiplayerViewerNationId = 0;
-      activeMultiplayerLobby = null;
-      multiplayerAutoStartTriggered = false;
-      clearPersistedMultiplayerLobbySession();
-      refreshMultiplayerUI();
+      await forgetMultiplayerLobbySession({ leaveServer: true });
       setView("multiplayer");
       setStatus("Left lobby.");
     });
@@ -11539,6 +11586,8 @@ function createMainMenuController(options = null) {
       root.hidden = false;
       root.removeAttribute("aria-hidden");
     },
+    forgetMultiplayerSession: (options = null) => forgetMultiplayerLobbySession(options || {}),
+    clearMultiplayerSessionPersistence: () => clearPersistedMultiplayerLobbySession(),
     setStarting,
     setStatus
   };
@@ -15012,7 +15061,7 @@ function buildDebugOverlayText() {
     lines.push(`Sim tick ${dbgNum(simPerf.tickMs, 2)}ms avg ${dbgNum(simPerf.tickMsAvg, 2)} | dip ${dbgNum(simPerf.diplomacyMsAvg, 2)} reb ${dbgNum(simPerf.rebelsMsAvg, 2)} eco ${dbgNum(simPerf.economyMsAvg, 2)} navy ${dbgNum(simPerf.navyMsAvg, 2)} nukes ${dbgNum(simPerf.nukesMsAvg, 2)}`);
     lines.push(`         ops ${dbgNum(simPerf.opsMsAvg, 2)} war ${dbgNum(simPerf.warMsAvg, 2)} speckle ${dbgNum(simPerf.speckleMsAvg, 2)} ai ${dbgNum(simPerf.aiMsAvg, 2)} flush ${dbgNum(simPerf.flushMsAvg, 2)} labels ${dbgNum(simPerf.labelsMsAvg, 2)}`);
   }
-  lines.push(`Profile tier ${dbgInt(activePerformanceTier)} simMul ${dbgNum(activePerformanceProfile?.simCadenceMul, 2)} uiMul ${dbgNum(activePerformanceProfile?.uiCadenceMul, 2)} uploadBins ${dbgInt(activePerformanceProfile?.maxPixelUploadBinsPerFrame || 0)}`);
+  lines.push(`Profile tier ${dbgInt(activePerformanceTier)} simMul ${dbgNum(activePerformanceProfile?.simCadenceMul, 2)} uiMul ${dbgNum(activePerformanceProfile?.uiCadenceMul, 2)} scale ${dbgNum(activePerformanceProfile?.renderScale ?? 1, 2)} uploadBins ${dbgInt(activePerformanceProfile?.maxPixelUploadBinsPerFrame || 0)} lowPower ${dbgBool(activePerformanceProfile?.lowPowerOverlays === true)}`);
   lines.push(`World mode ${String(world._mapMode || activeMapMode)} seed ${world.seed >>> 0} size ${world.w}x${world.h} cells ${dbgInt(cellCount)} land ${dbgInt(landCells)} (${dbgNum((landCells / cellCount) * 100, 1)}%) water ${dbgInt(waterCells)} seaLevel ${world._seaLevel | 0}`);
   lines.push(`      nations alive ${aliveNations}/${Math.max(0, world.nation.length - 1)} collapsed ${collapsedNations} | top ${ownerDebugName(topOwnerId)} ${dbgInt(Math.max(0, topOwnerLand))} | player land ${dbgInt(playerLand)} (${dbgNum(playerLandPct, 1)}%)`);
   lines.push(`Player gold ${fmtCompactLocal(player.gold || 0)} (${dbgSigned(player.goldPS || 0, 1)}/s) pop ${fmtCompactLocal(player.population || 0)}/${fmtCompactLocal(player.popCap || 0)} (${dbgSigned(player.popPS || 0, 1)}/s)`);

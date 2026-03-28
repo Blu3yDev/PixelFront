@@ -551,6 +551,8 @@ export class Renderer {
       showLabels: true,
       showShips: true,
       showAtmosphere: true,
+      renderScale: 1,
+      lowPowerOverlays: false,
       overlayCadenceMul: 1,
       simCadenceMul: 1,
       uiCadenceMul: 1
@@ -678,6 +680,14 @@ export class Renderer {
     return { ...this._clientSettings };
   }
 
+  _getEffectiveRenderScale() {
+    return clamp(Number(this._performanceProfile?.renderScale) || 1, 0.65, 1);
+  }
+
+  _isLowPowerOverlayMode() {
+    return !!(this._clientSettings?.lowPowerOverlays || this._performanceProfile?.lowPowerOverlays);
+  }
+
   setPerformanceProfile(next = null) {
     const src = (next && typeof next === "object") ? next : {};
     const prev = this._performanceProfile || {};
@@ -700,10 +710,15 @@ export class Renderer {
       showAtmosphere: Object.prototype.hasOwnProperty.call(src, "showAtmosphere")
         ? Boolean(src.showAtmosphere)
         : Boolean(prev.showAtmosphere ?? true),
+      renderScale: clamp(numOr(src.renderScale, prev.renderScale ?? 1), 0.65, 1),
+      lowPowerOverlays: Object.prototype.hasOwnProperty.call(src, "lowPowerOverlays")
+        ? Boolean(src.lowPowerOverlays)
+        : Boolean(prev.lowPowerOverlays ?? false),
       overlayCadenceMul: Math.max(1, Math.min(3, numOr(src.overlayCadenceMul, prev.overlayCadenceMul ?? 1))),
       simCadenceMul: Math.max(1, Math.min(3, numOr(src.simCadenceMul, prev.simCadenceMul ?? 1))),
       uiCadenceMul: Math.max(1, Math.min(3, numOr(src.uiCadenceMul, prev.uiCadenceMul ?? 1)))
     });
+    this._viewport = null;
   }
 
   setPlayerFlag(flagDef) {
@@ -1031,7 +1046,7 @@ export class Renderer {
 
     this._ensureVictoryIcon();
 
-    const lowPower = !!this._clientSettings?.lowPowerOverlays;
+    const lowPower = this._isLowPowerOverlayMode();
     const reduceMotion = !!this._clientSettings?.reduceMotion;
     const frontierTiles = this._collectEliminationFrontierTiles(
       defeatedOwner,
@@ -1336,7 +1351,10 @@ export class Renderer {
 
   resizeToDisplay() {
     const rect = this.canvas.getBoundingClientRect();
-    const nextDpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+    const rawDpr = Math.max(1, Number(window.devicePixelRatio) || 1);
+    const worldTiles = Math.max(1, (Number(this.world?.w) || 0) * (Number(this.world?.h) || 0) || 1);
+    const dprCap = worldTiles >= 2_000_000 ? 1.75 : 2;
+    const nextDpr = Math.max(1, Math.min(dprCap, rawDpr) * this._getEffectiveRenderScale());
 
     const w = Math.max(1, Math.floor(rect.width * nextDpr));
     const h = Math.max(1, Math.floor(rect.height * nextDpr));
@@ -2361,7 +2379,7 @@ export class Renderer {
 
     if (!hasClaimFx && !hasNeutralFx) return;
 
-    const lowPower = !!this._clientSettings?.lowPowerOverlays;
+    const lowPower = this._isLowPowerOverlayMode();
     // Let ownership transitions linger a bit longer so paced tile commits still feel intentional.
     const claimLifeS = lowPower ? 0.24 : 0.42;
     const claimMaxScan = lowPower ? 1100 : 3200;
@@ -2864,7 +2882,7 @@ export class Renderer {
     const now = (world && typeof world.time === "number") ? world.time : 0;
     const version = (world && typeof world.tilePressureVersion === "number") ? world.tilePressureVersion : 0;
 
-    const lowPower = !!this._clientSettings?.lowPowerOverlays;
+    const lowPower = this._isLowPowerOverlayMode();
     const UPDATE_INTERVAL_S = lowPower ? 0.95 : 0.28;
     if (!this._heatmapDirty && (version === this._heatmapLastVersion) && ((now - this._heatmapLastT) < UPDATE_INTERVAL_S)) {
       return;
@@ -2893,7 +2911,7 @@ export class Renderer {
     const w = world.w | 0;
     const h = world.h | 0;
     const ownerVersion = world.ownerVersion | 0;
-    const lowPower = !!this._clientSettings?.lowPowerOverlays;
+    const lowPower = this._isLowPowerOverlayMode();
     const sizeChanged =
       !this.highlightImage ||
       !this.highlightImage.data ||
@@ -3126,7 +3144,7 @@ export class Renderer {
     const ownerVersion = world.ownerVersion | 0;
     const seed = (world.seed >>> 0) || 1;
     const now = (typeof world.time === "number") ? world.time : 0;
-    const lowPower = !!this._clientSettings?.lowPowerOverlays;
+    const lowPower = this._isLowPowerOverlayMode();
     const fogForceFull = !!this._playerFogForcePoliticalRebuild;
     if (fogForceFull) force = true;
 
@@ -3430,7 +3448,7 @@ export class Renderer {
 
     if (!this._ensureHatchSurface()) return;
 
-    const lowPower = !!this._clientSettings?.lowPowerOverlays;
+    const lowPower = this._isLowPowerOverlayMode();
     let interval = hasPlayerOps ? 0.45 : 0.90;
     if (lowPower) interval *= 2.2;
     if (!this.hatchDirty && (t - this._hatchLastT) < interval) return;
@@ -6991,7 +7009,11 @@ export class Renderer {
     const airborneMissions = Array.isArray(opts.airborneMissions) ? opts.airborneMissions : null;
     const targetMarker = opts.targetMarker || null;
     const cset = this._clientSettings || {};
+    const perf = this._performanceProfile || {};
     const usePoliticalMap = cset.politicalMapMode === true;
+    const showAtmosphere = cset.atmosphereEnabled !== false && perf.showAtmosphere !== false;
+    const showShips = cset.showShips !== false && perf.showShips !== false;
+    const showNationLabels = cset.showNationLabels !== false && perf.showLabels !== false;
     const nowS = performance.now() * 0.001;
     const prevVfxT = Number(this._victoryVfxLastT) || nowS;
     const vfxDt = clamp(nowS - prevVfxT, 0, 0.060);
@@ -7000,7 +7022,7 @@ export class Renderer {
 
     this._updateSmoothZoom();
     let envDt = 0;
-    if (cset.atmosphereEnabled !== false) {
+    if (showAtmosphere) {
       envDt = this._updateEnvironment(this.world);
     } else if (this._env) {
       this._env.rain.intensity = 0;
@@ -7008,7 +7030,7 @@ export class Renderer {
       this._env.drops.length = 0;
     }
     const v = this._computeViewport();
-    if (cset.atmosphereEnabled !== false) this._updateRainDrops(envDt, v);
+    if (showAtmosphere) this._updateRainDrops(envDt, v);
     const vis = this._getVisibleWorldRect(v, 2);
     if (this.world && typeof this.world._setRenderInterestRect === "function") {
       this.world._setRenderInterestRect({
@@ -7063,12 +7085,12 @@ export class Renderer {
     this._drawSpawnPicksScreen(ctx, v);
     this._drawStructuresScreen(ctx, v, selectedStructureId);
     this._drawDivisionsScreen(ctx, v, selectedDivisionId);
-    if (cset.showShips !== false) this._drawShipsScreen(ctx, v, selectedShipId);
-    if (cset.showNationLabels !== false) this._drawNationLabelsScreen(ctx, v);
+    if (showShips) this._drawShipsScreen(ctx, v, selectedShipId);
+    if (showNationLabels) this._drawNationLabelsScreen(ctx, v);
     this._drawFrontlineTroopTextScreen(ctx, v);
     this._drawRubberLineScreen(ctx, v, rubberLine);
     this._drawBrushGhostScreen(ctx, v, brushGhost);
-    if (cset.atmosphereEnabled !== false) {
+    if (showAtmosphere) {
       this._drawLightingOverlay(ctx, v, this.world);
       this._drawRain(ctx, v);
     }

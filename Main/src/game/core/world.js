@@ -3923,13 +3923,12 @@ placeStructure(type, ownerId, x, y) {
     const idx = idxRaw | 0;
     const total = Math.max(0, (this.w | 0) * (this.h | 0));
     if (idx < 0 || idx >= total) return false;
-    if (this.land && idx < this.land.length && !!this.land[idx]) return true;
 
-    const ownerVal = (this.owner && idx < this.owner.length) ? (this.owner[idx] | 0) : 0;
-    if (ownerVal > OWNER.NONE) return true;
-
-    const biomeVal = (this.biome && idx < this.biome.length) ? (this.biome[idx] | 0) : BIOME.OCEAN_SHALLOW;
-    return biomeVal !== BIOME.OCEAN_DEEP && biomeVal !== BIOME.OCEAN_SHALLOW && biomeVal !== BIOME.CORAL_REEF;
+    // Multiplayer and world-map syncs must treat the authoritative land mask as the
+    // single source of truth. Falling back to owner/biome here lets visually-ocean
+    // or stale-owner tiles slip into selection validation, which is how ocean
+    // expansion paths get accepted even though they should be impossible.
+    return !!(this.land && idx < this.land.length && this.land[idx]);
   }
 
   // Neutral expansion from player selection.
@@ -5562,3 +5561,4 @@ installNuke(World);
 installAI(World);
 installBorders(World);
 installEvents(World);
+

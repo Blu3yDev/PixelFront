@@ -3387,27 +3387,10 @@ World.prototype._applyRiverWetlands = function(sea) {
 
       const total = Math.max(1, (phase.totalNations | 0) || (self._nationCount | 0));
       const picked = phase.pickedCount | 0;
-      const playerPicked = !!phase.picked[OWNER.PLAYER];
-      const waitingForPlayers = !!phase.waitingForPlayers;
-      const readyPlayers = Math.max(0, Number(phase.readyPlayers) | 0);
-      const totalPlayers = Math.max(0, Number(phase.totalPlayers) | 0);
-      if (waitingForPlayers) {
-        const loadLabel = totalPlayers > 0
-          ? `Waiting For Players ${readyPlayers}/${totalPlayers}`
-          : "Waiting For Players";
-        return {
-          active: true,
-          progress01: 0,
-          picked,
-          total,
-          playerPicked,
-          label: loadLabel
-        };
-      }
-
       const progress01 = clamp01(phase.elapsedS / Math.max(0.001, Number(phase.durationS) || 0.001));
       const remainS = Math.max(0, (Number(phase.durationS) || 0) - (Number(phase.elapsedS) || 0));
       const remainText = `${Math.ceil(remainS)}s`;
+      const playerPicked = !!phase.picked[OWNER.PLAYER];
       const mode = String(phase.mode || "tile");
       const label = mode === "country"
         ? (playerPicked
@@ -3923,17 +3906,70 @@ World.prototype._applyRiverWetlands = function(sea) {
     }
 
   World.prototype._seedStartingStructures = function() {
+      const findNearestOwnedLand = (ownerId, cxRaw, cyRaw, maxRadiusRaw = 28) => {
+        const ownerIdInt = ownerId | 0;
+        const cx = clampInt(cxRaw | 0, 0, this.w - 1);
+        const cy = clampInt(cyRaw | 0, 0, this.h - 1);
+        const maxRadius = Math.max(0, maxRadiusRaw | 0);
+        let best = null;
+        let bestD2 = Number.POSITIVE_INFINITY;
+
+        for (let r = 0; r <= maxRadius; r++) {
+          const x0 = cx - r;
+          const x1 = cx + r;
+          const y0 = cy - r;
+          const y1 = cy + r;
+          for (let y = y0; y <= y1; y++) {
+            if (y < 0 || y >= this.h) continue;
+            for (let x = x0; x <= x1; x++) {
+              if (x < 0 || x >= this.w) continue;
+              if (r > 0 && Math.abs(x - cx) !== r && Math.abs(y - cy) !== r) continue;
+              const idx = y * this.w + x;
+              if (!this.land[idx]) continue;
+              if ((this.owner[idx] | 0) !== ownerIdInt) continue;
+              const sid = this._structAt[idx] | 0;
+              if (sid > 0) continue;
+              const dx = x - cx;
+              const dy = y - cy;
+              const d2 = dx * dx + dy * dy;
+              if (d2 < bestD2) {
+                bestD2 = d2;
+                best = { x, y };
+              }
+            }
+          }
+          if (best) return best;
+        }
+
+        const owned = this._getOwnerTiles?.(ownerIdInt);
+        if (Array.isArray(owned) && owned.length > 0) {
+          for (let i = 0; i < owned.length; i++) {
+            const idx = owned[i] | 0;
+            if (idx < 0 || idx >= (this.w * this.h)) continue;
+            if (!this.land[idx]) continue;
+            if ((this.owner[idx] | 0) !== ownerIdInt) continue;
+            const sid = this._structAt[idx] | 0;
+            if (sid > 0) continue;
+            return { x: idx % this.w, y: (idx / this.w) | 0 };
+          }
+        }
+        return null;
+      };
+
       for (let id = 1; id <= this._nationCount; id++) {
         const s = this._spawnPos[id];
         if (!s) continue;
 
-        const cap = this._addStructure("capital", id, s.x, s.y);
+        const capitalSite = findNearestOwnedLand(id, s.x, s.y, 36);
+        if (!capitalSite) continue;
+
+        const cap = this._addStructure("capital", id, capitalSite.x, capitalSite.y);
         this.nation[id].capital = cap.id;
 
-        const near = this._findNearbyOwnedEmpty(id, s.x, s.y, 6);
+        const near = this._findNearbyOwnedEmpty(id, capitalSite.x, capitalSite.y, 6);
         if (near) this._addStructure("barracks", id, near.x, near.y);
 
-        const near2 = this._findNearbyOwnedEmpty(id, s.x, s.y, 7);
+        const near2 = this._findNearbyOwnedEmpty(id, capitalSite.x, capitalSite.y, 7);
         if (near2) this._addStructure("city", id, near2.x, near2.y);
       }
     }

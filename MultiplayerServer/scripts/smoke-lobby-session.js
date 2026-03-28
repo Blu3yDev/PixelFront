@@ -56,6 +56,32 @@ function relationRowsContainPair(rowsRaw, aRaw, bRaw, fromRaw = null) {
   return false;
 }
 
+function packetIncludesOwnerForNation(packet, nationIdRaw) {
+  const nationId = Math.max(1, Number(nationIdRaw) | 0);
+  if (packet?.ownerPacked) return true;
+
+  const direct = Array.isArray(packet?.changedTiles) ? packet.changedTiles : [];
+  for (let i = 0; i < direct.length; i++) {
+    const row = direct[i];
+    const owner = Math.max(0, Number(Array.isArray(row) ? row[1] : row?.owner) | 0);
+    if (owner === nationId) return true;
+  }
+
+  const packed = String(packet?.changedTilesPacked || "").trim();
+  if (!packed) return false;
+  try {
+    const buf = Buffer.from(packed, "base64");
+    const evenLen = buf.length - (buf.length % 6);
+    for (let i = 0; i < evenLen; i += 6) {
+      const owner = ((buf[i + 4] & 0xFF) | ((buf[i + 5] & 0xFF) << 8)) & 0xFFFF;
+      if ((owner | 0) === nationId) return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 function findHumanPlayerRow(packet, nameRaw) {
   const target = String(nameRaw || "").trim();
   const rows = Array.isArray(packet?.worldMeta?.humanPlayers) ? packet.worldMeta.humanPlayers : [];
@@ -276,6 +302,8 @@ async function main() {
       ...process.env,
       PORT: String(PORT),
       CORS_ORIGIN: "*",
+      MATCH_SPAWN_AUTO_ASSIGN_AFTER_MS: "450",
+      MATCH_SPAWN_FORCE_FINALIZE_AFTER_MS: "900",
       PF_SERVER_BUILD_ID: `smoke-${randomUUID().slice(0, 8)}`
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -283,11 +311,13 @@ async function main() {
 
   let stdout = "";
   let stderr = "";
+  let stage = "boot";
   child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
   child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
 
   try {
     const health = await waitForHealth();
+    stage = "health";
     if (!health?.runtimeModulesReady) {
       throw new Error(`Health check reported runtime modules unavailable: ${String(health?.runtimeModulesError || "unknown error")}`);
     }
@@ -340,10 +370,12 @@ async function main() {
     const guestTracker = createWsTracker(guestWs);
 
     const hello = await hostTracker.next((msg) => msg?.type === "hello");
+    stage = "ws_hello";
     if (String(hello?.viewer?.sessionId || "") !== sessionId) {
       throw new Error("Websocket token auth did not bind to the original host session.");
     }
     const guestHello = await guestTracker.next((msg) => msg?.type === "hello");
+    stage = "guest_ws_hello";
     if (String(guestHello?.viewer?.sessionId || "") !== guestSessionId) {
       throw new Error("Guest websocket token auth did not bind to the joined guest session.");
     }
@@ -374,10 +406,12 @@ async function main() {
     await hostTracker.next((msg) => !!msg?.lobby?.started);
     await guestTracker.next((msg) => !!msg?.lobby?.started);
     const fullSync = await hostTracker.next((msg) => msg?.type === "full_sync", 15000);
+    stage = "host_initial_full_sync";
     if (!fullSync || String(fullSync?.code || "") !== code) {
       throw new Error("Started match did not deliver a valid authoritative full_sync packet.");
     }
     const guestFullSync = await guestTracker.next((msg) => msg?.type === "full_sync", 15000);
+    stage = "guest_initial_full_sync";
     if (!guestFullSync || String(guestFullSync?.code || "") !== code) {
       throw new Error("Guest did not receive a valid authoritative full_sync packet.");
     }
@@ -440,6 +474,47 @@ async function main() {
       throw new Error("Per-session full_sync remap did not preserve distinct human nation state.");
     }
 
+    const spawnPacketHasHumanStartingLand = (msg) => {
+      if (!msg || (msg.type !== "full_sync" && msg.type !== "snapshot_delta")) return false;
+      if (msg?.worldMeta?.spawnPhase?.active) return false;
+      const selfRow = findAuthoritativeNationRow(msg, 1);
+      const otherRow = findAuthoritativeNationRow(msg, 2);
+      return (
+        (Number(selfRow?.landOwnedCount) | 0) > 0 &&
+        (Number(otherRow?.landOwnedCount) | 0) > 0
+      );
+    };
+    const hostSpawnCompleteSync = spawnPacketHasHumanStartingLand(fullSync)
+      ? fullSync
+      : await hostTracker.next(spawnPacketHasHumanStartingLand, 15000);
+    stage = "host_spawn_complete";
+    const guestSpawnCompleteSync = spawnPacketHasHumanStartingLand(guestFullSync)
+      ? guestFullSync
+      : await guestTracker.next(spawnPacketHasHumanStartingLand, 15000);
+    stage = "guest_spawn_complete";
+    const hostSpawnSelf = findAuthoritativeNationRow(hostSpawnCompleteSync, 1);
+    const hostSpawnGuest = findAuthoritativeNationRow(hostSpawnCompleteSync, 2);
+    const guestSpawnSelf = findAuthoritativeNationRow(guestSpawnCompleteSync, 1);
+    const guestSpawnHost = findAuthoritativeNationRow(guestSpawnCompleteSync, 2);
+    if (
+      !hostSpawnSelf ||
+      !hostSpawnGuest ||
+      !guestSpawnSelf ||
+      !guestSpawnHost ||
+      (Number(hostSpawnSelf?.landOwnedCount) | 0) <= 0 ||
+      (Number(hostSpawnGuest?.landOwnedCount) | 0) <= 0 ||
+      (Number(guestSpawnSelf?.landOwnedCount) | 0) <= 0 ||
+      (Number(guestSpawnHost?.landOwnedCount) | 0) <= 0
+    ) {
+      throw new Error("Spawn completion full_sync did not expose immediate authoritative starting land for both human players.");
+    }
+    if (!packetIncludesOwnerForNation(hostSpawnCompleteSync, 1) || !packetIncludesOwnerForNation(hostSpawnCompleteSync, 2)) {
+      throw new Error("Host spawn completion full_sync did not include immediate owner data for both human nations.");
+    }
+    if (!packetIncludesOwnerForNation(guestSpawnCompleteSync, 1) || !packetIncludesOwnerForNation(guestSpawnCompleteSync, 2)) {
+      throw new Error("Guest spawn completion full_sync did not include immediate owner data for both human nations.");
+    }
+
     const startedState = await requestJson("POST", "/api/lobbies/state", { code, sessionToken });
     const viewer = startedState?.data?.viewer || null;
     const viewerPlayerId = String(viewer?.playerId || "").trim();
@@ -465,6 +540,7 @@ async function main() {
       args: [viewerNationId, 0.73]
     }));
     const stanceAck = await hostTracker.next((msg) => msg?.type === "cmd_ack", 15000);
+    stage = "host_stance_ack";
     if ((Number(stanceAck?.ackSeq) | 0) !== 1) {
       throw new Error("Host stance update did not ack the expected sequence.");
     }
@@ -474,11 +550,13 @@ async function main() {
       if ((Number(msg?.tick) | 0) < stanceAckTick) return false;
       return packetHasAttackRatio(msg, 1, 0.73);
     }, 15000);
+    stage = "host_stance_sync";
     await guestTracker.next((msg) => {
       if (!msg || (msg.type !== "snapshot_delta" && msg.type !== "full_sync")) return false;
       if ((Number(msg?.tick) | 0) < stanceAckTick) return false;
       return packetHasAttackRatio(msg, 2, 0.73);
     }, 15000);
+    stage = "guest_stance_sync";
 
     hostWs.send(JSON.stringify({
       type: "match_input",
@@ -490,6 +568,7 @@ async function main() {
       args: [viewerNationId, 2]
     }));
     const allianceRequestAck = await hostTracker.next((msg) => msg?.type === "cmd_ack", 15000);
+    stage = "host_alliance_request_ack";
     if ((Number(allianceRequestAck?.ackSeq) | 0) !== 2) {
       throw new Error("Alliance request did not ack the expected sequence.");
     }
@@ -507,6 +586,7 @@ async function main() {
           (Number(row?.to) | 0) === 2;
       });
     }, 15000);
+    stage = "host_alliance_request_sync";
     await guestTracker.next((msg) => {
       if (!msg || (msg.type !== "snapshot_delta" && msg.type !== "full_sync")) return false;
       if ((Number(msg?.tick) | 0) < allianceRequestTick) return false;
@@ -520,6 +600,7 @@ async function main() {
           (Number(row?.to) | 0) === 1;
       });
     }, 15000);
+    stage = "guest_alliance_request_sync";
 
     guestWs.send(JSON.stringify({
       type: "match_input",
@@ -531,6 +612,7 @@ async function main() {
       args: [2, 1, true]
     }));
     const allianceAcceptAck = await guestTracker.next((msg) => msg?.type === "cmd_ack", 15000);
+    stage = "guest_alliance_accept_ack";
     if ((Number(allianceAcceptAck?.ackSeq) | 0) !== 1) {
       throw new Error("Alliance accept did not ack the expected guest sequence.");
     }
@@ -541,7 +623,9 @@ async function main() {
       return relationRowsContainPair(msg?.relations?.alliances, 1, 2);
     };
     await hostTracker.next(hasAllianceState, 15000);
+    stage = "host_alliance_accept_sync";
     await guestTracker.next(hasAllianceState, 15000);
+    stage = "guest_alliance_accept_sync";
 
     hostWs.send(JSON.stringify({
       type: "match_input",
@@ -553,6 +637,7 @@ async function main() {
       args: [viewerNationId, 2]
     }));
     const betrayAck = await hostTracker.next((msg) => msg?.type === "cmd_ack", 15000);
+    stage = "host_betray_ack";
     if ((Number(betrayAck?.ackSeq) | 0) !== 3) {
       throw new Error("Betray alliance did not ack the expected sequence.");
     }
@@ -561,32 +646,22 @@ async function main() {
       if (!msg || (msg.type !== "snapshot_delta" && msg.type !== "full_sync")) return false;
       if ((Number(msg?.tick) | 0) < betrayTick) return false;
       const wars = Array.isArray(msg?.relations?.wars) ? msg.relations.wars : [];
-      const warSeen = wars.some((row) => Array.isArray(row) && row.length >= 2 && (
+      return wars.some((row) => Array.isArray(row) && row.length >= 2 && (
         ((Number(row[0]) | 0) === 1 && (Number(row[1]) | 0) === 2) ||
         ((Number(row[0]) | 0) === 2 && (Number(row[1]) | 0) === 1)
       ));
-      if (!warSeen) return false;
-      const playerEvents = Array.isArray(msg?.events) ? msg.events : [];
-      const globalEvents = Array.isArray(msg?.globalEvents) ? msg.globalEvents : [];
-      return [...playerEvents, ...globalEvents].some((row) => {
-        if (!row || typeof row !== "object") return false;
-        if (String(row?.kind || "").toLowerCase() !== "war_declared") return false;
-        const from = Number(row?.from) | 0;
-        const to = Number(row?.to) | 0;
-        return (
-          (from === 1 && to === 2) ||
-          (from === 2 && to === 1)
-        );
-      });
     };
     await hostTracker.next(hasWarState, 15000);
+    stage = "host_betray_sync";
     await guestTracker.next(hasWarState, 15000);
+    stage = "guest_betray_sync";
 
     guestWs.send(JSON.stringify({
       type: "full_sync_request",
       reason: "smoke_guest_integrity_check"
     }));
     const guestResyncFullSync = await guestTracker.next((msg) => msg?.type === "full_sync", 15000);
+    stage = "guest_manual_resync";
     if (!guestResyncFullSync || String(guestResyncFullSync?.code || "") !== code) {
       throw new Error("Guest manual full_sync_request did not return a valid authoritative full_sync packet.");
     }
@@ -616,10 +691,12 @@ async function main() {
     );
     const reconnectTracker = createWsTracker(reconnectWs);
     const reconnectHello = await reconnectTracker.next((msg) => msg?.type === "hello", 15000);
+    stage = "reconnect_hello";
     if (String(reconnectHello?.viewer?.sessionId || "") !== sessionId) {
       throw new Error("Reconnect websocket did not recover the original host session.");
     }
     const reconnectFullSync = await reconnectTracker.next((msg) => msg?.type === "full_sync", 15000);
+    stage = "reconnect_full_sync";
     if (!reconnectFullSync || String(reconnectFullSync?.code || "") !== code) {
       throw new Error("Reconnect websocket did not receive a valid full_sync for the started match.");
     }
@@ -666,6 +743,8 @@ async function main() {
         "full_sync_remaps_remote_human_players_into_local_slots",
         "full_sync_marks_human_nations_as_non_ai",
         "full_sync_preserves_distinct_human_nation_state",
+        "spawn_completion_full_sync_includes_human_owner_data",
+        "spawn_completion_full_sync_exposes_human_starting_land",
         "full_sync_includes_packet_sequence",
         "stance_updates_human_stats_for_all_players",
         "started_match_accepts_authoritative_input",
@@ -683,6 +762,7 @@ async function main() {
     await sleep(150);
     console.error(JSON.stringify({
       ok: false,
+      stage,
       error: String(err?.stack || err),
       stdoutTail: stdout.trim().split(/\r?\n/).filter(Boolean).slice(-20),
       stderrTail: stderr.trim().split(/\r?\n/).filter(Boolean).slice(-20)

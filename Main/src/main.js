@@ -2425,6 +2425,33 @@ function syncNationFlagsFromAuthoritative(worldRef) {
   }
 }
 
+function applyMultiplayerLeaderboardRows(worldRef, leaderboardRows) {
+  if (!worldRef || !Array.isArray(leaderboardRows) || !Array.isArray(worldRef.nation)) return;
+
+  for (let i = 0; i < leaderboardRows.length; i++) {
+    const row = leaderboardRows[i];
+    if (!row || typeof row !== "object") continue;
+    const id = Math.max(1, Number(row.id) | 0);
+    if (id >= worldRef.nation.length) continue;
+    const cur = (worldRef.nation[id] && typeof worldRef.nation[id] === "object")
+      ? worldRef.nation[id]
+      : { id };
+    const next = { ...cur, id };
+
+    if (Object.prototype.hasOwnProperty.call(row, "alive")) next.alive = !!row.alive;
+    if (Object.prototype.hasOwnProperty.call(row, "name") && String(row.name || "").trim()) next.name = String(row.name);
+    if (row.color && typeof row.color === "object") next.color = row.color;
+    if (Object.prototype.hasOwnProperty.call(row, "gold")) next.gold = Math.max(0, Number(row.gold) || 0);
+    if (Object.prototype.hasOwnProperty.call(row, "population")) next.population = Math.max(0, Number(row.population) || 0);
+    if (Object.prototype.hasOwnProperty.call(row, "infantry")) next.infantry = Math.max(0, Number(row.infantry) || 0);
+
+    worldRef.nation[id] = next;
+    if (worldRef.landOwnedCount && id < worldRef.landOwnedCount.length && Object.prototype.hasOwnProperty.call(row, "land")) {
+      worldRef.landOwnedCount[id] = Math.max(0, Number(row.land) | 0);
+    }
+  }
+}
+
 function applyMultiplayerNationStats(worldRef, nationStats) {
   if (!worldRef || !Array.isArray(nationStats)) return;
   if (!Array.isArray(worldRef.nation)) return;
@@ -2694,6 +2721,7 @@ function resolveMultiplayerPacketSeq(packetRaw) {
 function applyMultiplayerTerritoryPacket(packet) {
   const worldRef = multiplayerWorldSyncWorld;
   if (!worldRef || !packet || typeof packet !== "object") return false;
+  const tick = Math.max(0, Number(packet.tick) | 0);
   let ownerApplied = 0;
   if (packet.changedTilesPacked) {
     ownerApplied = applyPackedOwnerChangesFromBase64(
@@ -2708,10 +2736,24 @@ function applyMultiplayerTerritoryPacket(packet) {
   if (Number.isFinite(ownerVersion) && ownerVersion >= 0) {
     worldRef.ownerVersion = Math.max(0, ownerVersion | 0);
   }
+  if (Array.isArray(packet.humanNationStats)) {
+    applyMultiplayerNationStats(worldRef, packet.humanNationStats);
+  }
+  if (Array.isArray(packet.nationStats)) {
+    applyMultiplayerNationStats(worldRef, packet.nationStats);
+  }
+  if (Array.isArray(packet.leaderboard)) {
+    applyMultiplayerLeaderboardRows(worldRef, packet.leaderboard);
+    worldRef._serverLeaderboard = packet.leaderboard;
+  }
+  maybeRefreshMultiplayerDerivedState(worldRef, false);
   if (ownerApplied > 0) {
     flushMultiplayerPixelWrites(worldRef, ownerApplied);
     worldRef.dirty = true;
   }
+  multiplayerLastAppliedTick = Math.max(multiplayerLastAppliedTick, tick);
+  multiplayerLastAppliedPacketSeq = Math.max(multiplayerLastAppliedPacketSeq, resolveMultiplayerPacketSeq(packet));
+  multiplayerLatestServerTick = Math.max(multiplayerLatestServerTick, tick);
   multiplayerLastSnapshotAtMs = Date.now();
   return ownerApplied > 0;
 }
@@ -3057,6 +3099,7 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
   }
 
   if (Array.isArray(packet.leaderboard)) {
+    applyMultiplayerLeaderboardRows(worldRef, packet.leaderboard);
     worldRef._serverLeaderboard = packet.leaderboard;
   }
 
@@ -3156,6 +3199,7 @@ function applyAuthoritativePacketToWorld(worldRef, packet, optionsRaw = null) {
   }
 
   if (Array.isArray(packet.leaderboard)) {
+    applyMultiplayerLeaderboardRows(worldRef, packet.leaderboard);
     worldRef._serverLeaderboard = packet.leaderboard;
   }
 

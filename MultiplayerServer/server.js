@@ -39,6 +39,14 @@ const MATCH_TERRITORY_PULSE_INTERVAL_MAX_MS = Math.max(
 const MATCH_TERRITORY_PULSE_CAP = Math.max(200, Number(process.env.MATCH_TERRITORY_PULSE_CAP || 2200));
 const MATCH_OWNER_SWEEP_CHUNK_MIN = Math.max(300, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MIN || 700));
 const MATCH_OWNER_SWEEP_CHUNK_MAX = Math.max(MATCH_OWNER_SWEEP_CHUNK_MIN, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MAX || 2600));
+const MATCH_FULL_SYNC_HUMAN_OWNER_PRIORITY_MAX_TILES = Math.max(
+  MATCH_OWNER_SWEEP_CHUNK_MAX,
+  Number(process.env.MATCH_FULL_SYNC_HUMAN_OWNER_PRIORITY_MAX_TILES || 24000)
+);
+const MATCH_FULL_SYNC_HUMAN_OWNER_PRIORITY_SPAWN_MAX_TILES = Math.max(
+  MATCH_FULL_SYNC_HUMAN_OWNER_PRIORITY_MAX_TILES,
+  Number(process.env.MATCH_FULL_SYNC_HUMAN_OWNER_PRIORITY_SPAWN_MAX_TILES || 90000)
+);
 const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(34, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 56));
 const MATCH_ENTITY_DELTA_INTERVAL_MAX_MS = Math.max(
   MATCH_ENTITY_DELTA_INTERVAL_MS,
@@ -2186,6 +2194,7 @@ async function ensureLobbyRuntime(lobby) {
       ownerSweepActive: false,
       ownerSweepCursor: 0,
       lastTerritoryPulseAtMs: 0,
+      lastSpawnPhaseActive: !!(world?._spawnPhase && world._spawnPhase.active),
       assignmentsBySession: new Map(),
       nationToSession: new Map()
     };
@@ -2656,6 +2665,100 @@ function appendOwnerSweepChunk(world, runtime, changedTiles, maxAdditionalRaw) {
   }
   if (runtime.ownerSweepActive) runtime.ownerSweepCursor = cursor | 0;
   return changedTiles;
+}
+
+function resolveHumanOwnerPriorityTileCap(reasonRaw = "") {
+  const reason = String(reasonRaw || "").trim().toLowerCase();
+  if (reason.includes("spawn")) return MATCH_FULL_SYNC_HUMAN_OWNER_PRIORITY_SPAWN_MAX_TILES;
+  return MATCH_FULL_SYNC_HUMAN_OWNER_PRIORITY_MAX_TILES;
+}
+
+function appendPriorityOwnerTilesForNationIds(world, nationIdsRaw, changedTilesRaw, maxAdditionalRaw) {
+  const changedTiles = Array.isArray(changedTilesRaw) ? changedTilesRaw : [];
+  const ownerArr = world?.owner;
+  const landArr = world?.land;
+  if (!ownerArr || !landArr || ownerArr.length !== landArr.length || ownerArr.length <= 0) {
+    return changedTiles;
+  }
+
+  const nationIds = [];
+  const seenNationIds = new Set();
+  const srcIds = Array.isArray(nationIdsRaw) ? nationIdsRaw : [];
+  for (let i = 0; i < srcIds.length; i++) {
+    const id = Math.max(1, Number(srcIds[i]) | 0);
+    if (id <= 0 || seenNationIds.has(id)) continue;
+    seenNationIds.add(id);
+    nationIds.push(id);
+  }
+  if (nationIds.length <= 0) return changedTiles;
+
+  const maxAdditional = Math.max(0, Number(maxAdditionalRaw) | 0);
+  if (maxAdditional <= 0) return changedTiles;
+
+  const seenTiles = new Set();
+  for (let i = 0; i < changedTiles.length; i++) {
+    const row = changedTiles[i];
+    const idx = Math.max(0, Number(Array.isArray(row) ? row[0] : row?.idx) | 0);
+    seenTiles.add(idx);
+  }
+
+  let remaining = maxAdditional;
+  const ownerTiles = Array.isArray(world?._ownerTiles) ? world._ownerTiles : null;
+  const getOwnerTiles = typeof world?._getOwnerTiles === "function"
+    ? world._getOwnerTiles.bind(world)
+    : null;
+
+  const tryAppend = (idxRaw, expectedOwnerRaw) => {
+    if (remaining <= 0) return false;
+    const idx = Number(idxRaw) | 0;
+    const expectedOwner = Math.max(1, Number(expectedOwnerRaw) | 0);
+    if (idx < 0 || idx >= ownerArr.length) return false;
+    if (!landArr[idx]) return false;
+    if ((ownerArr[idx] | 0) !== expectedOwner) return false;
+    if (seenTiles.has(idx)) return false;
+    changedTiles.push([idx, expectedOwner]);
+    seenTiles.add(idx);
+    remaining--;
+    return remaining > 0;
+  };
+
+  for (let i = 0; i < nationIds.length && remaining > 0; i++) {
+    const nationId = nationIds[i] | 0;
+    const list = getOwnerTiles
+      ? getOwnerTiles(nationId)
+      : (ownerTiles && nationId < ownerTiles.length ? ownerTiles[nationId] : null);
+    if (!Array.isArray(list) || list.length <= 0) continue;
+    for (let j = 0; j < list.length && remaining > 0; j++) {
+      tryAppend(list[j], nationId);
+    }
+  }
+
+  if (remaining <= 0) return changedTiles;
+
+  const nationIdSet = seenNationIds;
+  for (let idx = 0; idx < ownerArr.length && remaining > 0; idx++) {
+    if (!landArr[idx]) continue;
+    const owner = Number(ownerArr[idx]) | 0;
+    if (owner <= 0 || !nationIdSet.has(owner)) continue;
+    tryAppend(idx, owner);
+  }
+
+  return changedTiles;
+}
+
+function appendHumanOwnerPriorityChunk(world, runtime, changedTiles, maxAdditionalRaw) {
+  if (!runtime?.assignmentsBySession || typeof runtime.assignmentsBySession.values !== "function") {
+    return changedTiles;
+  }
+  const humanNationIds = [];
+  const seen = new Set();
+  for (const assignment of runtime.assignmentsBySession.values()) {
+    const id = Math.max(1, Number(assignment?.nationId) | 0);
+    if (id <= 0 || seen.has(id)) continue;
+    seen.add(id);
+    humanNationIds.push(id);
+  }
+  return appendPriorityOwnerTilesForNationIds(world, humanNationIds, changedTiles, maxAdditionalRaw);
 }
 
 function serializeEntitiesDelta(world, runtime, forceFull = false, optionsRaw = null) {
@@ -3160,6 +3263,7 @@ function buildSnapshotPacket(
   runtime,
   {
     fullSync = false,
+    fullSyncReason = "",
     forceStats = false,
     forceRelations = false,
     forceEvents = false,
@@ -3221,6 +3325,8 @@ function buildSnapshotPacket(
   const includeEvents = fullSync || forceEvents || (!spawnActive && (
     eventsDueMs >= eventsTargetMs
   ));
+  const humanNationStats = serializeHumanNationStats(world, runtime);
+  const includeLeaderboard = fullSync || includeStats || humanNationStats.length > 0;
   const packet = {
     type: fullSync ? "full_sync" : "snapshot_delta",
     packetSeq: nextRuntimePacketSeq(runtime),
@@ -3242,9 +3348,9 @@ function buildSnapshotPacket(
       forceOperations,
       forceMobile
     }),
-    humanNationStats: serializeHumanNationStats(world, runtime),
+    humanNationStats,
     nationStats: includeStats ? serializeNationStats(world) : undefined,
-    leaderboard: includeStats ? serializeLeaderboard(world) : undefined,
+    leaderboard: includeLeaderboard ? serializeLeaderboard(world) : undefined,
     relations: includeRelations ? serializeRelations(world) : undefined
   };
 
@@ -3254,14 +3360,11 @@ function buildSnapshotPacket(
 
   if (fullSync) {
     let claimedTiles = 0;
-    if (spawnActive) {
-      const nationCount = Math.max(1, Number(world?._nationCount) | 0);
-      for (let id = 1; id <= nationCount; id++) {
-        claimedTiles += Math.max(0, Number(world?.landOwnedCount?.[id]) | 0);
-      }
+    const nationCount = Math.max(1, Number(world?._nationCount) | 0);
+    for (let id = 1; id <= nationCount; id++) {
+      claimedTiles += Math.max(0, Number(world?.landOwnedCount?.[id]) | 0);
     }
     const ownerTileCount = Math.max(0, Number(world?.owner?.length) | 0);
-    const nationCount = Math.max(1, Number(world?._nationCount) | 0);
     const safeOwnerPackedTiles = Math.min(
       MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES,
       Math.max(120000, Number(MATCH_FULL_SYNC_OWNER_PACKED_SAFE_TILES) | 0)
@@ -3279,12 +3382,19 @@ function buildSnapshotPacket(
     } else if (!allowOwnerPacked && claimedTiles > 0) {
       packet.ownerPackedOmitted = true;
       if (!Array.isArray(packet.changedTiles)) packet.changedTiles = [];
+      const humanPriorityCap = Math.min(
+        Math.max(0, claimedTiles | 0),
+        resolveHumanOwnerPriorityTileCap(fullSyncReason)
+      );
+      appendHumanOwnerPriorityChunk(world, runtime, packet.changedTiles, humanPriorityCap);
       activateOwnerSweep(runtime, "full_sync_owner_omitted_large_world");
       const chunkTarget = Math.max(
         MATCH_OWNER_SWEEP_CHUNK_MIN,
         Math.min(MATCH_OWNER_SWEEP_CHUNK_MAX, Math.round(MATCH_TILE_DELTA_DRAIN_MIN * 1.3))
       );
-      appendOwnerSweepChunk(world, runtime, packet.changedTiles, chunkTarget);
+      if (packet.changedTiles.length < chunkTarget) {
+        appendOwnerSweepChunk(world, runtime, packet.changedTiles, chunkTarget - packet.changedTiles.length);
+      }
     }
     if (!Array.isArray(packet.changedTiles)) packet.changedTiles = [];
   } else {
@@ -3372,6 +3482,7 @@ function buildTerritoryPulsePacket(lobby, runtime) {
     code: lobby?.code,
     tick: runtime.simTick | 0,
     ownerVersion: Number(world.ownerVersion) | 0,
+    humanNationStats: serializeHumanNationStats(world, runtime),
     changedTiles
   };
 }
@@ -3385,7 +3496,7 @@ function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual")
   const assignment = runtime.assignmentsBySession.get(String(sessionId || ""));
   if (!assignment) return { sent: false, backpressured: false, disconnected: false, throttled: true };
   const reasonStr = String(reason || "manual");
-  const base = buildSnapshotPacket(lobby, runtime, { fullSync: true });
+  const base = buildSnapshotPacket(lobby, runtime, { fullSync: true, fullSyncReason: reasonStr });
   const lightweight = shouldUseLightweightFullSync(runtime, reasonStr);
   if (lightweight) applyLightweightFullSyncOwner(runtime, base);
   const withEvents = attachSnapshotEventsForSession(base, runtime, assignment.nationId, {
@@ -3417,7 +3528,7 @@ function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual")
 
 function broadcastFullSync(lobby, runtime, reason = "resync") {
   const reasonStr = String(reason || "resync");
-  const base = buildSnapshotPacket(lobby, runtime, { fullSync: true });
+  const base = buildSnapshotPacket(lobby, runtime, { fullSync: true, fullSyncReason: reasonStr });
   const lightweight = shouldUseLightweightFullSync(runtime, reasonStr);
   if (lightweight) applyLightweightFullSyncOwner(runtime, base);
   let backpressured = 0;
@@ -3668,6 +3779,7 @@ function updateRuntimeMemoryPressure(lobby, runtime, now) {
 
 function flushRuntimeTick(lobby, runtime, now) {
   enforceHumanNationRuntimeState(lobby, runtime);
+  const spawnPhaseWasActive = !!runtime?.lastSpawnPhaseActive;
   const stepMs = simDtMs();
   const worldW = Math.max(0, Number(runtime?.world?.w ?? runtime?.world?.W) | 0);
   const worldH = Math.max(0, Number(runtime?.world?.h ?? runtime?.world?.H) | 0);
@@ -3714,9 +3826,20 @@ function flushRuntimeTick(lobby, runtime, now) {
   }
 
   const spawnFailsafeChanged = applySpawnPhaseFailsafe(lobby, runtime, now);
-  if (spawnFailsafeChanged) {
+  const spawnPhaseIsActive = !!(runtime?.world?._spawnPhase && runtime.world._spawnPhase.active);
+  const spawnPhaseCompleted = spawnPhaseWasActive && !spawnPhaseIsActive;
+  runtime.lastSpawnPhaseActive = spawnPhaseIsActive;
+  if (spawnFailsafeChanged || spawnPhaseCompleted) {
+    runtime.lastStatsSnapshotAtMs = 0;
+    runtime.lastRelationsSnapshotAtMs = 0;
+    runtime.lastEventsSnapshotAtMs = 0;
     runtime.lastSnapshotAtMs = now;
-    broadcastFullSync(lobby, runtime, "spawn_failsafe");
+    runtime.lastTerritoryPulseAtMs = now;
+    broadcastFullSync(
+      lobby,
+      runtime,
+      spawnPhaseCompleted ? "spawn_phase_complete" : "spawn_failsafe"
+    );
   }
 
   let bufferedSockets = 0;

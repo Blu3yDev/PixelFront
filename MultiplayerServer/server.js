@@ -119,6 +119,11 @@ const MATCH_RUNTIME_SAFE_MIN_TILES_PER_AI = readBoundedEnvInt("MATCH_RUNTIME_SAF
 
 const MAP_MODE_WORLD = "earth";
 const MAP_MODE_GENERATOR = "generator";
+const MAP_SOURCE_POLITICAL_EARTH = "political_earth";
+const MAP_SOURCE_EARTH = "earth";
+const MAP_SOURCE_CUSTOM = "custom";
+const GAME_MODE_CLASSIC = "classic";
+const GAME_MODE_DIVISIONS = "divisions";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -198,13 +203,16 @@ const DEFAULT_MATCH_CONFIG = Object.freeze({
   sizePreset: "Large",
   aiCount: null,
   difficulty: "normal",
+  gameMode: GAME_MODE_CLASSIC,
   mapMode: MAP_MODE_WORLD,
-  mapSource: "political_earth",
+  mapSource: MAP_SOURCE_POLITICAL_EARTH,
   customMapId: "",
+  infiniteResources: false,
   infiniteGold: false,
   infiniteTroops: false,
   disableMissileSilo: false,
   disableAbmLauncher: false,
+  disableAirbase: false,
   disableDefencePost: false,
   fogOfWar: "simple",
   playerGoldBoost: 1,
@@ -250,7 +258,10 @@ const COMMAND_METHOD = Object.freeze({
   regenerate_match: "regenerate",
   launch_missile_warhead: "launchMissileWarhead",
   launch_airbase_transport: "launchAirbaseTransport",
-  place_structure: "placeStructure"
+  place_structure: "placeStructure",
+  queue_division_training: "queueDivisionTraining",
+  issue_division_order: "issueDivisionOrder",
+  clear_division_order: "clearDivisionOrder"
 });
 
 const COMMAND_NATION_ARGS = Object.freeze({
@@ -283,7 +294,10 @@ const COMMAND_NATION_ARGS = Object.freeze({
   regenerate_match: [],
   launch_missile_warhead: [1],
   launch_airbase_transport: [1],
-  place_structure: [1]
+  place_structure: [1],
+  queue_division_training: [1],
+  issue_division_order: [1],
+  clear_division_order: [1]
 });
 
 const COMMAND_ACTOR_ARG = Object.freeze({
@@ -315,7 +329,10 @@ const COMMAND_ACTOR_ARG = Object.freeze({
   start_research: 0,
   launch_missile_warhead: 1,
   launch_airbase_transport: 1,
-  place_structure: 1
+  place_structure: 1,
+  queue_division_training: 1,
+  issue_division_order: 1,
+  clear_division_order: 1
 });
 
 function simDtMs() {
@@ -693,31 +710,40 @@ function sanitizeMatchConfig(raw) {
   const difficulty = Object.prototype.hasOwnProperty.call(MATCH_DIFFICULTY_PROFILES, difficultyRaw)
     ? difficultyRaw
     : DEFAULT_MATCH_CONFIG.difficulty;
+  const gameModeRaw = String(src.gameMode || DEFAULT_MATCH_CONFIG.gameMode).trim().toLowerCase();
+  const gameMode = gameModeRaw === GAME_MODE_DIVISIONS ? GAME_MODE_DIVISIONS : GAME_MODE_CLASSIC;
   const mapSourceRaw = String(src.mapSource ?? src.mapMode ?? DEFAULT_MATCH_CONFIG.mapSource).trim().toLowerCase();
+  const mapSource = mapSourceRaw === MAP_SOURCE_CUSTOM
+    ? MAP_SOURCE_CUSTOM
+    : (mapSourceRaw === MAP_SOURCE_POLITICAL_EARTH ? MAP_SOURCE_POLITICAL_EARTH : MAP_SOURCE_EARTH);
   const mapModeRaw = String(src.mapMode || mapSourceRaw || DEFAULT_MATCH_CONFIG.mapMode).trim().toLowerCase();
   const mapMode = (
     mapModeRaw === MAP_MODE_WORLD ||
     mapModeRaw === "world_map" ||
     mapModeRaw === "world-map" ||
-    mapSourceRaw === "political_earth" ||
-    mapSourceRaw === "earth"
+    mapSource === MAP_SOURCE_POLITICAL_EARTH ||
+    mapSource === MAP_SOURCE_EARTH
   ) ? MAP_MODE_WORLD : MAP_MODE_GENERATOR;
   const parseBoost = (value, fallback) => {
     const n = Number(value);
     if (MATCH_PLAYER_BOOSTS.includes(n)) return n;
     return fallback;
   };
+  const infiniteResources = !!src.infiniteResources || !!src.infiniteGold || !!src.infiniteTroops;
   return {
     sizePreset,
     aiCount,
     difficulty,
+    gameMode,
     mapMode,
-    mapSource: String(mapSourceRaw || DEFAULT_MATCH_CONFIG.mapSource),
+    mapSource,
     customMapId: String(src.customMapId || "").trim(),
-    infiniteGold: !!src.infiniteGold,
-    infiniteTroops: !!src.infiniteTroops,
+    infiniteResources,
+    infiniteGold: infiniteResources || !!src.infiniteGold,
+    infiniteTroops: infiniteResources || !!src.infiniteTroops,
     disableMissileSilo: !!src.disableMissileSilo,
     disableAbmLauncher: !!src.disableAbmLauncher,
+    disableAirbase: !!src.disableAirbase,
     disableDefencePost: !!src.disableDefencePost,
     fogOfWar: String(src.fogOfWar || DEFAULT_MATCH_CONFIG.fogOfWar).trim().toLowerCase() === "advanced" ? "advanced" : "simple",
     playerGoldBoost: parseBoost(src.playerGoldBoost, DEFAULT_MATCH_CONFIG.playerGoldBoost),
@@ -753,6 +779,7 @@ function getDisabledStructureTypes(matchConfigRaw) {
   const set = new Set();
   if (cfg.disableMissileSilo) set.add("missile_silo");
   if (cfg.disableAbmLauncher) set.add("abm_launcher");
+  if (cfg.disableAirbase) set.add("airbase");
   if (cfg.disableDefencePost) set.add("defence_post");
   return set;
 }
@@ -764,6 +791,18 @@ function structureTypeLabel(type) {
   if (t === "defence_post") return "Defence Post";
   if (t === "airbase") return "Airbase";
   return "Structure";
+}
+
+function resolveMatchCountryClaimEnabled(matchConfigRaw) {
+  const cfg = sanitizeMatchConfig(matchConfigRaw) || DEFAULT_MATCH_CONFIG;
+  return String(cfg.mapSource || MAP_SOURCE_POLITICAL_EARTH).trim().toLowerCase() === MAP_SOURCE_POLITICAL_EARTH;
+}
+
+function resolveMatchGameMode(matchConfigRaw) {
+  const cfg = sanitizeMatchConfig(matchConfigRaw) || DEFAULT_MATCH_CONFIG;
+  return String(cfg.gameMode || GAME_MODE_CLASSIC).trim().toLowerCase() === GAME_MODE_DIVISIONS
+    ? GAME_MODE_DIVISIONS
+    : GAME_MODE_CLASSIC;
 }
 
 function scaleNationResources(nation, goldMul, troopMul) {
@@ -1076,6 +1115,28 @@ function ensureLobbyStartFitsMemoryBudget(lobby, worldSpecRaw) {
 
 function touchLobby(lobby) {
   lobby.updatedAt = nowMs();
+}
+
+function destroyLobby(lobby) {
+  if (!lobby || !lobby.code) return false;
+  for (const p of Array.isArray(lobby.players) ? lobby.players : []) {
+    playerIndex.delete(String(p?.sessionId || "").trim());
+    playerTokenIndex.delete(String(p?.sessionToken || "").trim());
+  }
+  if (lobby.sockets && typeof lobby.sockets.values === "function") {
+    for (const ws of lobby.sockets.values()) {
+      try { ws.close(); } catch {}
+    }
+    if (typeof lobby.sockets.clear === "function") lobby.sockets.clear();
+  }
+  lobbiesByCode.delete(String(lobby.code || "").trim().toUpperCase());
+  return true;
+}
+
+function maybeDestroyLobbyAfterSocketClose(lobby) {
+  if (!lobby || !lobby.code || lobby.started) return false;
+  if ((Number(lobby?.sockets?.size) | 0) > 0) return false;
+  return destroyLobby(lobby);
 }
 
 function wsSend(ws, payload) {
@@ -1417,6 +1478,7 @@ function shapeSnapshotForCongestedSocket(payloadRaw, runtime, ws) {
     if (Object.prototype.hasOwnProperty.call(ce, "structures")) delete ce.structures;
     if (Object.prototype.hasOwnProperty.call(ce, "operations")) delete ce.operations;
     if (ws._socketCongestionLevel >= 3) {
+      if (Object.prototype.hasOwnProperty.call(ce, "divisions")) delete ce.divisions;
       if (Object.prototype.hasOwnProperty.call(ce, "ships")) delete ce.ships;
       if (Object.prototype.hasOwnProperty.call(ce, "nukeFlights")) delete ce.nukeFlights;
       if (Object.prototype.hasOwnProperty.call(ce, "airborneMissions")) delete ce.airborneMissions;
@@ -2074,7 +2136,9 @@ async function ensureLobbyRuntime(lobby) {
       {
         mapMode: effectiveMapMode,
         earthData,
-        aiCount: Math.max(1, Number(worldSpec.aiCount) || 1)
+        aiCount: Math.max(1, Number(worldSpec.aiCount) || 1),
+        countryClaimEnabled: resolveMatchCountryClaimEnabled(lobby.matchConfig),
+        gameMode: resolveMatchGameMode(lobby.matchConfig)
       }
     );
     // Server runtime is authoritative-only; skip expensive render pixel work.
@@ -2301,6 +2365,25 @@ function serializeNationStats(world) {
     row.landOwnedCount = Math.max(0, Number(world.landOwnedCount?.[id]) | 0);
     out.push(row);
   }
+  return out;
+}
+
+function serializeHumanNationStats(world, runtime) {
+  const out = [];
+  if (!world || !runtime?.assignmentsBySession || typeof runtime.assignmentsBySession.values !== "function") return out;
+  const seen = new Set();
+  for (const assignment of runtime.assignmentsBySession.values()) {
+    const id = Math.max(1, Number(assignment?.nationId) | 0);
+    if (id <= 0 || seen.has(id)) continue;
+    const n = world.nation?.[id];
+    if (!n || typeof n !== "object") continue;
+    const row = cloneWire(n) || {};
+    row.id = id;
+    row.landOwnedCount = Math.max(0, Number(world.landOwnedCount?.[id]) | 0);
+    out.push(row);
+    seen.add(id);
+  }
+  out.sort((a, b) => (Number(a?.id) | 0) - (Number(b?.id) | 0));
   return out;
 }
 
@@ -2656,6 +2739,7 @@ function serializeEntitiesDelta(world, runtime, forceFull = false, optionsRaw = 
     220
   );
   if (includeMobile && allowMobile) {
+    out.divisions = cloneWire(Array.isArray(world?.divisions) ? world.divisions : []) || [];
     out.ships = cloneWire(Array.isArray(world?.ships) ? world.ships : []) || [];
     out.nukeFlights = cloneWire(Array.isArray(world?.nukeFlights) ? world.nukeFlights : []) || [];
     out.airborneMissions = cloneWire(Array.isArray(world?.airborneMissions) ? world.airborneMissions : []) || [];
@@ -2829,12 +2913,23 @@ function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
 
   if (packet.changedEntities && typeof packet.changedEntities === "object") {
     mapRows(packet.changedEntities.structures, REMAP_OWNER_ONLY_KEYS);
+    mapRows(packet.changedEntities.divisions, REMAP_OWNER_ONLY_KEYS);
     mapRows(packet.changedEntities.ships, REMAP_SHIP_KEYS);
     mapRows(packet.changedEntities.nukeFlights, REMAP_NUKE_KEYS);
     mapRows(packet.changedEntities.airborneMissions, REMAP_OWNER_ONLY_KEYS);
     mapRows(packet.changedEntities.operations, REMAP_OP_KEYS);
     mapRows(packet.changedEntities.tradeDeals, REMAP_ID_KEYS);
     mapRows(packet.changedEntities.tradeRequests, REMAP_ID_KEYS);
+  }
+
+  if (Array.isArray(packet.humanNationStats)) {
+    for (let i = 0; i < packet.humanNationStats.length; i++) {
+      const row = packet.humanNationStats[i];
+      if (!row || typeof row !== "object") continue;
+      row.id = mapCanonicalToLocalNationId(Number(row.id) | 0, assigned);
+      remapDeepNationKeys(row, assigned, REMAP_ID_KEYS);
+    }
+    packet.humanNationStats.sort((a, b) => (Number(a?.id) | 0) - (Number(b?.id) | 0));
   }
 
   if (Array.isArray(packet.nationStats)) {
@@ -3024,6 +3119,7 @@ function computeStateHashForWorld(world, tickRaw, assignedNationIdRaw) {
   };
 
   mixEntity("st", world.structures, ["owner"]);
+  mixEntity("dv", world.divisions, ["owner"]);
   mixEntity("sh", world.ships, ["owner", "missionDefender"]);
   mixEntity("nf", world.nukeFlights, ["owner", "launchTargetOwner"]);
   mixEntity("am", world.airborneMissions, ["owner"]);
@@ -3146,6 +3242,7 @@ function buildSnapshotPacket(
       forceOperations,
       forceMobile
     }),
+    humanNationStats: serializeHumanNationStats(world, runtime),
     nationStats: includeStats ? serializeNationStats(world) : undefined,
     leaderboard: includeStats ? serializeLeaderboard(world) : undefined,
     relations: includeRelations ? serializeRelations(world) : undefined
@@ -3861,7 +3958,10 @@ function shouldPushPostCommandFullSync(cmdRaw) {
     cmd === "request_ceasefire" ||
     cmd === "request_alliance" ||
     cmd === "respond_ceasefire_request" ||
-    cmd === "respond_alliance_request"
+    cmd === "respond_alliance_request" ||
+    cmd === "queue_division_training" ||
+    cmd === "issue_division_order" ||
+    cmd === "clear_division_order"
   );
 }
 
@@ -3921,7 +4021,8 @@ function resolveCommandSnapshotPolicy(cmdRaw) {
     cmd === "start_port_trade" ||
     cmd === "start_research" ||
     cmd === "donate" ||
-    cmd === "cancel_ship"
+    cmd === "cancel_ship" ||
+    cmd === "queue_division_training"
   ) {
     policy.forceStats = true;
   }
@@ -3949,7 +4050,9 @@ function resolveCommandSnapshotPolicy(cmdRaw) {
     cmd === "respond_trade_request" ||
     cmd === "cancel_trade_request" ||
     cmd === "cancel_trade_deal" ||
-    cmd === "start_port_trade"
+    cmd === "start_port_trade" ||
+    cmd === "issue_division_order" ||
+    cmd === "clear_division_order"
   ) {
     policy.forceOperations = true;
   }
@@ -3957,12 +4060,16 @@ function resolveCommandSnapshotPolicy(cmdRaw) {
   if (
     cmd === "place_structure" ||
     cmd === "start_missile_silo_build" ||
-    cmd === "start_airbase_transport_build"
+    cmd === "start_airbase_transport_build" ||
+    cmd === "queue_division_training"
   ) {
     policy.forceStructures = true;
   }
 
   if (
+    cmd === "queue_division_training" ||
+    cmd === "issue_division_order" ||
+    cmd === "clear_division_order" ||
     cmd === "send_warship" ||
     cmd === "cancel_ship" ||
     cmd === "start_port_trade" ||
@@ -4345,6 +4452,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
   ws.on("close", () => {
     const cur = lobby.sockets.get(sessionId);
     if (cur === ws) lobby.sockets.delete(sessionId);
+    maybeDestroyLobbyAfterSocketClose(lobby);
   });
 }
 
@@ -4357,14 +4465,7 @@ function cleanupIdleLobbies() {
       : Math.max(60_000, LOBBY_IDLE_TTL_MS);
     const cutoff = now - ttlMs;
     if (lobby.updatedAt >= cutoff) continue;
-    for (const p of lobby.players) {
-      playerIndex.delete(p.sessionId);
-      playerTokenIndex.delete(String(p?.sessionToken || "").trim());
-    }
-    for (const ws of lobby.sockets.values()) {
-      try { ws.close(); } catch {}
-    }
-    lobbiesByCode.delete(code);
+    destroyLobby(lobby);
   }
 }
 
@@ -4587,7 +4688,7 @@ const server = createServer(async (req, res) => {
       }
 
       if (!lobby.players.length) {
-        lobbiesByCode.delete(lobby.code);
+        destroyLobby(lobby);
         writeJson(res, 200, { ok: true, removed: true });
         return;
       }
@@ -4663,7 +4764,7 @@ const server = createServer(async (req, res) => {
       }
 
       if (!lobby.players.length) {
-        lobbiesByCode.delete(lobby.code);
+        destroyLobby(lobby);
         writeJson(res, 200, { ok: true, removed: true });
         return;
       }

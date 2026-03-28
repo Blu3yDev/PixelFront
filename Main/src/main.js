@@ -1442,6 +1442,8 @@ let multiplayerCatchupLastActiveAtMs = 0;
 let multiplayerCatchupVisibleSinceMs = 0;
 let multiplayerPendingSpawnPick = null;
 let multiplayerPendingSpawnRetryTimer = 0;
+let multiplayerDeferredCommandQueue = [];
+let multiplayerDeferredCommandFlushTimer = 0;
 let multiplayerLastDrainAtMs = 0;
 let multiplayerDeferredVisualSyncPending = false;
 let multiplayerDeferredUiSyncAtMs = 0;
@@ -1487,6 +1489,9 @@ const MULTIPLAYER_SPAWN_MAX_RETRIES = 3;
 const MULTIPLAYER_MATCH_PING_INTERVAL_MS = 2500;
 const MULTIPLAYER_MATCH_PING_STALE_MS = 9000;
 const MULTIPLAYER_STANCE_CMD_INTERVAL_MS = 44;
+const MULTIPLAYER_DEFERRED_CMD_TTL_MS = 8000;
+const MULTIPLAYER_DEFERRED_CMD_RETRY_MS = 180;
+const MULTIPLAYER_DEFERRED_CMD_MAX = 24;
 
 const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   setAttackRatio: Object.freeze({ cmd: "set_attack_ratio" }),
@@ -1509,6 +1514,9 @@ const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   requestAlliance: Object.freeze({ cmd: "request_alliance" }),
   respondCeasefireRequest: Object.freeze({ cmd: "respond_ceasefire_request" }),
   respondAllianceRequest: Object.freeze({ cmd: "respond_alliance_request" }),
+  queueDivisionTraining: Object.freeze({ cmd: "queue_division_training" }),
+  issueDivisionOrder: Object.freeze({ cmd: "issue_division_order" }),
+  clearDivisionOrder: Object.freeze({ cmd: "clear_division_order" }),
   cancelShip: Object.freeze({ cmd: "cancel_ship" }),
   startPortTrade: Object.freeze({ cmd: "start_port_trade", predictLocal: true }),
   startMissileSiloBuild: Object.freeze({ cmd: "start_missile_silo_build" }),
@@ -1575,6 +1583,14 @@ function resetMultiplayerStanceCommandState() {
     state.pendingArgs = null;
     state.lastSentAtMs = 0;
   }
+}
+
+function clearMultiplayerDeferredCommandQueue() {
+  if (multiplayerDeferredCommandFlushTimer) {
+    clearTimeout(multiplayerDeferredCommandFlushTimer);
+    multiplayerDeferredCommandFlushTimer = 0;
+  }
+  multiplayerDeferredCommandQueue = [];
 }
 
 function resetMultiplayerSnapshotState() {
@@ -1669,6 +1685,7 @@ function setActiveMultiplayerSession(raw) {
   multiplayerSessionTerminated = false;
   multiplayerPendingInputSeq = 1;
   multiplayerLastAckSeq = 0;
+  clearMultiplayerDeferredCommandQueue();
   resetMultiplayerSnapshotState();
   resetMultiplayerWorldSync();
   clearMultiplayerMatchSocket();
@@ -1760,6 +1777,92 @@ function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
   } catch {
     return { ok: false, reason: "Failed to send multiplayer command.", seq: 0 };
   }
+}
+
+function shouldQueueRecoverableMultiplayerCommand(reasonRaw) {
+  const reason = String(reasonRaw || "").trim().toLowerCase();
+  if (!reason) return false;
+  return (
+    reason.includes("authoritative sync") ||
+    reason.includes("disconnected") ||
+    reason.includes("failed to send multiplayer command") ||
+    reason.includes("server player assignment") ||
+    reason.includes("awaiting server player assignment")
+  );
+}
+
+function canFlushDeferredMultiplayerCommands() {
+  if (!isMultiplayerMatchEnabled()) return false;
+  if (!multiplayerHasAuthoritativeSync) return false;
+  if (!hasMultiplayerIdentity()) return false;
+  const ws = multiplayerMatchSocket;
+  return !!(ws && ws.readyState === WebSocket.OPEN);
+}
+
+function flushDeferredMultiplayerCommands() {
+  multiplayerDeferredCommandFlushTimer = 0;
+  if (!Array.isArray(multiplayerDeferredCommandQueue) || multiplayerDeferredCommandQueue.length <= 0) return;
+  if (!canFlushDeferredMultiplayerCommands()) {
+    if (isMultiplayerMatchEnabled() && !multiplayerHasAuthoritativeSync) {
+      requestMultiplayerFullSync("deferred_command_flush");
+    }
+    scheduleDeferredMultiplayerCommandFlush();
+    return;
+  }
+
+  const now = Date.now();
+  while (multiplayerDeferredCommandQueue.length > 0) {
+    const entry = multiplayerDeferredCommandQueue[0];
+    if (!entry || typeof entry !== "object") {
+      multiplayerDeferredCommandQueue.shift();
+      continue;
+    }
+    const ageMs = Math.max(0, now - Math.max(0, Number(entry.queuedAtMs) || 0));
+    if (ageMs > MULTIPLAYER_DEFERRED_CMD_TTL_MS) {
+      multiplayerDeferredCommandQueue.shift();
+      continue;
+    }
+    const sent = sendMultiplayerMatchInput(entry.cmd, entry.args);
+    if (sent?.ok) {
+      multiplayerDeferredCommandQueue.shift();
+      continue;
+    }
+    if (shouldQueueRecoverableMultiplayerCommand(sent?.reason)) {
+      scheduleDeferredMultiplayerCommandFlush();
+      return;
+    }
+    multiplayerDeferredCommandQueue.shift();
+  }
+}
+
+function scheduleDeferredMultiplayerCommandFlush(delayMs = MULTIPLAYER_DEFERRED_CMD_RETRY_MS) {
+  if (multiplayerDeferredCommandFlushTimer || !Array.isArray(multiplayerDeferredCommandQueue) || multiplayerDeferredCommandQueue.length <= 0) {
+    return;
+  }
+  multiplayerDeferredCommandFlushTimer = setTimeout(() => {
+    multiplayerDeferredCommandFlushTimer = 0;
+    flushDeferredMultiplayerCommands();
+  }, Math.max(40, Number(delayMs) || MULTIPLAYER_DEFERRED_CMD_RETRY_MS));
+}
+
+function enqueueDeferredMultiplayerCommand(cmdRaw, argsRaw) {
+  const cmd = String(cmdRaw || "").trim();
+  if (!cmd) return false;
+  const args = Array.isArray(argsRaw) ? cloneMultiplayerPayload(argsRaw) || [] : [];
+  const next = Array.isArray(multiplayerDeferredCommandQueue) ? multiplayerDeferredCommandQueue.slice() : [];
+  next.push({
+    cmd,
+    args,
+    queuedAtMs: Date.now()
+  });
+  while (next.length > MULTIPLAYER_DEFERRED_CMD_MAX) next.shift();
+  multiplayerDeferredCommandQueue = next;
+  if (!hasMultiplayerIdentity()) {
+    const ws = multiplayerMatchSocket;
+    try { ws?.send?.(JSON.stringify({ type: "lobby_state_request" })); } catch {}
+  }
+  scheduleDeferredMultiplayerCommandFlush();
+  return true;
 }
 
 function multiplayerQueuedReturnForMethod(methodName, args) {
@@ -1941,6 +2044,12 @@ function installMultiplayerWorldSync(worldRef) {
             }
           } catch {
             // Ignore local spawn prediction failure and fall through to error return.
+          }
+        }
+        if (shouldQueueRecoverableMultiplayerCommand(sent.reason)) {
+          const queued = enqueueDeferredMultiplayerCommand(rule.cmd, payloadArgs);
+          if (queued) {
+            return multiplayerQueuedReturnForMethod(methodName, args);
           }
         }
         return multiplayerDisconnectedReturnForMethod(methodName, sent.reason);
@@ -2329,6 +2438,9 @@ function applyMultiplayerNationStats(worldRef, nationStats) {
       ? worldRef.nation[id]
       : { id };
     worldRef.nation[id] = { ...cur, ...row, id };
+    if (worldRef.landOwnedCount && id < worldRef.landOwnedCount.length && Object.prototype.hasOwnProperty.call(row, "landOwnedCount")) {
+      worldRef.landOwnedCount[id] = Math.max(0, Number(row.landOwnedCount) | 0);
+    }
   }
 
   syncNationFlagsFromAuthoritative(worldRef);
@@ -2919,6 +3031,9 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
   if (packet.changedEntities && typeof packet.changedEntities === "object") {
     applyMultiplayerEntities(worldRef, packet.changedEntities);
   }
+  if (Array.isArray(packet.humanNationStats)) {
+    applyMultiplayerNationStats(worldRef, packet.humanNationStats);
+  }
   if (Array.isArray(packet.nationStats)) {
     applyMultiplayerNationStats(worldRef, packet.nationStats);
   }
@@ -3015,6 +3130,9 @@ function applyAuthoritativePacketToWorld(worldRef, packet, optionsRaw = null) {
 
   if (packet.changedEntities && typeof packet.changedEntities === "object") {
     applyMultiplayerEntities(worldRef, packet.changedEntities);
+  }
+  if (Array.isArray(packet.humanNationStats)) {
+    applyMultiplayerNationStats(worldRef, packet.humanNationStats);
   }
   if (Array.isArray(packet.nationStats)) {
     applyMultiplayerNationStats(worldRef, packet.nationStats);
@@ -3538,6 +3656,7 @@ function connectMultiplayerMatchSocket() {
     }
     requestMultiplayerFullSync("socket_open");
     multiplayerAwaitingFullSync = true;
+    scheduleDeferredMultiplayerCommandFlush(120);
     if (hud && typeof hud.setOpMessage === "function") {
       hud.setOpMessage("Multiplayer link connected. Waiting for authoritative sync...");
     }
@@ -3586,6 +3705,7 @@ function connectMultiplayerMatchSocket() {
       if (activeMultiplayerSession && helloTick > 0) {
         activeMultiplayerSession.serverTick = Math.max(Number(activeMultiplayerSession.serverTick) || 0, helloTick);
       }
+      scheduleDeferredMultiplayerCommandFlush(80);
       return;
     }
 
@@ -3613,6 +3733,7 @@ function connectMultiplayerMatchSocket() {
         }
         requestMultiplayerFullSync("started_event");
       }
+      scheduleDeferredMultiplayerCommandFlush(80);
       return;
     }
 
@@ -3668,6 +3789,7 @@ function connectMultiplayerMatchSocket() {
     if (type === "full_sync") {
       resetMultiplayerSnapshotState();
       applyMultiplayerSnapshotPacket(msg, true);
+      flushDeferredMultiplayerCommands();
       return;
     }
 
@@ -3704,6 +3826,7 @@ function connectMultiplayerMatchSocket() {
         if (probe?.terminal && !probe?.valid) {
           const reason = String(probe.reason || "Multiplayer lobby is no longer available on the server.").trim();
           multiplayerSessionTerminated = true;
+          clearMultiplayerDeferredCommandQueue();
           if (multiplayerMatchReconnectTimer) {
             clearTimeout(multiplayerMatchReconnectTimer);
             multiplayerMatchReconnectTimer = 0;
@@ -4554,7 +4677,8 @@ function sanitizeMatchConfig(next) {
   const difficulty = Object.prototype.hasOwnProperty.call(MATCH_DIFFICULTY_PROFILES, difficultyRaw)
     ? difficultyRaw
     : DEFAULT_MATCH_CONFIG.difficulty;
-  const gameMode = GAME_MODE.CLASSIC;
+  const gameModeRaw = String(src.gameMode || DEFAULT_MATCH_CONFIG.gameMode).toLowerCase();
+  const gameMode = gameModeRaw === GAME_MODE.DIVISIONS ? GAME_MODE.DIVISIONS : GAME_MODE.CLASSIC;
 
   const mapMode = MAP_MODE.WORLD_MAP;
   const mapSourceRaw = String(src.mapSource ?? src.mapMode ?? DEFAULT_MATCH_CONFIG.mapSource).toLowerCase();

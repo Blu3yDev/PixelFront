@@ -22,6 +22,40 @@ function findNationStatsRow(packet, nationIdRaw) {
   return rows.find((row) => (Number(row?.id) | 0) === nationId) || null;
 }
 
+function findAuthoritativeNationRow(packet, nationIdRaw) {
+  const nationId = Math.max(1, Number(nationIdRaw) | 0);
+  const humanRows = Array.isArray(packet?.humanNationStats) ? packet.humanNationStats : [];
+  const fromHuman = humanRows.find((row) => (Number(row?.id) | 0) === nationId) || null;
+  if (fromHuman) return fromHuman;
+  return findNationStatsRow(packet, nationId);
+}
+
+function packetHasAttackRatio(packet, nationIdRaw, expectedRatioRaw, toleranceRaw = 0.02) {
+  const row = findAuthoritativeNationRow(packet, nationIdRaw);
+  if (!row) return false;
+  const actual = Number(row?.attackRatio);
+  const expected = Number(expectedRatioRaw);
+  const tolerance = Math.max(0.002, Number(toleranceRaw) || 0.02);
+  return Number.isFinite(actual) && Number.isFinite(expected) && Math.abs(actual - expected) <= tolerance;
+}
+
+function relationRowsContainPair(rowsRaw, aRaw, bRaw, fromRaw = null) {
+  const rows = Array.isArray(rowsRaw) ? rowsRaw : [];
+  const a = Math.max(1, Number(aRaw) | 0);
+  const b = Math.max(1, Number(bRaw) | 0);
+  const from = fromRaw == null ? null : Math.max(1, Number(fromRaw) | 0);
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!Array.isArray(row) || row.length < 2) continue;
+    const left = Number(row[0]) | 0;
+    const right = Number(row[1]) | 0;
+    if (!((left === a && right === b) || (left === b && right === a))) continue;
+    if (from == null) return true;
+    if ((Number(row[2]) | 0) === from) return true;
+  }
+  return false;
+}
+
 function findHumanPlayerRow(packet, nameRaw) {
   const target = String(nameRaw || "").trim();
   const rows = Array.isArray(packet?.worldMeta?.humanPlayers) ? packet.worldMeta.humanPlayers : [];
@@ -413,6 +447,13 @@ async function main() {
     if (!viewerPlayerId || viewerNationId <= 0) {
       throw new Error("Started lobby state did not expose authoritative player identity.");
     }
+    const guestStartedState = await requestJson("POST", "/api/lobbies/state", { code, sessionToken: guestSessionToken });
+    const guestViewer = guestStartedState?.data?.viewer || null;
+    const guestViewerPlayerId = String(guestViewer?.playerId || "").trim();
+    const guestViewerNationId = Math.max(0, Number(guestViewer?.nationId) | 0);
+    if (!guestViewerPlayerId || guestViewerNationId <= 0) {
+      throw new Error("Guest started lobby state did not expose authoritative player identity.");
+    }
 
     hostWs.send(JSON.stringify({
       type: "match_input",
@@ -420,15 +461,105 @@ async function main() {
       nationId: viewerNationId,
       seq: 1,
       clientTime: Date.now(),
-      cmd: "declare_war",
+      cmd: "set_attack_ratio",
+      args: [viewerNationId, 0.73]
+    }));
+    const stanceAck = await hostTracker.next((msg) => msg?.type === "cmd_ack", 15000);
+    if ((Number(stanceAck?.ackSeq) | 0) !== 1) {
+      throw new Error("Host stance update did not ack the expected sequence.");
+    }
+    const stanceAckTick = Math.max(0, Number(stanceAck?.serverTickProcessed) | 0);
+    await hostTracker.next((msg) => {
+      if (!msg || (msg.type !== "snapshot_delta" && msg.type !== "full_sync")) return false;
+      if ((Number(msg?.tick) | 0) < stanceAckTick) return false;
+      return packetHasAttackRatio(msg, 1, 0.73);
+    }, 15000);
+    await guestTracker.next((msg) => {
+      if (!msg || (msg.type !== "snapshot_delta" && msg.type !== "full_sync")) return false;
+      if ((Number(msg?.tick) | 0) < stanceAckTick) return false;
+      return packetHasAttackRatio(msg, 2, 0.73);
+    }, 15000);
+
+    hostWs.send(JSON.stringify({
+      type: "match_input",
+      playerId: viewerPlayerId,
+      nationId: viewerNationId,
+      seq: 2,
+      clientTime: Date.now(),
+      cmd: "request_alliance",
       args: [viewerNationId, 2]
     }));
-    const ack = await hostTracker.next((msg) => msg?.type === "cmd_ack", 15000);
-    if ((Number(ack?.ackSeq) | 0) !== 1) {
-      throw new Error("Authoritative match input did not ack the expected sequence.");
+    const allianceRequestAck = await hostTracker.next((msg) => msg?.type === "cmd_ack", 15000);
+    if ((Number(allianceRequestAck?.ackSeq) | 0) !== 2) {
+      throw new Error("Alliance request did not ack the expected sequence.");
     }
+    const allianceRequestTick = Math.max(0, Number(allianceRequestAck?.serverTickProcessed) | 0);
+    await hostTracker.next((msg) => {
+      if (!msg || (msg.type !== "snapshot_delta" && msg.type !== "full_sync")) return false;
+      if ((Number(msg?.tick) | 0) < allianceRequestTick) return false;
+      if (!relationRowsContainPair(msg?.relations?.pendingAlliances, 1, 2, 1)) return false;
+      const playerEvents = Array.isArray(msg?.events) ? msg.events : [];
+      const globalEvents = Array.isArray(msg?.globalEvents) ? msg.globalEvents : [];
+      return [...playerEvents, ...globalEvents].some((row) => {
+        if (!row || typeof row !== "object") return false;
+        return String(row?.kind || "").toLowerCase() === "ally_request" &&
+          (Number(row?.from) | 0) === 1 &&
+          (Number(row?.to) | 0) === 2;
+      });
+    }, 15000);
+    await guestTracker.next((msg) => {
+      if (!msg || (msg.type !== "snapshot_delta" && msg.type !== "full_sync")) return false;
+      if ((Number(msg?.tick) | 0) < allianceRequestTick) return false;
+      if (!relationRowsContainPair(msg?.relations?.pendingAlliances, 1, 2, 2)) return false;
+      const playerEvents = Array.isArray(msg?.events) ? msg.events : [];
+      const globalEvents = Array.isArray(msg?.globalEvents) ? msg.globalEvents : [];
+      return [...playerEvents, ...globalEvents].some((row) => {
+        if (!row || typeof row !== "object") return false;
+        return String(row?.kind || "").toLowerCase() === "ally_request" &&
+          (Number(row?.from) | 0) === 2 &&
+          (Number(row?.to) | 0) === 1;
+      });
+    }, 15000);
+
+    guestWs.send(JSON.stringify({
+      type: "match_input",
+      playerId: guestViewerPlayerId,
+      nationId: guestViewerNationId,
+      seq: 1,
+      clientTime: Date.now(),
+      cmd: "respond_alliance_request",
+      args: [2, 1, true]
+    }));
+    const allianceAcceptAck = await guestTracker.next((msg) => msg?.type === "cmd_ack", 15000);
+    if ((Number(allianceAcceptAck?.ackSeq) | 0) !== 1) {
+      throw new Error("Alliance accept did not ack the expected guest sequence.");
+    }
+    const allianceAcceptTick = Math.max(0, Number(allianceAcceptAck?.serverTickProcessed) | 0);
+    const hasAllianceState = (msg) => {
+      if (!msg || (msg.type !== "snapshot_delta" && msg.type !== "full_sync")) return false;
+      if ((Number(msg?.tick) | 0) < allianceAcceptTick) return false;
+      return relationRowsContainPair(msg?.relations?.alliances, 1, 2);
+    };
+    await hostTracker.next(hasAllianceState, 15000);
+    await guestTracker.next(hasAllianceState, 15000);
+
+    hostWs.send(JSON.stringify({
+      type: "match_input",
+      playerId: viewerPlayerId,
+      nationId: viewerNationId,
+      seq: 3,
+      clientTime: Date.now(),
+      cmd: "betray_alliance",
+      args: [viewerNationId, 2]
+    }));
+    const betrayAck = await hostTracker.next((msg) => msg?.type === "cmd_ack", 15000);
+    if ((Number(betrayAck?.ackSeq) | 0) !== 3) {
+      throw new Error("Betray alliance did not ack the expected sequence.");
+    }
+    const betrayTick = Math.max(0, Number(betrayAck?.serverTickProcessed) | 0);
     const hasWarState = (msg) => {
       if (!msg || (msg.type !== "snapshot_delta" && msg.type !== "full_sync")) return false;
+      if ((Number(msg?.tick) | 0) < betrayTick) return false;
       const wars = Array.isArray(msg?.relations?.wars) ? msg.relations.wars : [];
       const warSeen = wars.some((row) => Array.isArray(row) && row.length >= 2 && (
         ((Number(row[0]) | 0) === 1 && (Number(row[1]) | 0) === 2) ||
@@ -536,8 +667,11 @@ async function main() {
         "full_sync_marks_human_nations_as_non_ai",
         "full_sync_preserves_distinct_human_nation_state",
         "full_sync_includes_packet_sequence",
+        "stance_updates_human_stats_for_all_players",
         "started_match_accepts_authoritative_input",
-        "declare_war_immediately_syncs_relations_to_all_players",
+        "alliance_requests_sync_between_human_players",
+        "alliance_acceptance_syncs_between_human_players",
+        "betray_alliance_immediately_syncs_relations_to_all_players",
         "guest_full_sync_request_preserves_human_identity",
         "started_match_reconnect_restores_full_sync"
       ],

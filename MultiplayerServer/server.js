@@ -609,6 +609,11 @@ function sanitizeName(raw) {
   return text.slice(0, 20);
 }
 
+function isAiPlaceholderNationName(raw) {
+  const text = String(raw || "").trim();
+  return /^(?:AI|Bot)\s+\d+$/i.test(text);
+}
+
 function sanitizePlayerFlag(raw) {
   if (!raw || typeof raw !== "object") return null;
   const cloned = cloneWire(raw);
@@ -1878,8 +1883,16 @@ function removeRuntimeAssignmentForSession(lobby, sessionIdRaw) {
   return assignment;
 }
 
-function enforceHumanNationRuntimeState(runtime) {
+function enforceHumanNationRuntimeState(lobby, runtime) {
   if (!runtime?.world || !runtime.assignmentsBySession) return;
+  const playersBySession = new Map();
+  if (Array.isArray(lobby?.players)) {
+    for (let i = 0; i < lobby.players.length; i++) {
+      const player = lobby.players[i];
+      const sessionId = String(player?.sessionId || "").trim();
+      if (sessionId) playersBySession.set(sessionId, player);
+    }
+  }
   const humanNationIds = new Set();
   for (const assignment of runtime.assignmentsBySession.values()) {
     const nationId = Math.max(1, Number(assignment?.nationId) | 0);
@@ -1889,10 +1902,19 @@ function enforceHumanNationRuntimeState(runtime) {
     }
     const nation = runtime.world.nation?.[nationId];
     if (nation && typeof nation === "object") {
+      const player = playersBySession.get(String(assignment?.sessionId || "")) || null;
+      const safeName = sanitizeName(player?.name || nation.name || `Player ${nationId}`);
+      if (!String(nation.name || "").trim() || isAiPlaceholderNationName(nation.name)) {
+        nation.name = safeName;
+      }
+      if ((!nation.flag || typeof nation.flag !== "object") && player?.flag && typeof player.flag === "object") {
+        nation.flag = cloneWire(player.flag) || nation.flag || null;
+      }
       nation.isHuman = true;
       nation.isAiControlled = false;
     }
   }
+  runtime.world._humanNationIds = humanNationIds;
 
   const phase = runtime.world?._spawnPhase;
   if (phase && phase.active && Array.isArray(phase.aiQueue) && humanNationIds.size > 0) {
@@ -1940,7 +1962,7 @@ function applyRuntimeAssignmentsToWorld(lobby, runtime, { emitJoinEvents = false
     assignmentLog.push(`${String(a.playerId || a.sessionId || "")}:${nid}`);
   }
   runtime.world._humanNationIds = humanNationIds;
-  enforceHumanNationRuntimeState(runtime);
+  enforceHumanNationRuntimeState(lobby, runtime);
   if (emitJoinEvents) pushInitialPlayerJoinEvents(lobby, runtime);
   if (log) {
     console.log(`[runtime-assign] lobby=${String(lobby?.code || "")} players=${assignmentLog.join(",")}`);
@@ -3531,7 +3553,7 @@ function updateRuntimeMemoryPressure(lobby, runtime, now) {
 }
 
 function flushRuntimeTick(lobby, runtime, now) {
-  enforceHumanNationRuntimeState(runtime);
+  enforceHumanNationRuntimeState(lobby, runtime);
   const stepMs = simDtMs();
   const worldW = Math.max(0, Number(runtime?.world?.w ?? runtime?.world?.W) | 0);
   const worldH = Math.max(0, Number(runtime?.world?.h ?? runtime?.world?.H) | 0);

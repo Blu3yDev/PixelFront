@@ -40,6 +40,62 @@ function nationStateFingerprint(row) {
   });
 }
 
+function isAiPlaceholderName(raw) {
+  return /^(?:AI|Bot)\s+\d+$/i.test(String(raw || "").trim());
+}
+
+function assertUniqueValues(valuesRaw, label) {
+  const values = Array.isArray(valuesRaw) ? valuesRaw : [];
+  const seen = new Set();
+  for (let i = 0; i < values.length; i++) {
+    const key = String(values[i] ?? "").trim();
+    if (!key) throw new Error(`${label} contains an empty value.`);
+    if (seen.has(key)) throw new Error(`${label} contains duplicate value "${key}".`);
+    seen.add(key);
+  }
+}
+
+function assertHumanRegistryView(packet, label, expectedRows) {
+  const rows = Array.isArray(packet?.worldMeta?.humanPlayers) ? packet.worldMeta.humanPlayers : [];
+  if (rows.length < expectedRows.length) {
+    throw new Error(`${label} is missing expected human player rows.`);
+  }
+  assertUniqueValues(rows.map((row) => Number(row?.nationId) | 0), `${label} human nation ids`);
+  assertUniqueValues(rows.map((row) => String(row?.playerId || "").trim()), `${label} human player ids`);
+  assertUniqueValues(rows.map((row) => String(row?.sessionId || "").trim()), `${label} human session ids`);
+
+  for (let i = 0; i < expectedRows.length; i++) {
+    const expected = expectedRows[i];
+    const row = findHumanPlayerRow(packet, expected.name);
+    if (!row) throw new Error(`${label} is missing human player "${expected.name}".`);
+    if ((Number(row?.nationId) | 0) !== (expected.nationId | 0)) {
+      throw new Error(`${label} mapped "${expected.name}" to nation ${Number(row?.nationId) | 0} instead of ${expected.nationId | 0}.`);
+    }
+    if (isAiPlaceholderName(row?.name)) {
+      throw new Error(`${label} labeled human player "${expected.name}" as an AI placeholder.`);
+    }
+  }
+}
+
+function assertHumanNationView(packet, label, nationIdRaw, expectedName) {
+  const nationId = Math.max(1, Number(nationIdRaw) | 0);
+  const row = findNationStatsRow(packet, nationId);
+  if (!row) throw new Error(`${label} is missing nation stats for human nation ${nationId}.`);
+  const actualName = String(row?.name || "").trim();
+  if (actualName !== String(expectedName || "").trim()) {
+    throw new Error(`${label} expected nation ${nationId} to be named "${expectedName}", got "${actualName || "<empty>"}".`);
+  }
+  if (isAiPlaceholderName(actualName)) {
+    throw new Error(`${label} labeled human nation ${nationId} as an AI placeholder.`);
+  }
+  if (!row?.isHuman) {
+    throw new Error(`${label} marked human nation ${nationId} as non-human.`);
+  }
+  if (!!row?.isAiControlled) {
+    throw new Error(`${label} marked human nation ${nationId} as AI-controlled.`);
+  }
+}
+
 function requestJson(method, route, body = null) {
   return new Promise((resolve, reject) => {
     const payload = body == null ? null : Buffer.from(JSON.stringify(body));
@@ -309,17 +365,18 @@ async function main() {
     if (guestHumanNationIds.join(",") !== "1,2") {
       throw new Error("Guest full_sync did not expose both human nations with local ids 1 and 2.");
     }
-
-    const hostHumanSelf = findHumanPlayerRow(fullSync, "Host");
-    const hostHumanGuest = findHumanPlayerRow(fullSync, "Guest");
-    const guestHumanSelf = findHumanPlayerRow(guestFullSync, "Guest");
-    const guestHumanHost = findHumanPlayerRow(guestFullSync, "Host");
-    if ((Number(hostHumanSelf?.nationId) | 0) !== 1 || (Number(hostHumanGuest?.nationId) | 0) !== 2) {
-      throw new Error("Host full_sync human player registry did not preserve remote human player visibility.");
-    }
-    if ((Number(guestHumanSelf?.nationId) | 0) !== 1 || (Number(guestHumanHost?.nationId) | 0) !== 2) {
-      throw new Error("Guest full_sync human player registry did not remap human players into local ids.");
-    }
+    assertHumanRegistryView(fullSync, "Host full_sync", [
+      { name: "Host", nationId: 1 },
+      { name: "Guest", nationId: 2 }
+    ]);
+    assertHumanRegistryView(guestFullSync, "Guest full_sync", [
+      { name: "Guest", nationId: 1 },
+      { name: "Host", nationId: 2 }
+    ]);
+    assertHumanNationView(fullSync, "Host full_sync", 1, "Host");
+    assertHumanNationView(fullSync, "Host full_sync", 2, "Guest");
+    assertHumanNationView(guestFullSync, "Guest full_sync", 1, "Guest");
+    assertHumanNationView(guestFullSync, "Guest full_sync", 2, "Host");
 
     const hostSelfStats = findNationStatsRow(fullSync, 1);
     const hostGuestStats = findNationStatsRow(fullSync, 2);
@@ -388,6 +445,29 @@ async function main() {
     await hostTracker.next(hasWarState, 15000);
     await guestTracker.next(hasWarState, 15000);
 
+    guestWs.send(JSON.stringify({
+      type: "full_sync_request",
+      reason: "smoke_guest_integrity_check"
+    }));
+    const guestResyncFullSync = await guestTracker.next((msg) => msg?.type === "full_sync", 15000);
+    if (!guestResyncFullSync || String(guestResyncFullSync?.code || "") !== code) {
+      throw new Error("Guest manual full_sync_request did not return a valid authoritative full_sync packet.");
+    }
+    assertHumanRegistryView(guestResyncFullSync, "Guest resync full_sync", [
+      { name: "Guest", nationId: 1 },
+      { name: "Host", nationId: 2 }
+    ]);
+    assertHumanNationView(guestResyncFullSync, "Guest resync full_sync", 1, "Guest");
+    assertHumanNationView(guestResyncFullSync, "Guest resync full_sync", 2, "Host");
+    const guestResyncSelfStats = findNationStatsRow(guestResyncFullSync, 1);
+    const guestResyncHostStats = findNationStatsRow(guestResyncFullSync, 2);
+    if (!guestResyncSelfStats || !guestResyncHostStats) {
+      throw new Error("Guest resync full_sync is missing human nation stat rows.");
+    }
+    if (nationStateFingerprint(guestResyncSelfStats) === nationStateFingerprint(guestResyncHostStats)) {
+      throw new Error("Guest resync full_sync collapsed both human nations into the same stat profile.");
+    }
+
     try { hostWs.close(); } catch {}
     hostTracker.dispose();
     try { guestWs.close(); } catch {}
@@ -418,6 +498,12 @@ async function main() {
     if ((Number(reconnectFullSync?.packetSeq) | 0) <= 0) {
       throw new Error("Reconnect full_sync is missing packet sequencing metadata.");
     }
+    assertHumanRegistryView(reconnectFullSync, "Reconnect full_sync", [
+      { name: "Host", nationId: 1 },
+      { name: "Guest", nationId: 2 }
+    ]);
+    assertHumanNationView(reconnectFullSync, "Reconnect full_sync", 1, "Host");
+    assertHumanNationView(reconnectFullSync, "Reconnect full_sync", 2, "Guest");
 
     try { reconnectWs.close(); } catch {}
     reconnectTracker.dispose();
@@ -440,10 +526,12 @@ async function main() {
         "full_sync_includes_human_nation_metadata",
         "full_sync_includes_human_player_registry",
         "full_sync_remaps_remote_human_players_into_local_slots",
+        "full_sync_marks_human_nations_as_non_ai",
         "full_sync_preserves_distinct_human_nation_state",
         "full_sync_includes_packet_sequence",
         "started_match_accepts_authoritative_input",
         "declare_war_immediately_syncs_relations_to_all_players",
+        "guest_full_sync_request_preserves_human_identity",
         "started_match_reconnect_restores_full_sync"
       ],
       stdoutTail: stdout.trim().split(/\r?\n/).filter(Boolean).slice(-8),

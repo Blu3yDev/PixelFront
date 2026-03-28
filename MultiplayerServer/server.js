@@ -10,6 +10,7 @@ const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
 const LOBBY_IDLE_TTL_MS = Number(process.env.LOBBY_IDLE_TTL_MS || (1000 * 60 * 60 * 6));
 const STARTED_EMPTY_LOBBY_TTL_MS = Math.max(60_000, Number(process.env.STARTED_EMPTY_LOBBY_TTL_MS || (1000 * 60 * 20)));
+const EMPTY_LOBBY_CLOSE_GRACE_MS = Math.max(5_000, Number(process.env.EMPTY_LOBBY_CLOSE_GRACE_MS || 30_000));
 const MAX_PLAYERS_PER_LOBBY = Number(process.env.MAX_PLAYERS_PER_LOBBY || 8);
 const MB = 1024 * 1024;
 const MATCH_SNAPSHOT_INTERVAL_MS = Math.max(28, Number(process.env.MATCH_SNAPSHOT_INTERVAL_MS || 42));
@@ -740,7 +741,8 @@ function sanitizeMatchConfig(raw) {
     mapModeRaw === "world_map" ||
     mapModeRaw === "world-map" ||
     mapSource === MAP_SOURCE_POLITICAL_EARTH ||
-    mapSource === MAP_SOURCE_EARTH
+    mapSource === MAP_SOURCE_EARTH ||
+    mapSource === MAP_SOURCE_CUSTOM
   ) ? MAP_MODE_WORLD : MAP_MODE_GENERATOR;
   const parseBoost = (value, fallback) => {
     const n = Number(value);
@@ -1135,6 +1137,16 @@ function touchLobby(lobby) {
   lobby.updatedAt = nowMs();
 }
 
+function markLobbyEmptyState(lobby, now = nowMs()) {
+  if (!lobby || typeof lobby !== "object") return;
+  const socketCount = Math.max(0, Number(lobby?.sockets?.size) || 0);
+  if (socketCount > 0) {
+    lobby.emptySinceAt = 0;
+    return;
+  }
+  lobby.emptySinceAt = Math.max(0, Number(lobby.emptySinceAt) || now);
+}
+
 function destroyLobby(lobby) {
   if (!lobby || !lobby.code) return false;
   for (const p of Array.isArray(lobby.players) ? lobby.players : []) {
@@ -1147,6 +1159,9 @@ function destroyLobby(lobby) {
     }
     if (typeof lobby.sockets.clear === "function") lobby.sockets.clear();
   }
+  if (Array.isArray(lobby.players)) lobby.players.length = 0;
+  lobby.runtime = null;
+  lobby.emptySinceAt = 0;
   lobbiesByCode.delete(String(lobby.code || "").trim().toUpperCase());
   return true;
 }
@@ -2432,6 +2447,26 @@ function serializeWorldMeta(lobby, runtime) {
     }
   }
   humanNationIds.sort((a, b) => a - b);
+
+  const baseCfg = sanitizeMatchConfig(lobby?.matchConfig) || sanitizeMatchConfig({}) || DEFAULT_MATCH_CONFIG;
+  const effectiveMatchConfig = {
+    ...baseCfg,
+    mapMode: String(world?._mapMode || resolveMatchMapMode(lobby?.matchWorldSpec, baseCfg) || MAP_MODE_GENERATOR).trim().toLowerCase() === MAP_MODE_WORLD
+      ? MAP_MODE_WORLD
+      : MAP_MODE_GENERATOR,
+    gameMode: resolveMatchGameMode(baseCfg),
+    mapSource: String(baseCfg?.mapSource || DEFAULT_MATCH_CONFIG.mapSource).trim().toLowerCase() === MAP_SOURCE_CUSTOM
+      ? MAP_SOURCE_CUSTOM
+      : (String(baseCfg?.mapSource || DEFAULT_MATCH_CONFIG.mapSource).trim().toLowerCase() === MAP_SOURCE_POLITICAL_EARTH
+        ? MAP_SOURCE_POLITICAL_EARTH
+        : MAP_SOURCE_EARTH),
+    customMapId: String(baseCfg?.customMapId || "").trim(),
+    countryClaimEnabled: world?._countryClaimEnabled !== false,
+    fogOfWar: String(baseCfg?.fogOfWar || DEFAULT_MATCH_CONFIG.fogOfWar).trim().toLowerCase() === "advanced"
+      ? "advanced"
+      : "simple"
+  };
+
   return {
     time: Number(world.time) || 0,
     startedAt: Number(lobby.startedAt) || 0,
@@ -2439,6 +2474,7 @@ function serializeWorldMeta(lobby, runtime) {
     gameOver: cloneWire(world.gameOver) || null,
     matchOutcome: cloneWire(world.matchOutcome) || null,
     focusOpId: Number(world.focusOpId) | 0,
+    matchConfig: effectiveMatchConfig,
     humanNationIds,
     humanPlayers: serializeHumanPlayers(lobby, runtime),
     spawnPhase: serializeSpawnPhase(world._spawnPhase, world, computeSpawnLoadBarrierState(lobby, runtime))
@@ -4701,6 +4737,7 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
 function attachSocketToLobby(lobby, sessionId, ws) {
   closeLobbySocket(lobby, sessionId);
   lobby.sockets.set(sessionId, ws);
+  markLobbyEmptyState(lobby);
   ws.sessionId = sessionId;
   ws.code = lobby.code;
   ws.isAlive = true;
@@ -4827,6 +4864,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
   ws.on("close", () => {
     const cur = lobby.sockets.get(sessionId);
     if (cur === ws) lobby.sockets.delete(sessionId);
+    markLobbyEmptyState(lobby);
     maybeDestroyLobbyAfterSocketClose(lobby);
   });
 }
@@ -4834,6 +4872,12 @@ function attachSocketToLobby(lobby, sessionId, ws) {
 function cleanupIdleLobbies() {
   const now = nowMs();
   for (const [code, lobby] of lobbiesByCode) {
+    markLobbyEmptyState(lobby, now);
+    const emptySinceAt = Math.max(0, Number(lobby?.emptySinceAt) || 0);
+    if (emptySinceAt > 0 && (now - emptySinceAt) >= EMPTY_LOBBY_CLOSE_GRACE_MS) {
+      destroyLobby(lobby);
+      continue;
+    }
     const startedNoSockets = !!(lobby?.started && (!lobby?.sockets || lobby.sockets.size <= 0));
     const ttlMs = startedNoSockets
       ? Math.min(Math.max(60_000, LOBBY_IDLE_TTL_MS), STARTED_EMPTY_LOBBY_TTL_MS)
@@ -4946,6 +4990,7 @@ const server = createServer(async (req, res) => {
         code,
         createdAt: t,
         updatedAt: t,
+        emptySinceAt: t,
         started: false,
         startedAt: 0,
         matchSeed: 0,
@@ -4984,6 +5029,7 @@ const server = createServer(async (req, res) => {
       const t = nowMs();
       const player = createLobbyPlayerRecord({ name: playerName, flag: playerFlag, joinedAt: t });
       lobby.players.push(player);
+      lobby.emptySinceAt = 0;
       touchLobby(lobby);
       playerIndex.set(player.sessionId, lobby.code);
       playerTokenIndex.set(player.sessionToken, lobby.code);
@@ -5057,6 +5103,7 @@ const server = createServer(async (req, res) => {
       playerIndex.delete(viewerPlayer.sessionId);
       playerTokenIndex.delete(String(viewerPlayer.sessionToken || "").trim());
       closeLobbySocket(lobby, viewerPlayer.sessionId);
+      markLobbyEmptyState(lobby);
 
       if (lobby.runtime && lobby.started) {
         broadcastSnapshotDelta(lobby, lobby.runtime);
@@ -5133,6 +5180,7 @@ const server = createServer(async (req, res) => {
       playerIndex.delete(viewerPlayer.sessionId);
       playerTokenIndex.delete(String(viewerPlayer.sessionToken || "").trim());
       closeLobbySocket(lobby, viewerPlayer.sessionId);
+      markLobbyEmptyState(lobby);
 
       if (lobby.runtime && lobby.started) {
         broadcastSnapshotDelta(lobby, lobby.runtime);
@@ -5278,9 +5326,10 @@ setInterval(() => {
   }
 }, MATCH_PUMP_INTERVAL_MS).unref();
 
-setInterval(cleanupIdleLobbies, 60000).unref();
+setInterval(cleanupIdleLobbies, Math.max(5_000, Math.min(60_000, Math.floor(EMPTY_LOBBY_CLOSE_GRACE_MS / 2)))).unref();
 
 server.listen(PORT, () => {
   console.log(`[multiplayer-server] listening on :${PORT}`);
 });
+
 

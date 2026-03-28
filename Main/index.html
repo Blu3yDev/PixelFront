@@ -55,6 +55,7 @@
                     <label class="mainMenuToggleRow" for="mmSetDisableAtmosphere"><span>Disable Weather and Day/Night</span><input id="mmSetDisableAtmosphere" type="checkbox" /></label>
                     <label class="mainMenuToggleRow" for="mmSetReduceMotion"><span>Reduce Camera Motion</span><input id="mmSetReduceMotion" type="checkbox" /></label>
                     <label class="mainMenuToggleRow" for="mmSetFullscreen"><span>Fullscreen</span><input id="mmSetFullscreen" type="checkbox" /></label>
+                    <label class="mainMenuToggleRow" for="mmSetUncappedFramePacing"><span>Uncapped Frame Pacing</span><input id="mmSetUncappedFramePacing" type="checkbox" /></label>
                     <label class="mainMenuToggleRow" for="mmSetMenuMusicVolume"><span>Menu Music Volume (<output id="mmSetMenuMusicVolumeValue">12%</output>)</span><input id="mmSetMenuMusicVolume" type="range" min="0" max="100" step="1" value="12" /></label>
                     <label class="mainMenuToggleRow" for="mmSetWarMusicVolume"><span>War Music Volume (<output id="mmSetWarMusicVolumeValue">9%</output>)</span><input id="mmSetWarMusicVolume" type="range" min="0" max="100" step="1" value="9" /></label>
                   </div>
@@ -898,6 +899,14 @@
                     <span class="settingsRowHint muted">Toggle fullscreen mode for the game window.</span>
                   </span>
                   <input id="setFullscreen" type="checkbox" />
+                </label>
+
+                <label class="settingsRow" for="setUncappedFramePacing">
+                  <span class="settingsRowText">
+                    <span class="settingsRowLabel">Uncapped Frame Pacing</span>
+                    <span class="settingsRowHint muted">Run frames as fast as the desktop client can. Uses more CPU and GPU.</span>
+                  </span>
+                  <input id="setUncappedFramePacing" type="checkbox" />
                 </label>
 
               </section>

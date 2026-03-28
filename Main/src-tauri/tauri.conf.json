@@ -20,6 +20,7 @@
         "center": true,
         "maximized": true,
         "resizable": true,
+        "additionalBrowserArgs": "--disable-gpu-vsync --disable-frame-rate-limit --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
         "fullscreen": false
       }
     ],

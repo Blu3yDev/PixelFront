@@ -785,6 +785,155 @@ export function installWar(World) {
     return false;
   };
 
+  World.prototype._collectAttackOpsForPair = function(aId, bId) {
+    const a = aId | 0;
+    const b = bId | 0;
+    const forward = [];
+    const reverse = [];
+    let forwardPool = 0;
+    let reversePool = 0;
+    const ops = this.operations || [];
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
+      if (!op || !this._isAttackOperation(op)) continue;
+      const pool = Math.max(0, Number(op.attackPool) || 0);
+      if (pool <= 0) continue;
+      if ((op.attacker | 0) === a && (op.defender | 0) === b) {
+        forward.push(op);
+        forwardPool += pool;
+      } else if ((op.attacker | 0) === b && (op.defender | 0) === a) {
+        reverse.push(op);
+        reversePool += pool;
+      }
+    }
+    return { forward, reverse, forwardPool, reversePool };
+  };
+
+  World.prototype._estimateCommittedFrontlineTroops = function(ownerId, contactsHint = 0, ownerVersionHint = (this.ownerVersion | 0), opponentId = 0) {
+    const owner = ownerId | 0;
+    const nation = this.nation?.[owner];
+    if (!nation || !nation.alive) return 0;
+    let contacts = Math.max(0, Number(contactsHint) || 0);
+    const opponent = opponentId | 0;
+    if (contacts <= 0 && opponent > 0 && opponent !== owner && typeof this._estimateContactCount === "function") {
+      contacts = this._estimateContactCount(owner, opponent, ownerVersionHint);
+    }
+    contacts = Math.max(1, contacts);
+    const contactCap = contacts * Math.max(1, Number(WAR_ENGAGE_TROOPS_PER_CONTACT) || 1);
+    const committed = Math.max(0, (Number(nation.infantry) || 0) * commitFraction(nation));
+    return Math.max(0, Math.min(committed, contactCap));
+  };
+
+  World.prototype.getWarPairFrontlineCounts = function(aId, bId, contactsHint = 0, ownerVersionHint = (this.ownerVersion | 0)) {
+    const a = aId | 0;
+    const b = bId | 0;
+    if (a <= 0 || b <= 0 || a === b) return { [a]: 0, [b]: 0 };
+    const ops = this._collectAttackOpsForPair(a, b);
+    const fallbackA = this._estimateCommittedFrontlineTroops(a, contactsHint, ownerVersionHint, b);
+    const fallbackB = this._estimateCommittedFrontlineTroops(b, contactsHint, ownerVersionHint, a);
+    return {
+      [a]: Math.max(0, Math.max(Number(ops.forwardPool) || 0, fallbackA)),
+      [b]: Math.max(0, Math.max(Number(ops.reversePool) || 0, fallbackB))
+    };
+  };
+
+  World.prototype._spendAttackPoolAcrossOps = function(opList, totalPool, lossAmount) {
+    const rows = Array.isArray(opList) ? opList : [];
+    const total = Math.max(0, Number(totalPool) || 0);
+    let remaining = Math.max(0, Math.min(total, Number(lossAmount) || 0));
+    if (remaining <= 0 || total <= 0 || rows.length <= 0) return 0;
+    let spent = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const op = rows[i];
+      if (!op) continue;
+      const pool = Math.max(0, Number(op.attackPool) || 0);
+      if (pool <= 0) continue;
+      const want = (i === rows.length - 1)
+        ? remaining
+        : Math.min(remaining, (remaining * pool) / Math.max(1e-6, total));
+      if (want <= 0) continue;
+      const used = this._spendAttackPool(op, want);
+      spent += used;
+      remaining = Math.max(0, remaining - used);
+      if (remaining <= 1e-6) break;
+    }
+    return spent;
+  };
+
+  World.prototype._creditEnemyCasualtiesAcrossOps = function(opList, totalPool, casualtyAmount) {
+    const rows = Array.isArray(opList) ? opList : [];
+    const total = Math.max(0, Number(totalPool) || 0);
+    let remaining = Math.max(0, Number(casualtyAmount) || 0);
+    if (remaining <= 0 || total <= 0 || rows.length <= 0) return 0;
+    let credited = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const op = rows[i];
+      if (!op) continue;
+      const pool = Math.max(0, Number(op.attackPool) || 0);
+      if (pool <= 0) continue;
+      const add = (i === rows.length - 1)
+        ? remaining
+        : Math.min(remaining, (remaining * pool) / Math.max(1e-6, total));
+      if (add <= 0) continue;
+      op.enemyCasualties = Math.max(0, Number(op.enemyCasualties) || 0) + add;
+      credited += add;
+      remaining = Math.max(0, remaining - add);
+      if (remaining <= 1e-6) break;
+    }
+    return credited;
+  };
+
+  World.prototype._resolveActiveAttackPair = function(aId, bId, dt, ownerVersionHint = (this.ownerVersion | 0)) {
+    const a = aId | 0;
+    const b = bId | 0;
+    if (a <= 0 || b <= 0 || a === b) return;
+    const nA = this.nation?.[a];
+    const nB = this.nation?.[b];
+    if (!nA || !nB || !nA.alive || !nB.alive) return;
+
+    const ops = this._collectAttackOpsForPair(a, b);
+    const poolA = Math.max(0, Number(ops.forwardPool) || 0);
+    const poolB = Math.max(0, Number(ops.reversePool) || 0);
+    if (poolA <= 0 || poolB <= 0) return;
+
+    const contacts = Math.max(0, Number(this._estimateContactCount?.(a, b, ownerVersionHint)) || 0);
+    if (contacts <= 0) return;
+
+    const contactCap = Math.max(1, contacts) * Math.max(1, Number(WAR_ENGAGE_TROOPS_PER_CONTACT) || 1);
+    const engagedA = Math.min(poolA, contactCap);
+    const engagedB = Math.min(poolB, contactCap);
+    if (engagedA <= 0 || engagedB <= 0) return;
+
+    const stabA = this._stabilityFactor(a);
+    const stabB = this._stabilityFactor(b);
+    const lossMulA = lerp(WAR_STABILITY_LOSS_MUL_MAX, WAR_STABILITY_LOSS_MUL_MIN, clamp01(stabA));
+    const lossMulB = lerp(WAR_STABILITY_LOSS_MUL_MAX, WAR_STABILITY_LOSS_MUL_MIN, clamp01(stabB));
+    const intensity = Math.min(1.0, Math.sqrt((engagedA + 1) * (engagedB + 1)) / (contactCap + 1));
+    const duel = 0.75 + 0.75 * intensity;
+    const clashBase = WAR_FIRE_K * Math.max(0, Number(dt) || 0) * duel * 1.12;
+    const lossA = Math.min(poolA, engagedA * clashBase * lossMulA);
+    const lossB = Math.min(poolB, engagedB * clashBase * lossMulB);
+    if (lossA <= 0 && lossB <= 0) return;
+
+    const spentA = this._spendAttackPoolAcrossOps(ops.forward, poolA, lossA);
+    const spentB = this._spendAttackPoolAcrossOps(ops.reverse, poolB, lossB);
+    if (spentA > 0) this._creditEnemyCasualtiesAcrossOps(ops.reverse, poolB, spentA);
+    if (spentB > 0) this._creditEnemyCasualtiesAcrossOps(ops.forward, poolA, spentB);
+
+    if (typeof this._markTilePressureAround === "function" && ((this._warfrontHotspotBudget | 0) > 0)) {
+      this._warfrontHotspotBudget = Math.max(0, (this._warfrontHotspotBudget | 0) - 1);
+      const hotTake = clampInt(Math.min(32, Math.max(6, contacts | 0)), 6, 32);
+      const hotScratch = this._warHotspotScratch || (this._warHotspotScratch = []);
+      const hotspots = this._collectFrontlineCandidates(a, b, hotTake, Math.max(220, hotTake * 22), hotScratch);
+      if (hotspots && hotspots.length > 0) {
+        const totalLoss = Math.max(0, spentA + spentB);
+        const perTile = totalLoss / Math.max(1, hotspots.length * 16);
+        const pressure = Math.max(0.30, Math.min(4.2, perTile));
+        for (let i = 0; i < hotspots.length; i++) this._markTilePressureAround(hotspots[i] | 0, pressure);
+      }
+    }
+  };
+
   // ===== Operations (player/AI initiated) =====
   World.prototype._tickOperations = function(dt, cadenceTicks = 1) {
     const baseDt = Math.max(0, Number(dt) || 0);
@@ -1517,7 +1666,8 @@ export function installWar(World) {
       lastSolveAt.set(key, now);
 
       processed++;
-      this._solveWarPair(A, B, pairDt, passOwnerVersion);
+      if (activeAttackPairs.has(pAB)) this._resolveActiveAttackPair(A, B, pairDt, passOwnerVersion);
+      else this._solveWarPair(A, B, pairDt, passOwnerVersion);
       if (this.gameOver) return;
     }
 
@@ -1547,8 +1697,10 @@ export function installWar(World) {
     const contacts = this._estimateContactCount(A, B, ownerVersionHint);
     if (contacts > 0) {
       const intensity = (canA && canB) ? 1.0 : 0.55;
-      const aIntensity = manualOnlyA ? (intensity * 0.62) : intensity;
-      const bIntensity = manualOnlyB ? (intensity * 0.62) : intensity;
+      // Player wars are manual-attack only: do not bleed infantry passively just from
+      // touching an enemy border. Infantry is spent when the player commits an attack.
+      const aIntensity = manualOnlyA ? 0 : intensity;
+      const bIntensity = manualOnlyB ? 0 : intensity;
       this._applyWarLogisticsCost(A, B, contacts, dt, intensity);
       this._applyContactCasualties(A, B, contacts, dt, aIntensity, bIntensity);
     }

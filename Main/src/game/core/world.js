@@ -1467,11 +1467,35 @@ export class World {
     if (!this._usesCommittedInfantryPool(op)) return 0;
 
     const poolRaw = Number(op?.attackPool);
-    if (Number.isFinite(poolRaw) && poolRaw >= 0) {
+    if (Number.isFinite(poolRaw)) {
       if (!Number.isFinite(Number(op.casualties))) op.casualties = 0;
       if (!Number.isFinite(Number(op.enemyCasualties))) op.enemyCasualties = 0;
       if (!Number.isFinite(Number(op.committedAtStart))) op.committedAtStart = Math.max(0, poolRaw);
+      op._attackPoolInitialized = true;
       return Math.max(0, poolRaw);
+    }
+
+    const committedAtStartRaw = Number(op?.committedAtStart);
+    const committedAtStart = Number.isFinite(committedAtStartRaw)
+      ? Math.max(0, committedAtStartRaw)
+      : 0;
+    const casualties = Math.max(0, Number(op?.casualties) || 0);
+    const hadTrackedPool = !!(
+      op?._attackPoolInitialized ||
+      op?._attackPoolReleased ||
+      Number.isFinite(committedAtStartRaw) ||
+      Number.isFinite(Number(op?.enemyCasualties))
+    );
+    if (hadTrackedPool) {
+      const derivedPool = op?._attackPoolReleased
+        ? 0
+        : Math.max(0, committedAtStart - casualties);
+      op.attackPool = derivedPool;
+      op.committedAtStart = committedAtStart;
+      if (!Number.isFinite(Number(op.casualties))) op.casualties = 0;
+      if (!Number.isFinite(Number(op.enemyCasualties))) op.enemyCasualties = 0;
+      op._attackPoolInitialized = true;
+      return derivedPool;
     }
 
     const committed = this._commitAttackPool(op.attacker | 0);
@@ -1479,6 +1503,7 @@ export class World {
     op.committedAtStart = committed;
     op.casualties = 0;
     op.enemyCasualties = 0;
+    op._attackPoolInitialized = true;
     op._attackPoolReleased = false;
     return committed;
   }
@@ -4083,6 +4108,7 @@ placeStructure(type, ownerId, x, y) {
       const existingPool = Math.max(0, this._initAttackPool(existing));
       existing.attackPool = existingPool + committed;
       existing.committedAtStart = Math.max(0, Number(existing.committedAtStart) || 0) + committed;
+      existing._attackPoolInitialized = true;
       existing._attackPoolReleased = false;
       existing.total = claimedBefore + existingTarget.size;
       existing.claimed = claimedBefore;
@@ -4130,6 +4156,7 @@ placeStructure(type, ownerId, x, y) {
       committedAtStart: committed,
       casualties: 0,
       enemyCasualties: 0,
+      _attackPoolInitialized: true,
       _attackPoolReleased: false
     };
 
@@ -4929,6 +4956,7 @@ placeStructure(type, ownerId, x, y) {
       committedAtStart: committed,
       casualties: 0,
       enemyCasualties: 0,
+      _attackPoolInitialized: true,
       _attackPoolReleased: false
     };
 
@@ -5017,6 +5045,7 @@ placeStructure(type, ownerId, x, y) {
       committedAtStart: committed,
       casualties: 0,
       enemyCasualties: 0,
+      _attackPoolInitialized: true,
       _attackPoolReleased: false
     };
 
@@ -5079,6 +5108,7 @@ placeStructure(type, ownerId, x, y) {
       committedAtStart: committed,
       casualties: 0,
       enemyCasualties: 0,
+      _attackPoolInitialized: true,
       _attackPoolReleased: false
     };
 
@@ -5154,6 +5184,7 @@ placeStructure(type, ownerId, x, y) {
       const poolNow = this._initAttackPool(existing);
       existing.attackPool = Math.max(0, poolNow) + committed;
       existing.committedAtStart = Math.max(0, Number(existing.committedAtStart) || 0) + committed;
+      existing._attackPoolInitialized = true;
       existing._attackPoolReleased = false;
       existing.total = Math.max(1, (Number(existing.attackPool) || 0) + (Number(existing.casualties) || 0));
       existing.claimed = Math.max(0, Number(existing.casualties) || 0);
@@ -5184,6 +5215,7 @@ placeStructure(type, ownerId, x, y) {
       committedAtStart: committed,
       casualties: 0,
       enemyCasualties: 0,
+      _attackPoolInitialized: true,
       _attackPoolReleased: false
     };
 

@@ -164,6 +164,12 @@ console.info(`[PixelFront] Map library config: ${SUPABASE_ENABLED ? "enabled" : 
 const hud = createHUD();
 let runtimeErrorHudCooldownUntilMs = 0;
 
+function isLikelyTauriRuntime() {
+  return !!(globalThis?.__TAURI__ || globalThis?.__TAURI_INTERNALS__);
+}
+
+const DEFAULT_UNCAPPED_FRAME_PACING = isLikelyTauriRuntime();
+
 function notifyRuntimeError(prefixRaw, err) {
   const prefix = String(prefixRaw || "Client error").trim() || "Client error";
   console.error(`[Runtime] ${prefix}`, err);
@@ -213,6 +219,7 @@ const DEFAULT_CLIENT_SETTINGS = Object.freeze({
   disableAtmosphere: false,
   reduceMotion: false,
   fullscreen: false,
+  uncappedFramePacing: DEFAULT_UNCAPPED_FRAME_PACING,
   menuMusicVolume: 12,
   warMusicVolume: 9
 });
@@ -1514,8 +1521,8 @@ const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   cancelTradeRequest: Object.freeze({ cmd: "cancel_trade_request" }),
   cancelTradeDeal: Object.freeze({ cmd: "cancel_trade_deal" }),
   donate: Object.freeze({ cmd: "donate" }),
-  declareWar: Object.freeze({ cmd: "declare_war" }),
-  betrayAlliance: Object.freeze({ cmd: "betray_alliance" }),
+  declareWar: Object.freeze({ cmd: "declare_war", predictLocal: true }),
+  betrayAlliance: Object.freeze({ cmd: "betray_alliance", predictLocal: true }),
   sendWarship: Object.freeze({ cmd: "send_warship" }),
   requestCeasefire: Object.freeze({ cmd: "request_ceasefire" }),
   requestAlliance: Object.freeze({ cmd: "request_alliance" }),
@@ -2147,6 +2154,32 @@ function decodeOwnerPackedBase64(base64Raw, formatRaw = "u16") {
   return out;
 }
 
+function resetAuthoritativeOwnershipToNeutral(worldRef) {
+  if (!worldRef) return 0;
+  const ownerArr = worldRef.owner;
+  const landArr = worldRef.land;
+  if (!ownerArr || !landArr || ownerArr.length !== landArr.length) return 0;
+  let applied = 0;
+  worldRef._authoritativeSyncApplying = true;
+  if (typeof worldRef._beginOwnerBatch === "function") worldRef._beginOwnerBatch();
+  try {
+    for (let idx = 0; idx < ownerArr.length; idx++) {
+      if (!landArr[idx]) continue;
+      if ((ownerArr[idx] | 0) === (OWNER.NONE | 0)) continue;
+      if (typeof worldRef._setOwner === "function") {
+        worldRef._setOwner(idx, OWNER.NONE);
+      } else {
+        ownerArr[idx] = OWNER.NONE;
+      }
+      applied++;
+    }
+  } finally {
+    if (typeof worldRef._endOwnerBatch === "function") worldRef._endOwnerBatch();
+    worldRef._authoritativeSyncApplying = false;
+  }
+  return applied;
+}
+
 function applyOwnerChangesFromList(worldRef, changedTiles) {
   if (!worldRef || !Array.isArray(changedTiles) || changedTiles.length <= 0) return 0;
   const ownerArr = worldRef.owner;
@@ -2632,6 +2665,52 @@ function applyMultiplayerHumanPlayers(worldRef, humanPlayersRaw) {
   return namesChanged || flagsChanged;
 }
 
+function applyAuthoritativeMultiplayerMatchConfig(worldRef, meta) {
+  if (!worldRef || !meta || typeof meta !== "object") return false;
+  const incoming = (meta.matchConfig && typeof meta.matchConfig === "object") ? meta.matchConfig : null;
+  if (!incoming) return false;
+  const hasExplicitCountryClaimFlag = Object.prototype.hasOwnProperty.call(incoming, "countryClaimEnabled");
+  const countryClaimEnabled = hasExplicitCountryClaimFlag
+    ? incoming.countryClaimEnabled !== false
+    : (String(incoming.mapSource || activeMatchConfig?.mapSource || DEFAULT_MATCH_CONFIG.mapSource).toLowerCase() === MAP_SOURCE.POLITICAL_EARTH);
+
+  const nextCfg = sanitizeMatchConfig({
+    ...(activeMatchConfig && typeof activeMatchConfig === "object" ? activeMatchConfig : DEFAULT_MATCH_CONFIG),
+    ...incoming,
+    mapMode: String(incoming.mapMode || worldRef?._mapMode || activeMapMode || MAP_MODE.WORLD_MAP),
+    mapSource: String(incoming.mapSource || activeMatchConfig?.mapSource || DEFAULT_MATCH_CONFIG.mapSource),
+    gameMode: String(incoming.gameMode || activeMatchConfig?.gameMode || DEFAULT_MATCH_CONFIG.gameMode),
+    fogOfWar: String(incoming.fogOfWar || activeMatchConfig?.fogOfWar || DEFAULT_MATCH_CONFIG.fogOfWar),
+    customMapId: String(incoming.customMapId || activeMatchConfig?.customMapId || "").trim()
+  });
+  const prevCfg = sanitizeMatchConfig(activeMatchConfig || DEFAULT_MATCH_CONFIG);
+  const changed = JSON.stringify(prevCfg) !== JSON.stringify(nextCfg);
+
+  activeMatchConfig = nextCfg;
+  activeMapMode = String(nextCfg.mapMode || "").toLowerCase() === MAP_MODE.WORLD_MAP
+    ? MAP_MODE.WORLD_MAP
+    : MAP_MODE.GENERATOR;
+  worldRef._mapMode = activeMapMode;
+  worldRef._countryClaimEnabled = countryClaimEnabled;
+  worldRef._countryClaimMode = !!(
+    activeMapMode === MAP_MODE.WORLD_MAP &&
+    countryClaimEnabled &&
+    worldRef._countryTilesById &&
+    worldRef._countryTilesById.length > 1 &&
+    worldRef._earthCountryId
+  );
+  worldRef._countryClaimGuard = false;
+  worldRef._gameMode = String(nextCfg.gameMode || GAME_MODE.CLASSIC).toLowerCase() === GAME_MODE.DIVISIONS
+    ? GAME_MODE.DIVISIONS
+    : GAME_MODE.CLASSIC;
+
+  if (changed) {
+    applyClientSettings(clientSettings, { persist: false, syncHUD: false, announce: false });
+    applyMatchBuildButtonRestrictions(activeMatchConfig);
+  }
+  return changed;
+}
+
 function applyMultiplayerWorldMeta(worldRef, packet) {
   if (!worldRef) return;
   const meta = (packet?.worldMeta && typeof packet.worldMeta === "object") ? packet.worldMeta : {};
@@ -2649,6 +2728,7 @@ function applyMultiplayerWorldMeta(worldRef, packet) {
   if (Object.prototype.hasOwnProperty.call(meta, "focusOpId")) {
     worldRef.focusOpId = Math.max(0, Number(meta.focusOpId) | 0);
   }
+  applyAuthoritativeMultiplayerMatchConfig(worldRef, meta);
   worldRef._simTick = tick;
 
   if (Array.isArray(meta.humanNationIds) && Array.isArray(worldRef.nation)) {
@@ -3073,6 +3153,9 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
   let ownerApplied = 0;
 
   if (isFullSync) {
+    if (packet.ownerResetToNeutral) {
+      ownerApplied += resetAuthoritativeOwnershipToNeutral(worldRef);
+    }
     if (packet.ownerPacked) {
       ownerApplied = applyPackedOwnerSnapshot(
         worldRef,
@@ -3174,6 +3257,9 @@ function applyAuthoritativePacketToWorld(worldRef, packet, optionsRaw = null) {
   let ownerApplied = 0;
 
   if (isFullSync) {
+    if (packet.ownerResetToNeutral) {
+      ownerApplied += resetAuthoritativeOwnershipToNeutral(worldRef);
+    }
     if (packet.ownerPacked) {
       ownerApplied = applyPackedOwnerSnapshot(
         worldRef,
@@ -3991,6 +4077,7 @@ function sanitizeClientSettings(next) {
     disableAtmosphere: readBool("disableAtmosphere", DEFAULT_CLIENT_SETTINGS.disableAtmosphere),
     reduceMotion: readBool("reduceMotion", DEFAULT_CLIENT_SETTINGS.reduceMotion),
     fullscreen: readBool("fullscreen", DEFAULT_CLIENT_SETTINGS.fullscreen),
+    uncappedFramePacing: readBool("uncappedFramePacing", DEFAULT_CLIENT_SETTINGS.uncappedFramePacing),
     menuMusicVolume: Object.prototype.hasOwnProperty.call(src, "menuMusicVolume")
       ? clampPct(src.menuMusicVolume, DEFAULT_CLIENT_SETTINGS.menuMusicVolume)
       : DEFAULT_CLIENT_SETTINGS.menuMusicVolume,
@@ -4763,11 +4850,19 @@ function sanitizeMatchConfig(next) {
   const gameModeRaw = String(src.gameMode || DEFAULT_MATCH_CONFIG.gameMode).toLowerCase();
   const gameMode = gameModeRaw === GAME_MODE.DIVISIONS ? GAME_MODE.DIVISIONS : GAME_MODE.CLASSIC;
 
-  const mapMode = MAP_MODE.WORLD_MAP;
   const mapSourceRaw = String(src.mapSource ?? src.mapMode ?? DEFAULT_MATCH_CONFIG.mapSource).toLowerCase();
   const mapSource = mapSourceRaw === MAP_SOURCE.CUSTOM
     ? MAP_SOURCE.CUSTOM
     : (mapSourceRaw === MAP_SOURCE.POLITICAL_EARTH ? MAP_SOURCE.POLITICAL_EARTH : MAP_SOURCE.EARTH);
+  const mapModeRaw = String(src.mapMode || mapSourceRaw || DEFAULT_MATCH_CONFIG.mapMode).toLowerCase();
+  const mapMode = (
+    mapModeRaw === MAP_MODE.WORLD_MAP ||
+    mapModeRaw === "world_map" ||
+    mapModeRaw === "world-map" ||
+    mapSource === MAP_SOURCE.POLITICAL_EARTH ||
+    mapSource === MAP_SOURCE.EARTH ||
+    mapSource === MAP_SOURCE.CUSTOM
+  ) ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
   const customMapId = String(src.customMapId || "").trim();
   const aiCount = aiCountRaw == null
     ? null
@@ -5302,8 +5397,7 @@ function applyFullscreenPreference(enabled) {
   const root = doc?.documentElement || null;
   const inDomFullscreen = !!doc?.fullscreenElement;
 
-  const isLikelyTauri = !!(globalThis?.__TAURI__ || globalThis?.__TAURI_INTERNALS__);
-  if (isLikelyTauri) {
+  if (isLikelyTauriRuntime()) {
     import("@tauri-apps/api/window")
       .then((mod) => mod?.getCurrentWindow?.()?.setFullscreen?.(wantFullscreen))
       .catch(() => {
@@ -5322,6 +5416,84 @@ function applyFullscreenPreference(enabled) {
   if (typeof doc.exitFullscreen === "function") {
     doc.exitFullscreen().catch(() => {});
   }
+}
+
+function shouldUseUncappedFramePacing(settingsRaw) {
+  if (!isLikelyTauriRuntime()) return false;
+  if (typeof document !== "undefined" && document?.hidden) return false;
+  return !!settingsRaw?.uncappedFramePacing;
+}
+
+function createMainFrameScheduler(getUseUncappedRaw) {
+  const getUseUncapped = (typeof getUseUncappedRaw === "function")
+    ? getUseUncappedRaw
+    : () => false;
+  const perfNow = () => (
+    (typeof performance !== "undefined" && typeof performance.now === "function")
+      ? performance.now()
+      : Date.now()
+  );
+  const canUseRaf = typeof requestAnimationFrame === "function";
+  const canCancelRaf = typeof cancelAnimationFrame === "function";
+  const canUseTimeout = typeof globalThis?.setTimeout === "function";
+  const canClearTimeout = typeof globalThis?.clearTimeout === "function";
+  const channel = (typeof MessageChannel === "function") ? new MessageChannel() : null;
+  let running = false;
+  let queued = false;
+  let rafId = 0;
+  let timeoutId = 0;
+  let frameCb = null;
+
+  const flush = (timestampRaw) => {
+    queued = false;
+    rafId = 0;
+    timeoutId = 0;
+    if (!running || typeof frameCb !== "function") return;
+    const ts = Number(timestampRaw);
+    frameCb(Number.isFinite(ts) && ts > 0 ? ts : perfNow());
+  };
+
+  if (channel) {
+    channel.port1.onmessage = () => {
+      flush(perfNow());
+    };
+  }
+
+  function requestNext() {
+    if (!running || queued) return;
+    queued = true;
+    if (getUseUncapped() && channel) {
+      channel.port2.postMessage(0);
+      return;
+    }
+    if (canUseRaf) {
+      rafId = requestAnimationFrame((ts) => flush(ts));
+      return;
+    }
+    if (canUseTimeout) {
+      timeoutId = globalThis.setTimeout(() => flush(perfNow()), 16);
+      return;
+    }
+    flush(perfNow());
+  }
+
+  return {
+    start(cb) {
+      frameCb = cb;
+      running = true;
+      requestNext();
+    },
+    requestNext,
+    stop() {
+      running = false;
+      frameCb = null;
+      queued = false;
+      if (rafId && canCancelRaf) cancelAnimationFrame(rafId);
+      if (timeoutId && canClearTimeout) globalThis.clearTimeout(timeoutId);
+      rafId = 0;
+      timeoutId = 0;
+    }
+  };
 }
 
 let selectedStructureId = null;
@@ -7068,7 +7240,8 @@ function createMainMenuController(options = null) {
     politicalMapMode: document.getElementById("mmSetPoliticalMapMode"),
     disableAtmosphere: document.getElementById("mmSetDisableAtmosphere"),
     reduceMotion: document.getElementById("mmSetReduceMotion"),
-    fullscreen: document.getElementById("mmSetFullscreen")
+    fullscreen: document.getElementById("mmSetFullscreen"),
+    uncappedFramePacing: document.getElementById("mmSetUncappedFramePacing")
   };
   const menuMusicVolumeInput = document.getElementById("mmSetMenuMusicVolume");
   const warMusicVolumeInput = document.getElementById("mmSetWarMusicVolume");
@@ -11796,7 +11969,7 @@ function boot() {
     }
     hud.setOpMessage(actionResultMessage(
       res,
-      `War declared on ${world.nation[targetId]?.name || "AI " + (targetId - 1)}. Auto-front will fight continuously once borders touch.`
+      `War declared on ${world.nation[targetId]?.name || "AI " + (targetId - 1)}. You can attack immediately.`
     ));
     refreshAllUI();
   });
@@ -13951,6 +14124,7 @@ function boot() {
   const FIXED = SIM_DT_S;
   const MAX_SIM_STEPS_PER_FRAME = 4;
   const MAX_ACCUMULATED_TICKS = MAX_SIM_STEPS_PER_FRAME + 2;
+  const frameScheduler = createMainFrameScheduler(() => shouldUseUncappedFramePacing(clientSettings));
 
   let uiAcc = 0;
   let lbAcc = 0;
@@ -14284,10 +14458,10 @@ function boot() {
       debugOverlay.render(buildDebugOverlayText());
     }
 
-    requestAnimationFrame(frame);
+    frameScheduler.requestNext();
   }
 
-  requestAnimationFrame(frame);
+  frameScheduler.start(frame);
 }
 
 function createMatchProgressTracker() {
@@ -16958,6 +17132,19 @@ function getOperationActiveAttackingTroops(op) {
   return 0;
 }
 
+function getWarPairFrontlineCounts(attackerId, defenderId, contactsHint = 0) {
+  const a = attackerId | 0;
+  const b = defenderId | 0;
+  if (!world || a <= 0 || b <= 0 || a === b) return { [a]: 0, [b]: 0 };
+  if (typeof world.getWarPairFrontlineCounts === "function") {
+    return world.getWarPairFrontlineCounts(a, b, contactsHint, world.ownerVersion | 0);
+  }
+  return {
+    [a]: 0,
+    [b]: 0
+  };
+}
+
 function expansionDirectionLabel(op) {
   const center = getOperationDirectionCenter(op);
   const anchor = getPlayerAnchorCell();
@@ -16981,28 +17168,26 @@ function refreshOpUI(quick = false) {
   const dockOps = [];
   const focusId = world.focusOpId;
   let focusOp = null;
-  const enemyAttackPoolsByNation = new Map();
 
   const allOps = world.operations || [];
   for (let i = 0; i < allOps.length; i++) {
     const op = allOps[i];
     if (!op) continue;
-    const kind = String(op.kind || "");
-    const isAttackOp = kind === "war" || kind === "burstWar";
-    if (isAttackOp && (op.defender | 0) === OWNER.PLAYER && (op.attacker | 0) > 0 && (op.attacker | 0) !== OWNER.PLAYER) {
-      const enemyId = op.attacker | 0;
-      const add = Math.max(0, Number(op.attackPool) || 0);
-      if (add > 0) enemyAttackPoolsByNation.set(enemyId, (enemyAttackPoolsByNation.get(enemyId) || 0) + add);
-    }
     if ((op.attacker | 0) !== OWNER.PLAYER) continue;
     ops.push(op);
     if (focusId && (op.id | 0) === (focusId | 0)) focusOp = op;
   }
-
-  const enemyCounterattackPressure = (nationId) => {
+  const pairFrontlineCache = new Map();
+  const getPairFrontlineCountsCached = (nationId) => {
     const id = nationId | 0;
-    if (id <= 0 || id === OWNER.PLAYER) return 0;
-    return Math.max(0, Math.floor(Number(enemyAttackPoolsByNation.get(id) || 0)));
+    if (id <= 0 || id === OWNER.PLAYER) return { [OWNER.PLAYER]: 0, [id]: 0 };
+    const key = `${OWNER.PLAYER}:${id}`;
+    let counts = pairFrontlineCache.get(key) || null;
+    if (!counts) {
+      counts = getWarPairFrontlineCounts(OWNER.PLAYER, id);
+      pairFrontlineCache.set(key, counts);
+    }
+    return counts;
   };
 
   const hasPlayerOps = ops.length > 0;
@@ -17045,8 +17230,11 @@ function refreshOpUI(quick = false) {
     } else if (op.kind === "war") {
       title = "Focus Attack";
       const defName = world.nation[op.defender]?.name || `AI ${op.defender - 1}`;
+      const pairCounts = getPairFrontlineCountsCached(op.defender | 0);
       const losses = Math.max(0, Math.floor(Number(op.casualties) || 0));
-      subtitle = `${Math.round(pct * 100)}% - vs ${defName} | Active attacking infantry ${fmtCompactLocal(activeAttacking)} | Casualties ${fmtCompactLocal(losses)}`;
+      const frontlineAttacking = Math.max(0, Math.floor(Number(pairCounts?.[OWNER.PLAYER]) || activeAttacking));
+      const enemyFrontline = Math.max(0, Math.floor(Number(pairCounts?.[op.defender | 0]) || 0));
+      subtitle = `${Math.round(pct * 100)}% - vs ${defName} | Frontline infantry ${fmtCompactLocal(frontlineAttacking)} vs ${fmtCompactLocal(enemyFrontline)} | Casualties ${fmtCompactLocal(losses)}`;
       dockOps.push({
         id: op.id,
         title: `War of ${defName}`,
@@ -17055,8 +17243,8 @@ function refreshOpUI(quick = false) {
         groupTitle: `War of ${defName}`,
         defenderId: op.defender | 0,
         canReinforce: true,
-        attackingTroops: activeAttacking,
-        enemyAttackingTroops: enemyCounterattackPressure(op.defender | 0),
+        attackingTroops: frontlineAttacking,
+        enemyAttackingTroops: enemyFrontline,
         enemyCasualties: Math.max(0, Number(op.enemyCasualties) || 0),
         casualties: Math.max(0, Number(op.casualties) || 0),
         onView: (id) => viewOperationSmooth(id)
@@ -17064,8 +17252,11 @@ function refreshOpUI(quick = false) {
     } else if (op.kind === "burstWar") {
       title = "Attack";
       const defName = world.nation[op.defender]?.name || `AI ${op.defender - 1}`;
+      const pairCounts = getPairFrontlineCountsCached(op.defender | 0);
       const losses = Math.max(0, Math.floor(Number(op.casualties) || 0));
-      subtitle = `vs ${defName} | Active attacking infantry ${fmtCompactLocal(activeAttacking)} | Casualties ${fmtCompactLocal(losses)}`;
+      const frontlineAttacking = Math.max(0, Math.floor(Number(pairCounts?.[OWNER.PLAYER]) || activeAttacking));
+      const enemyFrontline = Math.max(0, Math.floor(Number(pairCounts?.[op.defender | 0]) || 0));
+      subtitle = `vs ${defName} | Frontline infantry ${fmtCompactLocal(frontlineAttacking)} vs ${fmtCompactLocal(enemyFrontline)} | Casualties ${fmtCompactLocal(losses)}`;
       dockOps.push({
         id: op.id,
         title: `War of ${defName}`,
@@ -17074,8 +17265,8 @@ function refreshOpUI(quick = false) {
         groupTitle: `War of ${defName}`,
         defenderId: op.defender | 0,
         canReinforce: true,
-        attackingTroops: activeAttacking,
-        enemyAttackingTroops: enemyCounterattackPressure(op.defender | 0),
+        attackingTroops: frontlineAttacking,
+        enemyAttackingTroops: enemyFrontline,
         enemyCasualties: Math.max(0, Number(op.enemyCasualties) || 0),
         casualties: Math.max(0, Number(op.casualties) || 0),
         onView: (id) => viewOperationSmooth(id)
@@ -18021,4 +18212,5 @@ function clampPct(value, fallback = 100) {
 }
 
 // --- END unchanged block ---
+
 

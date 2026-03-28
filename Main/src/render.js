@@ -3175,11 +3175,11 @@ export class Renderer {
       world._earthCountryBorder
     );
 
-    // Vintage atlas palette: warm parchment land + muted sea + inked borders.
+    // Vintage atlas palette: warm parchment land + slightly brighter sea + inked borders.
     const neutralLandLight = { r: 228, g: 214, b: 183 };
     const neutralLandDark = { r: 173, g: 148, b: 109 };
-    const waterShallow = { r: 108, g: 141, b: 158 };
-    const waterDeep = { r: 58, g: 88, b: 113 };
+    const waterShallow = { r: 96, g: 166, b: 196 };
+    const waterDeep = { r: 40, g: 104, b: 146 };
     const borderColor = { r: 83, g: 63, b: 40 };
 
     const writePixel = (idxRaw) => {
@@ -3199,6 +3199,10 @@ export class Renderer {
 
         const waterMacro = (hash2i(x >> 4, y >> 4, seed ^ 0x51a3bd27) & 255) / 255;
         const waterGrain = (hash2i(x, y, seed ^ 0x0f1e2d3c) & 63) / 63;
+        const waveField = noise2(seed ^ 0x6bc4a5d1, x * 0.030, y * 0.018);
+        const waveBands = noise2(seed ^ 0x2f8e91ab, x * 0.082 + y * 0.012, y * 0.040);
+        const waveTexture = (waveField - 0.5) * 11 + (waveBands - 0.5) * 7;
+        const glintMask = Math.max(0, noise2(seed ^ 0x17c9e37f, x * 0.12 - y * 0.03, y * 0.12) - 0.58);
         const waterJitter = (waterMacro - 0.5) * 14 + (waterGrain - 0.5) * 8;
 
         let wr = lerp(waterShallow.r, waterDeep.r, depthT);
@@ -3208,10 +3212,13 @@ export class Renderer {
         wr += waterJitter * 0.42;
         wg += waterJitter * 0.54;
         wb += waterJitter * 0.72;
-        // Slight parchment wash so ocean fits the antique map style.
-        wr = lerp(wr, 162, 0.10);
-        wg = lerp(wg, 168, 0.08);
-        wb = lerp(wb, 154, 0.06);
+        wr += waveTexture * 0.18 + glintMask * 18;
+        wg += waveTexture * 0.36 + glintMask * 24;
+        wb += waveTexture * 0.52 + glintMask * 30;
+        // Keep the atlas mood, but let more of the blue survive.
+        wr = lerp(wr, 156, 0.06);
+        wg = lerp(wg, 170, 0.05);
+        wb = lerp(wb, 162, 0.03);
 
         data[p + 0] = clamp(wr, 0, 255) | 0;
         data[p + 1] = clamp(wg, 0, 255) | 0;
@@ -3958,8 +3965,8 @@ export class Renderer {
     const heightArr = this.world.height || this.world.heights || null;
     const ownerArr = this.world.owner || this.world.owners || null;
 
-    const OCEAN_DEEP = rgb(6, 20, 58);
-    const OCEAN_SHALLOW = rgb(18, 74, 130);
+    const OCEAN_DEEP = rgb(8, 44, 96);
+    const OCEAN_SHALLOW = rgb(34, 122, 184);
     const BEACH = rgb(206, 196, 146);
     const GRASS = rgb(78, 142, 92);
     const FOREST = rgb(42, 104, 66);
@@ -4002,6 +4009,15 @@ export class Renderer {
         if (!isLand) {
           const d = clamp01(0.5 + (detail - 0.5) * 1.2);
           col = mixRGB(OCEAN_DEEP, OCEAN_SHALLOW, d);
+          const waveA = noise2(4242, x * 0.032, y * 0.020);
+          const waveB = noise2(7777, x * 0.090 + y * 0.014, y * 0.046);
+          const waveTint = (waveA - 0.5) * 18 + (waveB - 0.5) * 12;
+          const glint = Math.max(0, noise2(9191, x * 0.12 - y * 0.03, y * 0.12) - 0.60) * 44;
+          col = [
+            clamp(col[0] + waveTint * 0.18 + glint * 0.55, 0, 255) | 0,
+            clamp(col[1] + waveTint * 0.34 + glint * 0.75, 0, 255) | 0,
+            clamp(col[2] + waveTint * 0.50 + glint, 0, 255) | 0
+          ];
         } else {
           let height01 = detail;
           if (heightArr && heightArr.length === w * h) height01 = (heightArr[idx] | 0) / 255;
@@ -5013,6 +5029,9 @@ export class Renderer {
     const world = this.world;
     const a = aId | 0;
     const b = bId | 0;
+    if (typeof world?.getWarPairFrontlineCounts === "function") {
+      return world.getWarPairFrontlineCounts(a, b, contactsHint, world?.ownerVersion | 0);
+    }
     const nA = world?.nation?.[a];
     const nB = world?.nation?.[b];
     if (!nA || !nB) return { [a]: 0, [b]: 0 };
@@ -5020,8 +5039,6 @@ export class Renderer {
     const contacts = Math.max(1, Number(contactsHint) || 1);
     const contactCap = contacts * Math.max(1, Number(WAR_ENGAGE_TROOPS_PER_CONTACT) || 1);
     const countFor = (nationId, nation) => {
-      const canAttack = (nationId !== OWNER.PLAYER) && ((Number(nation?.infantry) || 0) >= (Number(WAR_MIN_INF_TO_ADVANCE) || 1));
-      if (!canAttack) return 0;
       const committed = Math.max(0, (Number(nation?.infantry) || 0) * getNationFrontCommit(nation));
       return Math.max(0, Math.min(committed, contactCap));
     };

@@ -1446,14 +1446,20 @@ export function installBorders(World) {
         const x = idx % this.w;
         const y = (idx / this.w) | 0;
 
-        // Subtle wave variation to avoid flat color blocks.
-        const nA = hash01((x * 67) | 0, (y * 31) | 0) - 0.5;
-        const nB = hash01((x * 19 + 37) | 0, (y * 53 + 71) | 0) - 0.5;
-        const wave = (nA * 0.65 + nB * 0.35);
-        const waveAmp = (7 + coastT * 9) * (1 - tDeep * 0.55);
-        r += wave * waveAmp * 0.32;
-        g += wave * waveAmp * 0.55;
-        bl += wave * waveAmp * 0.75;
+        // Favor crisper streaks over broad soft swells so the sea doesn't read as blurry.
+        const ripples = noise2(0x2e7b6d43, x * 0.095 + y * 0.012, y * 0.050) - 0.5;
+        const grain = noise2(0x18c46fa7, x * 0.185 - y * 0.030, y * 0.135) - 0.5;
+        const wave = ripples * 0.78 + grain * 0.22;
+        const waveAmp = (8 + coastT * 7) * (1 - tDeep * 0.36);
+        r += wave * waveAmp * 0.26;
+        g += wave * waveAmp * 0.48;
+        bl += wave * waveAmp * 0.72;
+
+        const bandNoise = noise2(0x73ad12cf, x * 0.075 - y * 0.022, y * 0.090);
+        const currentBands = Math.pow(Math.max(0, bandNoise - 0.515) / 0.485, 1.8);
+        r += currentBands * 8;
+        g += currentBands * 13;
+        bl += currentBands * 18;
 
         // Coast tint: keep some shoreline lift but avoid warm geometric rings.
         if (coastT > 0) {
@@ -1512,6 +1518,15 @@ export function installBorders(World) {
         r = lerp(r, 18, deepCool);
         g = lerp(g, 52, deepCool);
         bl = lerp(bl, 88, deepCool);
+
+        // Occasional light-catching highlights out on the open sea.
+        const glint = Math.pow(
+          Math.max(0, noise2(0x6af28411, x * 0.150 - y * 0.026, y * 0.145) - 0.64) / 0.36,
+          2.2
+        ) * (1 - coastT * 0.45);
+        r += glint * 12;
+        g += glint * 16;
+        bl += glint * 20;
 
         // Apply shading (water keeps softer contrast than land).
         const shW = 0.73 + 0.27 * sh;

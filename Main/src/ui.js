@@ -43,6 +43,7 @@ export function createHUD() {
   const setDisableAtmosphere = must("setDisableAtmosphere");
   const setReduceMotion = must("setReduceMotion");
   const setFullscreen = must("setFullscreen");
+  const setUncappedFramePacing = must("setUncappedFramePacing");
   const setMenuMusicVolume = must("setMenuMusicVolume");
   const setWarMusicVolume = must("setWarMusicVolume");
   const setMenuMusicVolumeValue = must("setMenuMusicVolumeValue");
@@ -220,6 +221,119 @@ export function createHUD() {
   const ctxMakePeace = must("ctxMakePeace");
   const ctxRequestAlly = must("ctxRequestAlly");
   const ctxHint = must("ctxHint");
+  const ctxBtns = ctxMenu.querySelector(".ctxBtns");
+  const ctxCenter = document.createElement("button");
+  ctxCenter.type = "button";
+  ctxCenter.className = "ctxCenter";
+  ctxCenter.setAttribute("aria-label", "Close action wheel");
+  ctxCenter.title = "Close";
+  const ctxCenterKicker = document.createElement("div");
+  ctxCenterKicker.className = "ctxCenterKicker";
+  ctxCenterKicker.textContent = "Command";
+  ctxCenter.appendChild(ctxCenterKicker);
+  ctxCenter.appendChild(ctxTitle);
+  ctxCenter.appendChild(ctxHint);
+  if (ctxBtns) ctxMenu.insertBefore(ctxCenter, ctxBtns);
+  else ctxMenu.appendChild(ctxCenter);
+  const ctxActionDefs = [
+    { key: "attack", button: ctxAttack, label: null },
+    { key: "expand", button: ctxExpand, label: null },
+    { key: "sendWarship", button: ctxSendWarship, label: null },
+    { key: "intel", button: ctxIntel, label: null },
+    { key: "trade", button: ctxTrade, label: null },
+    { key: "declareWar", button: ctxDeclareWar, label: null },
+    { key: "betray", button: ctxBetray, label: null },
+    { key: "makePeace", button: ctxMakePeace, label: null },
+    { key: "requestAlly", button: ctxRequestAlly, label: null }
+  ];
+  for (const def of ctxActionDefs) {
+    const btn = def.button;
+    const label = document.createElement("span");
+    label.className = "ctxActionLabel";
+    label.textContent = String(btn.textContent || "").trim();
+    btn.textContent = "";
+    btn.appendChild(label);
+    def.label = label;
+    btn.classList.add("ctxActionBtn");
+    btn.dataset.action = def.key;
+  }
+  const ctxActionByKey = new Map(ctxActionDefs.map((def) => [def.key, def]));
+  const CTX_WHEEL_SIZE_PX = 268;
+  const CTX_CENTER_SIZE_PX = 96;
+  const setCtxActionLabel = (key, text) => {
+    const def = ctxActionByKey.get(String(key || ""));
+    if (!def?.label) return;
+    def.label.textContent = String(text || "").trim();
+  };
+  const toCtxPercentPoint = (angleDeg, radiusPx, wheelSize) => {
+    const radians = angleDeg * Math.PI / 180;
+    const center = wheelSize * 0.5;
+    const x = center + Math.cos(radians) * radiusPx;
+    const y = center + Math.sin(radians) * radiusPx;
+    return `${((x / wheelSize) * 100).toFixed(2)}% ${((y / wheelSize) * 100).toFixed(2)}%`;
+  };
+  const buildCtxSectorClipPath = (startDeg, endDeg, innerRadius, outerRadius, wheelSize) => {
+    let start = Number(startDeg) || 0;
+    let end = Number(endDeg) || 0;
+    if (end <= start) end += 360;
+    const span = Math.max(6, end - start);
+    const outerSteps = Math.max(4, Math.ceil(span / 18));
+    const innerSteps = Math.max(4, Math.ceil(span / 18));
+    const points = [];
+    for (let i = 0; i <= outerSteps; i++) {
+      const angle = start + (span * (i / outerSteps));
+      points.push(toCtxPercentPoint(angle, outerRadius, wheelSize));
+    }
+    for (let i = innerSteps; i >= 0; i--) {
+      const angle = start + (span * (i / innerSteps));
+      points.push(toCtxPercentPoint(angle, innerRadius, wheelSize));
+    }
+    return `polygon(${points.join(", ")})`;
+  };
+  const layoutCtxWheel = () => {
+    const visible = ctxActionDefs.filter(({ button }) => !button.hidden);
+    const count = visible.length;
+    const wheelSize = CTX_WHEEL_SIZE_PX;
+    const outerRadius = (wheelSize * 0.5) - 5;
+    const centerSize = CTX_CENTER_SIZE_PX;
+    const innerRadius = (centerSize * 0.5) + 10;
+    const labelRadius = innerRadius + ((outerRadius - innerRadius) * 0.42);
+    const gapDeg = count >= 7 ? 2.2 : 3.2;
+    const step = count > 0 ? (360 / count) : 360;
+    ctxMenu.dataset.actionCount = String(count);
+    ctxCenterKicker.textContent = count <= 1 ? "Action" : "Orders";
+    for (let visibleIndex = 0; visibleIndex < visible.length; visibleIndex++) {
+      const def = visible[visibleIndex];
+      const btn = def.button;
+      const centerAngle = -90 + (step * visibleIndex);
+      const startAngle = centerAngle - (step * 0.5) + (gapDeg * 0.5);
+      const endAngle = centerAngle + (step * 0.5) - (gapDeg * 0.5);
+      const radians = centerAngle * Math.PI / 180;
+      const labelX = Math.cos(radians) * labelRadius;
+      const labelY = Math.sin(radians) * labelRadius;
+      const spanRadians = Math.max(0.35, (Math.max(8, step - gapDeg) * Math.PI / 180));
+      const labelWidth = Math.max(42, Math.min(74, (2 * labelRadius * Math.sin(spanRadians * 0.5)) - 12));
+      btn.style.clipPath = count === 1
+        ? "circle(50% at 50% 50%)"
+        : buildCtxSectorClipPath(startAngle, endAngle, innerRadius, outerRadius, wheelSize);
+      btn.style.setProperty("--ctx-label-x", `${labelX.toFixed(1)}px`);
+      btn.style.setProperty("--ctx-label-y", `${labelY.toFixed(1)}px`);
+      btn.style.setProperty("--ctx-label-w", `${labelWidth.toFixed(1)}px`);
+      btn.style.zIndex = String(10 + visibleIndex);
+    }
+    for (const def of ctxActionDefs) {
+      const btn = def.button;
+      if (!btn.hidden) continue;
+      btn.style.removeProperty("clip-path");
+      btn.style.removeProperty("--ctx-label-x");
+      btn.style.removeProperty("--ctx-label-y");
+      btn.style.removeProperty("--ctx-label-w");
+      btn.style.removeProperty("z-index");
+    }
+  };
+  ctxCenter.onclick = () => { hideCtx(); };
+  ctxMenu.addEventListener("contextmenu", (e) => e.preventDefault());
+  hud.addEventListener("contextmenu", (e) => e.preventDefault());
 
   // Intel panels (multi, draggable, resizable)
   const intelPanels = new Map();
@@ -395,6 +509,7 @@ export function createHUD() {
     disableAtmosphere: false,
     reduceMotion: false,
     fullscreen: false,
+    uncappedFramePacing: false,
     menuMusicVolume: 12,
     warMusicVolume: 9
   };
@@ -514,6 +629,9 @@ export function createHUD() {
       fullscreen: Object.prototype.hasOwnProperty.call(src, "fullscreen")
         ? Boolean(src.fullscreen)
         : defaultSettings.fullscreen,
+      uncappedFramePacing: Object.prototype.hasOwnProperty.call(src, "uncappedFramePacing")
+        ? Boolean(src.uncappedFramePacing)
+        : defaultSettings.uncappedFramePacing,
       menuMusicVolume: Object.prototype.hasOwnProperty.call(src, "menuMusicVolume")
         ? clampInt(src.menuMusicVolume, 0, 100)
         : defaultSettings.menuMusicVolume,
@@ -536,6 +654,7 @@ export function createHUD() {
     setDisableAtmosphere.checked = settingsState.disableAtmosphere;
     setReduceMotion.checked = settingsState.reduceMotion;
     setFullscreen.checked = settingsState.fullscreen;
+    setUncappedFramePacing.checked = settingsState.uncappedFramePacing;
     setMenuMusicVolume.value = String(settingsState.menuMusicVolume);
     setWarMusicVolume.value = String(settingsState.warMusicVolume);
     setMenuMusicVolumeValue.textContent = `${settingsState.menuMusicVolume}%`;
@@ -559,6 +678,7 @@ export function createHUD() {
       disableAtmosphere: setDisableAtmosphere.checked,
       reduceMotion: setReduceMotion.checked,
       fullscreen: setFullscreen.checked,
+      uncappedFramePacing: setUncappedFramePacing.checked,
       menuMusicVolume: Number(setMenuMusicVolume.value),
       warMusicVolume: Number(setWarMusicVolume.value)
     });
@@ -1095,7 +1215,8 @@ export function createHUD() {
     setPoliticalMapMode,
     setDisableAtmosphere,
     setReduceMotion,
-    setFullscreen
+    setFullscreen,
+    setUncappedFramePacing
   ];
   const settingsRangeInputs = [
     setMenuMusicVolume,
@@ -1121,6 +1242,7 @@ export function createHUD() {
   function hideCtx() {
     ctxMenu.hidden = true;
     ctxMenu.classList.remove("isOpen");
+    ctxMenu.removeAttribute("data-action-count");
   }
 
   function getIntelSizeBounds() {
@@ -1628,34 +1750,39 @@ export function createHUD() {
     onMakePeace,
     onRequestAlly
   }) {
-    ctxTitle.textContent = String(titleText || "");
-    ctxHint.textContent = String(hintText || "");
+    const resolvedTitle = String(titleText || "Actions");
+    const resolvedHint = String(hintText || "").trim();
+    ctxTitle.textContent = resolvedTitle;
+    ctxHint.textContent = resolvedHint;
+    ctxHint.hidden = resolvedHint.length <= 0;
+    ctxCenter.setAttribute("aria-label", resolvedTitle ? `Close action wheel for ${resolvedTitle}` : "Close action wheel");
 
     ctxExpand.hidden = !showExpand;
-    ctxExpand.textContent = String(expandLabel || "Expand");
+    setCtxActionLabel("expand", String(expandLabel || "Expand"));
 
     ctxAttack.hidden = !showAttack;
-    ctxAttack.textContent = String(attackLabel || "Attack");
+    setCtxActionLabel("attack", String(attackLabel || "Attack"));
     ctxAttack.disabled = (showAttack && attackEnabled === false);
 
     ctxIntel.hidden = !showIntel;
-    ctxIntel.textContent = String(intelLabel || "Intel");
+    setCtxActionLabel("intel", String(intelLabel || "Intel"));
 
     ctxTrade.hidden = !showTrade;
-    ctxTrade.textContent = String(tradeLabel || "Trade");
+    setCtxActionLabel("trade", String(tradeLabel || "Trade"));
     ctxTrade.disabled = (showTrade && tradeEnabled === false);
 
     ctxSendWarship.hidden = !showSendWarship;
-    ctxSendWarship.textContent = String(sendWarshipLabel || "Send Warship");
+    setCtxActionLabel("sendWarship", String(sendWarshipLabel || "Send Warship"));
     ctxSendWarship.disabled = (showSendWarship && sendWarshipEnabled === false);
 
     ctxDeclareWar.hidden = !showDeclareWar;
     ctxBetray.hidden = !showBetray;
-    ctxBetray.textContent = "Betray";
+    setCtxActionLabel("declareWar", "Declare War");
+    setCtxActionLabel("betray", "Betray");
     ctxMakePeace.hidden = !showMakePeace;
-    ctxMakePeace.textContent = "Ceasefire";
+    setCtxActionLabel("makePeace", "Ceasefire");
     ctxRequestAlly.hidden = !showRequestAlly;
-    ctxRequestAlly.textContent = String(requestLabel || "Ally");
+    setCtxActionLabel("requestAlly", String(requestLabel || "Ally"));
 
     ctxExpand.onclick = () => { hideCtx(); onExpand && onExpand(); };
     ctxAttack.onclick = () => { hideCtx(); if (!ctxAttack.disabled) onAttack && onAttack(); };
@@ -1666,6 +1793,11 @@ export function createHUD() {
     ctxBetray.onclick = () => { hideCtx(); onBetray && onBetray(); };
     ctxMakePeace.onclick = () => { hideCtx(); onMakePeace && onMakePeace(); };
     ctxRequestAlly.onclick = () => { hideCtx(); onRequestAlly && onRequestAlly(); };
+    for (const { button, label } of ctxActionDefs) {
+      const labelText = String(label?.textContent || "").trim();
+      button.title = labelText;
+      button.setAttribute("aria-label", labelText);
+    }
 
     const pad = 8;
     const vw = window.innerWidth;
@@ -1673,10 +1805,11 @@ export function createHUD() {
 
     ctxMenu.hidden = false;
     ctxMenu.classList.add("isOpen");
+    layoutCtxWheel();
     const r2 = ctxMenu.getBoundingClientRect();
 
-    let left = x;
-    let top = y;
+    let left = x - (r2.width * 0.5);
+    let top = y - (r2.height * 0.5);
 
     if (left + r2.width + pad > vw) left = vw - r2.width - pad;
     if (top + r2.height + pad > vh) top = vh - r2.height - pad;
@@ -1955,7 +2088,7 @@ export function createHUD() {
             rowA.className = "dockOpRow";
             const aLabel = document.createElement("div");
             aLabel.className = "dockOpLabel";
-            aLabel.textContent = "Active Attacking Infantry";
+            aLabel.textContent = "Your Active Frontline Infantry";
             const aVal = document.createElement("div");
             aVal.className = "dockOpValue isAttack";
             aVal.textContent = fmtCompact(troops);
@@ -1969,7 +2102,7 @@ export function createHUD() {
               rowE.className = "dockOpRow";
               const eLabel = document.createElement("div");
               eLabel.className = "dockOpLabel";
-              eLabel.textContent = "Enemy Active Attack Infantry";
+              eLabel.textContent = "Enemy Active Frontline Infantry";
               const eVal = document.createElement("div");
               eVal.className = "dockOpValue isEnemyAttack";
               eVal.textContent = fmtCompact(enemyTroops);

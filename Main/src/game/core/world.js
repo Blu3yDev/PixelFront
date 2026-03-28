@@ -4978,6 +4978,16 @@ placeStructure(type, ownerId, x, y) {
     for (const idx of target) {
       if (this._touchesOwner4(idx, A)) frontier.add(idx);
     }
+
+    let sumX = 0, sumY = 0, countXY = 0;
+    for (const idx0 of target) {
+      const idx = idx0 | 0;
+      sumX += (idx % this.w);
+      sumY += ((idx / this.w) | 0);
+      countXY++;
+    }
+    const centroid = countXY > 0 ? { x: sumX / countXY, y: sumY / countXY } : null;
+
     if (frontier.size === 0) {
       const can = this.canStartOverseasWar(A, D, Array.from(target));
       if (!can.ok) return { ok: false, reason: can.reason || "Attack selection must touch your frontline border." };
@@ -5001,6 +5011,7 @@ placeStructure(type, ownerId, x, y) {
       claimed: 0,
       target,
       frontier,
+      centroid,
       carry: 0,
       frontierQ: null,
       attackPool: committed,
@@ -5106,8 +5117,41 @@ placeStructure(type, ownerId, x, y) {
     const committed = this._commitAttackPool(A);
     if (committed <= 0) return { ok: false, reason: "No attacking troops could be committed." };
 
+    let centroid = null;
+    if (typeof this._collectFrontlineCandidates === "function") {
+      const picks = this._collectFrontlineCandidates(A, D, 96, 2600);
+      if (Array.isArray(picks) && picks.length > 0) {
+        let sumX = 0;
+        let sumY = 0;
+        let count = 0;
+        for (let i = 0; i < picks.length; i++) {
+          const idx = picks[i] | 0;
+          if (idx < 0) continue;
+          sumX += (idx % this.w) + 0.5;
+          sumY += ((idx / this.w) | 0) + 0.5;
+          count++;
+        }
+        if (count > 0) centroid = { x: sumX / count, y: sumY / count };
+      }
+    }
+    if (!centroid && typeof this.getNationLabelPos === "function") {
+      const aPos = this.getNationLabelPos(A);
+      const dPos = this.getNationLabelPos(D);
+      if (
+        aPos && dPos &&
+        Number.isFinite(Number(aPos.x)) && Number.isFinite(Number(aPos.y)) &&
+        Number.isFinite(Number(dPos.x)) && Number.isFinite(Number(dPos.y))
+      ) {
+        centroid = {
+          x: (Number(aPos.x) + Number(dPos.x)) * 0.5,
+          y: (Number(aPos.y) + Number(dPos.y)) * 0.5
+        };
+      }
+    }
+
     const existing = this._findBurstWarOperation(A, D);
     if (existing) {
+      if (!existing.centroid && centroid) existing.centroid = centroid;
       const poolNow = this._initAttackPool(existing);
       existing.attackPool = Math.max(0, poolNow) + committed;
       existing.committedAtStart = Math.max(0, Number(existing.committedAtStart) || 0) + committed;
@@ -5136,6 +5180,7 @@ placeStructure(type, ownerId, x, y) {
       claimed: 0,
       carry: 0,
       tilesCaptured: 0,
+      centroid,
       attackPool: committed,
       committedAtStart: committed,
       casualties: 0,

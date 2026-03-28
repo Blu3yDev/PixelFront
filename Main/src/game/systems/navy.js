@@ -624,14 +624,16 @@ export function installNavy(World) {
         arr.push(s);
       }
 
-      // ---- Minimal defensive AI warship dispatch (stability first) ----
-      // If an AI is at war and sees enemy ships in its ocean near its ports, it may launch a single warship.
-      // Water connectivity is static after world generation, so do not recompute it per-AI.
+      // ---- AI warship dispatch ----
+      // Use warships for local sea denial first, but also raid reachable enemy coastal rigs
+      // so naval wars pressure strategic coastline instead of idling defensively forever.
       for (let id = 2; id <= this._nationCount; id++) {
         const n = this.nation[id];
         if (!n || !n.alive) continue;
         if ((this._portCount[id] | 0) <= 0) continue;
-        if ((this._warShipCount[id] | 0) >= 1) continue; // defensive baseline only
+        const aggression = Math.max(0, Math.min(1, Number(this._ai?.[id]?.persona?.aggression ?? 0.2)));
+        const warshipSoftCap = (((this._portCount[id] | 0) >= 3) && aggression >= 0.22) ? 2 : 1;
+        if ((this._warShipCount[id] | 0) >= warshipSoftCap) continue;
 
         // Check if in any war; if none, skip.
         if (!this._anyWar(id)) continue;
@@ -639,15 +641,39 @@ export function installNavy(World) {
         const ports = this._portsByOwner[id] || [];
         if (!ports.length) continue;
 
-        // Find the nearest visible enemy ship to any port; if close enough, dispatch.
         let best = null;
-        let bestD = 99999;
+        let bestScore = -9e9;
         for (let p = 0; p < ports.length; p++) {
           const st = ports[p];
           const spawn = this._navyPickAdjacentWater(st.x | 0, st.y | 0);
           if (!spawn) continue;
           const compId = this._navyWaterCompAt(spawn.x | 0, spawn.y | 0) | 0;
           if (!compId) continue;
+
+          const rigTargets = rigsByComp.get(compId) || [];
+          for (let j = 0; j < rigTargets.length; j++) {
+            const rig = rigTargets[j];
+            if (!rig) continue;
+            const targetOwner = rig.owner | 0;
+            if (targetOwner <= 0 || targetOwner === id) continue;
+
+            const pAO = this._pair(id, targetOwner);
+            const alliedAO = (this._alliedUntil[pAO] || 0) > now;
+            const ceasefireAO = (this._ceasefireUntil[pAO] || 0) > now;
+            const hostileAO = !alliedAO && (this._atWar[pAO] === 1) && !ceasefireAO;
+            if (!hostileAO) continue;
+
+            const d = Math.abs((rig.x | 0) - (spawn.x | 0)) + Math.abs((rig.y | 0) - (spawn.y | 0));
+            if (d > 52) continue;
+
+            let score = 30 - (d * 0.42);
+            if (targetOwner === OWNER.PLAYER) score += 1.2;
+            if (score > bestScore) {
+              bestScore = score;
+              best = { compId, tx: (rig.x | 0), ty: (rig.y | 0) };
+            }
+          }
+
           const inComp = shipsByCompForAi.get(compId) || [];
           for (let j = 0; j < inComp.length; j++) {
             const s = inComp[j];
@@ -656,11 +682,23 @@ export function installNavy(World) {
             if (s.kind !== "trade" && s.kind !== "transport" && s.kind !== "war") continue;
 
             const d = Math.abs((s.cx | 0) - (spawn.x | 0)) + Math.abs((s.cy | 0) - (spawn.y | 0));
-            if (d < bestD) { bestD = d; best = { compId, spawn, tx: (s.cx | 0), ty: (s.cy | 0) }; }
+            if (d > 26) continue;
+
+            let baseScore = 0;
+            if (s.kind === "transport") baseScore = 26;
+            else if (s.kind === "war") baseScore = 22;
+            else baseScore = 14;
+
+            let score = baseScore - (d * 0.62);
+            if ((s.owner | 0) === OWNER.PLAYER) score += 0.8;
+            if (score > bestScore) {
+              bestScore = score;
+              best = { compId, tx: (s.cx | 0), ty: (s.cy | 0) };
+            }
           }
         }
 
-        if (best && bestD <= 16) {
+        if (best && bestScore >= 7) {
           const route = this._navyPickNearestPortSpawnTo(id, best.compId | 0, best.tx | 0, best.ty | 0);
           if (route) {
             this._navySpawnWarship(id, route.spawn, { x: best.tx | 0, y: best.ty | 0 }, best.compId | 0);

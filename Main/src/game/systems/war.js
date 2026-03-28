@@ -43,6 +43,9 @@ import {
   WAR_PASSIVE_PLAYER_DEFENCE_MUL,
   WAR_PASSIVE_PLAYER_FLIP_DAMP,
   WAR_POWER_SATURATION,
+  STABILITY_LAND_PENALTY_K,
+  STABILITY_LAND_PENALTY_MAX,
+  STABILITY_LAND_SAFE_TILES,
   WAR_STABILITY_BASE_WAR_PENALTY,
   WAR_SUPERIORITY_EXP,
   WAR_SUPERIORITY_MUL_MAX,
@@ -360,13 +363,13 @@ function encirclementScoreFromStats(stats) {
   const { atk4, def4, open4, other4 } = stats;
 
   let score = 0;
-  if (atk4 >= 2) score += (atk4 - 1) * 0.24;
-  if (atk4 === 4) score += 0.08;
-  if (def4 <= 1) score += 0.22;
-  if (open4 === 0) score += 0.18;
-  if (open4 <= 1 && atk4 >= 3) score += 0.06;
-  if (other4 === 0 && open4 === 0 && atk4 >= 3) score += 0.12;
-  score -= def4 * 0.06;
+  if (atk4 >= 2) score += (atk4 - 1) * 0.30;
+  if (atk4 === 4) score += 0.14;
+  if (def4 <= 1) score += 0.30;
+  if (open4 === 0) score += 0.24;
+  if (open4 <= 1 && atk4 >= 3) score += 0.10;
+  if (other4 === 0 && open4 === 0 && atk4 >= 3) score += 0.18;
+  score -= def4 * 0.05;
 
   return clamp01(score);
 }
@@ -1760,16 +1763,16 @@ export function installWar(World) {
       else if (def4 <= 1 && def8 <= 3 && atk8 >= 3 && neutral8 <= 2 && other8 <= 1) pocket = 0.35;
     }
 
-    const baseWeakness = clamp01(Math.max(pocket, encScore * 0.95));
+    const baseWeakness = clamp01(Math.max(pocket, encScore * 1.10));
     const support = attackSupportScoreFromStats(stats);
     // Thin/deep salients are easier to repel even with large attack stacks.
     const thinPenalty = clamp01((0.62 - support) / 0.45);
-    return clamp01(baseWeakness * (1 - 0.80 * thinPenalty));
+    return clamp01(baseWeakness * (1 - 0.72 * thinPenalty));
   };
 
   World.prototype._captureEffortForWeakness = function(weakness) {
     const w = clamp01(weakness);
-    return 1 - 0.68 * w;
+    return 1 - 0.76 * w;
   };
 
   // Capital siege gate:
@@ -1830,12 +1833,12 @@ export function installWar(World) {
         let weakness = bestWeakness;
         if (!(weakness >= 0)) weakness = this._enemyTileWeakness(attacker, defender, idx);
         const support = this._attackSupportScore(attacker, defender, idx);
-        const baseWeakness = Math.max(weakness, overrun * (annexMode ? 0.84 : 0.76));
+        const baseWeakness = Math.max(weakness, overrun * (annexMode ? 0.88 : 0.80));
         const effectiveWeakness = clamp01(baseWeakness * (0.18 + 0.82 * support));
         const defInf = Math.max(0, Number(this.nation?.[defender]?.infantry) || 0);
         const collapseBypass = (overrun >= 0.90) && (defInf <= WAR_MIN_INF_TO_ADVANCE * 0.28);
         const defenceWeakBonus =
-          ((0.30 * effectiveWeakness) + ((annexMode ? 0.50 : 0.40) * overrun)) * (0.30 + 0.70 * support);
+          ((0.34 * effectiveWeakness) + ((annexMode ? 0.58 : 0.46) * overrun)) * (0.30 + 0.70 * support);
         if (!collapseBypass && this._defenceBlocksCapture(defender, idx, defenceWeakBonus)) continue;
 
         if (typeof this._markTilePressureAround === "function") {
@@ -1844,7 +1847,7 @@ export function installWar(World) {
         this._setOwner(idx, attacker);
         got++;
         weaknessSum += effectiveWeakness;
-        if (effectiveWeakness >= 0.62) encircled++;
+        if (effectiveWeakness >= 0.55) encircled++;
         const effortMul = annexMode
           ? Math.max(0.40, 1 - 0.38 * overrun)
           : Math.max(0.40, 1 - 0.30 * overrun);
@@ -1973,9 +1976,9 @@ export function installWar(World) {
           ? encircledFromFrac
           : ((Math.max(0, Number(m.encircled) || 0)) / captured)
       );
-      const encPressure = clamp01((encircledFrac * 0.62) + (avgWeakness * 0.38));
-      const atkMul = Math.max(0.72, 1 - encPressure * 0.24);
-      const defMul = Math.min(1.42, 1 + encPressure * 0.34);
+      const encPressure = clamp01((encircledFrac * 0.78) + (avgWeakness * 0.46));
+      const atkMul = Math.max(0.66, 1 - encPressure * 0.34);
+      const defMul = Math.min(1.72, 1 + encPressure * 0.60);
       aPer *= atkMul;
       dPer *= defMul;
     }
@@ -2190,14 +2193,17 @@ export function installWar(World) {
     const n = this.nation[id];
     const land = Math.max(1, this.landOwnedCount[id] | 0);
     const cities = Math.max(0, this._cityCount[id] | 0);
-    const citySupport = Math.min(1, cities / Math.max(1, 2 + (land / 520)));
+    const citySupport = Math.min(1, cities / Math.max(1, 2 + (land / 560)));
     const mobilization = clamp01(Number(n?.mobilization ?? 0.45));
     const exRaw = this._warExhaustion ? this._warExhaustion[id] : (n?.warExhaustion ?? 0);
     const exhaustion = clamp01(Number(exRaw) || 0);
+    const landOver = Math.max(0, land - Math.max(0, Number(STABILITY_LAND_SAFE_TILES) || 0));
+    const landPenalty = Math.max(0, Number(STABILITY_LAND_PENALTY_MAX) || 0)
+      * (1 - Math.exp(-landOver * Math.max(0, Number(STABILITY_LAND_PENALTY_K) || 0)));
     const exhaustionPenalty = Math.max(0, Number(WAR_EXHAUSTION_STABILITY_MAX_PENALTY) || 0.10) * Math.pow(exhaustion, 1.15);
     const activeWarPenalty = this._anyWar(id) ? Math.max(0, Number(WAR_STABILITY_BASE_WAR_PENALTY) || 0.02) : 0.0;
     const warPenalty = activeWarPenalty + exhaustionPenalty;
-    const s = 0.64 + 0.30 * citySupport - 0.16 * mobilization - warPenalty;
+    const s = 0.62 + 0.26 * citySupport - 0.18 * mobilization - warPenalty - landPenalty;
     return Math.max(WAR_MIN_STABILITY, Math.min(1.0, s));
   };
 

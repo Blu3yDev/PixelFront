@@ -31,6 +31,12 @@ const MATCH_STATE_HASH_EVERY_TICKS_MAX = Math.max(
 const MATCH_TILE_DELTA_CAP = Math.max(1000, Number(process.env.MATCH_TILE_DELTA_CAP || 7000));
 const MATCH_TILE_DELTA_DRAIN_MIN = Math.max(500, Number(process.env.MATCH_TILE_DELTA_DRAIN_MIN || 700));
 const MATCH_TILE_DELTA_BACKLOG_CAP = Math.max(MATCH_TILE_DELTA_CAP, Number(process.env.MATCH_TILE_DELTA_BACKLOG_CAP || 180000));
+const MATCH_TERRITORY_PULSE_INTERVAL_MS = Math.max(14, Number(process.env.MATCH_TERRITORY_PULSE_INTERVAL_MS || 24));
+const MATCH_TERRITORY_PULSE_INTERVAL_MAX_MS = Math.max(
+  MATCH_TERRITORY_PULSE_INTERVAL_MS,
+  Number(process.env.MATCH_TERRITORY_PULSE_INTERVAL_MAX_MS || 84)
+);
+const MATCH_TERRITORY_PULSE_CAP = Math.max(200, Number(process.env.MATCH_TERRITORY_PULSE_CAP || 2200));
 const MATCH_OWNER_SWEEP_CHUNK_MIN = Math.max(300, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MIN || 700));
 const MATCH_OWNER_SWEEP_CHUNK_MAX = Math.max(MATCH_OWNER_SWEEP_CHUNK_MIN, Number(process.env.MATCH_OWNER_SWEEP_CHUNK_MAX || 2600));
 const MATCH_ENTITY_DELTA_INTERVAL_MS = Math.max(34, Number(process.env.MATCH_ENTITY_DELTA_INTERVAL_MS || 56));
@@ -443,13 +449,11 @@ function candidateMainSrcDirs() {
   ]);
 
   const preferred = [...envMainSrc];
-  const fallback = [];
   for (let i = 0; i < roots.length; i++) {
     const root = roots[i];
     preferred.push(path.join(root, "Main", "src"));
-    fallback.push(path.join(root, "src"));
   }
-  return uniquePaths([...preferred, ...fallback]);
+  return uniquePaths(preferred);
 }
 
 function resolveRuntimeModulePaths() {
@@ -772,15 +776,18 @@ function applyRuntimeMatchStartModifiers(worldRef, matchConfigRaw) {
   const playerTroopMul = profile.playerStart * Math.max(1, Number(cfg.playerTroopsBoost) || 1);
   worldRef._aiWarGraceS = Math.max(0, Number(profile.aiWarGraceS) || 0);
 
-  const player = worldRef.nation[OWNER_PLAYER];
-  if (player) {
-    scaleNationResources(player, playerGoldMul, playerTroopMul);
-    applyDifficultyToNationCombat(player, 1, 0);
-  }
-
-  for (let id = 2; id < worldRef.nation.length; id++) {
+  const humanNationIds = (worldRef._humanNationIds instanceof Set && worldRef._humanNationIds.size > 0)
+    ? worldRef._humanNationIds
+    : null;
+  for (let id = 1; id < worldRef.nation.length; id++) {
     const nation = worldRef.nation[id];
     if (!nation) continue;
+    const isHuman = humanNationIds ? humanNationIds.has(id) : id === OWNER_PLAYER;
+    if (isHuman) {
+      scaleNationResources(nation, playerGoldMul, playerTroopMul);
+      applyDifficultyToNationCombat(nation, 1, 0);
+      continue;
+    }
     scaleNationResources(nation, profile.aiStart, profile.aiStart);
     applyDifficultyToNationCombat(nation, profile.aiAttackMul, profile.aiMobShift);
   }
@@ -1072,6 +1079,13 @@ function ensureRuntimeNetStats(runtime) {
     runtime.netStats = createRuntimeNetStats();
   }
   return runtime.netStats;
+}
+
+function nextRuntimePacketSeq(runtime) {
+  if (!runtime || typeof runtime !== "object") return 1;
+  const next = Math.max(1, Number(runtime.nextPacketSeq) | 0);
+  runtime.nextPacketSeq = (next + 1) | 0;
+  return next;
 }
 
 function socketBufferedAmount(ws) {
@@ -1901,9 +1915,6 @@ function enforceHumanNationRuntimeState(runtime) {
 
 function applyRuntimeAssignmentsToWorld(lobby, runtime, { emitJoinEvents = false, log = false } = {}) {
   if (!runtime?.world || !runtime.assignmentsBySession) return;
-  const playerBaseline = (runtime.world.nation && runtime.world.nation[OWNER_PLAYER] && typeof runtime.world.nation[OWNER_PLAYER] === "object")
-    ? cloneWire(runtime.world.nation[OWNER_PLAYER])
-    : null;
   const humanNationIds = new Set();
   const assignmentLog = [];
   for (const a of runtime.assignmentsBySession.values()) {
@@ -1914,16 +1925,8 @@ function applyRuntimeAssignmentsToWorld(lobby, runtime, { emitJoinEvents = false
       : null;
     const nation = runtime.world.nation?.[nid];
     if (nation && typeof nation === "object") {
-      if (nid !== OWNER_PLAYER && playerBaseline && typeof playerBaseline === "object") {
-        // Keep all human players on the same baseline as the solo player ruleset.
-        nation.gold = Number(playerBaseline.gold) || nation.gold || 0;
-        nation.population = Number(playerBaseline.population) || nation.population || 0;
-        nation.infantry = Number(playerBaseline.infantry) || nation.infantry || 0;
-        nation.attackRatio = Number(playerBaseline.attackRatio) || nation.attackRatio || 0.2;
-        nation.aggression = Number(playerBaseline.aggression) || Number(playerBaseline.attackCommit) || nation.aggression || 0;
-        nation.attackCommit = Number(playerBaseline.attackCommit) || Number(playerBaseline.aggression) || nation.attackCommit || 0;
-        nation.mobilization = Number(playerBaseline.mobilization) || nation.mobilization || 0.35;
-      }
+      // Preserve each assigned nation's own baseline so human players keep distinct
+      // starting states instead of being overwritten by the solo player nation.
       nation.name = sanitizeName(player?.name || nation.name || `Player ${nid}`);
       if (player?.flag && typeof player.flag === "object") {
         nation.flag = cloneWire(player.flag) || nation.flag || null;
@@ -2072,20 +2075,22 @@ async function ensureLobbyRuntime(lobby) {
       backpressuredSockets: 0,
       mediumBackpressuredSockets: 0,
       playerLoadScale: 1,
+      nextPacketSeq: 1,
       netStats: createRuntimeNetStats(),
       eventHistory: [],
       tileDeltaBacklog: new Map(),
       ownerDeltaOverflowed: false,
       ownerSweepActive: false,
       ownerSweepCursor: 0,
+      lastTerritoryPulseAtMs: 0,
       assignmentsBySession: new Map(),
       nationToSession: new Map()
     };
     lobby.runtime = runtime;
     installRuntimeEventMirror(world, runtime);
+    ensureRuntimeAssignments(lobby, runtime);
     applyRuntimeMatchStartModifiers(world, lobby.matchConfig);
     applyRuntimeMatchWorldRestrictions(world, lobby.matchConfig);
-    ensureRuntimeAssignments(lobby, runtime);
     return runtime;
   })();
 
@@ -2201,8 +2206,38 @@ function serializeSpawnPhase(raw, world = null) {
   return out;
 }
 
+function serializeHumanPlayers(lobby, runtime) {
+  if (!runtime?.assignmentsBySession || typeof runtime.assignmentsBySession.values !== "function") return [];
+  const out = [];
+  for (const assignment of runtime.assignmentsBySession.values()) {
+    const nationId = Math.max(1, Number(assignment?.nationId) | 0);
+    const player = Array.isArray(lobby?.players)
+      ? (lobby.players.find((row) => String(row?.sessionId || "") === String(assignment?.sessionId || "")) || null)
+      : null;
+    const nation = runtime?.world?.nation?.[nationId];
+    out.push({
+      nationId,
+      playerId: String(assignment?.playerId || player?.playerId || assignment?.sessionId || "").trim(),
+      sessionId: String(assignment?.sessionId || "").trim(),
+      isHost: String(player?.sessionId || "") === String(lobby?.hostSessionId || ""),
+      name: sanitizeName(player?.name || nation?.name || `Player ${nationId}`),
+      flag: cloneWire(player?.flag || nation?.flag) || null
+    });
+  }
+  out.sort((a, b) => (Number(a?.nationId) | 0) - (Number(b?.nationId) | 0));
+  return out;
+}
+
 function serializeWorldMeta(lobby, runtime) {
   const world = runtime.world;
+  const humanNationIds = [];
+  if (runtime?.assignmentsBySession && typeof runtime.assignmentsBySession.values === "function") {
+    for (const assignment of runtime.assignmentsBySession.values()) {
+      const nationId = Math.max(1, Number(assignment?.nationId) | 0);
+      if (nationId > 0) humanNationIds.push(nationId);
+    }
+  }
+  humanNationIds.sort((a, b) => a - b);
   return {
     time: Number(world.time) || 0,
     startedAt: Number(lobby.startedAt) || 0,
@@ -2210,6 +2245,8 @@ function serializeWorldMeta(lobby, runtime) {
     gameOver: cloneWire(world.gameOver) || null,
     matchOutcome: cloneWire(world.matchOutcome) || null,
     focusOpId: Number(world.focusOpId) | 0,
+    humanNationIds,
+    humanPlayers: serializeHumanPlayers(lobby, runtime),
     spawnPhase: serializeSpawnPhase(world._spawnPhase, world)
   };
 }
@@ -2449,6 +2486,22 @@ function drainRuntimeTileDeltaBacklog(runtime, maxItemsRaw) {
   return changedTiles;
 }
 
+function restoreChangedTilesToBacklog(runtime, changedTilesRaw) {
+  const rows = Array.isArray(changedTilesRaw) ? changedTilesRaw : [];
+  if (rows.length <= 0) return 0;
+  const backlog = ensureTileDeltaBacklog(runtime);
+  let restored = 0;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i];
+    const idx = Math.max(0, Number(Array.isArray(row) ? row[0] : row?.idx) | 0);
+    const owner = Math.max(0, Number(Array.isArray(row) ? row[1] : row?.owner) | 0);
+    backlog.set(idx, owner);
+    restored++;
+  }
+  trimTileDeltaBacklog(backlog, runtime);
+  return restored;
+}
+
 function appendOwnerSweepChunk(world, runtime, changedTiles, maxAdditionalRaw) {
   if (!runtime?.ownerSweepActive) return changedTiles;
   const ownerArr = world?.owner;
@@ -2483,7 +2536,8 @@ function appendOwnerSweepChunk(world, runtime, changedTiles, maxAdditionalRaw) {
   return changedTiles;
 }
 
-function serializeEntitiesDelta(world, runtime, forceFull = false) {
+function serializeEntitiesDelta(world, runtime, forceFull = false, optionsRaw = null) {
+  const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : {};
   const now = nowMs();
   const dynamicEntityIntervalMs = Math.max(
     MATCH_ENTITY_DELTA_INTERVAL_MS,
@@ -2504,19 +2558,51 @@ function serializeEntitiesDelta(world, runtime, forceFull = false) {
     MATCH_MOBILE_DELTA_INTERVAL_MS,
     Number(runtime?.mobileDeltaIntervalMs) || dynamicEntityIntervalMs
   );
+  const tileBacklogSize = Math.max(0, Number(options?.tileBacklogSize) | 0);
+  const avgSnapshotBytes = Math.max(0, Number(options?.avgSnapshotBytes) | 0);
+  const territoryPriority = !!options?.territoryPriority;
+  const loadShedding = !!options?.loadShedding;
+  const backpressuredSockets = Math.max(0, Number(options?.backpressuredSockets) | 0);
+  const mediumBackpressuredSockets = Math.max(0, Number(options?.mediumBackpressuredSockets) | 0);
+  const forceStructures = !!options?.forceStructures;
+  const forceOperations = !!options?.forceOperations;
+  const forceMobile = !!options?.forceMobile;
+  const prioritizeTerritory = !forceFull && (
+    territoryPriority ||
+    tileBacklogSize > MATCH_TILE_DELTA_CAP ||
+    avgSnapshotBytes >= MATCH_SNAPSHOT_TARGET_BYTES ||
+    backpressuredSockets > 0 ||
+    mediumBackpressuredSockets > 0 ||
+    loadShedding
+  );
+  const severeTerritoryPressure = prioritizeTerritory && (
+    tileBacklogSize > (MATCH_TILE_DELTA_CAP * 2) ||
+    avgSnapshotBytes >= Math.round(MATCH_SNAPSHOT_TARGET_BYTES * 1.18) ||
+    backpressuredSockets > 0
+  );
 
   const out = {};
   let included = false;
 
-  const includeStructures = forceFull || ((now - (Number(runtime?.lastStructuresSnapshotAtMs) || 0)) >= structureIntervalMs);
-  if (includeStructures) {
+  const includeStructures = forceStructures || forceFull || ((now - (Number(runtime?.lastStructuresSnapshotAtMs) || 0)) >= structureIntervalMs);
+  const structuresOverdueMs = now - (Number(runtime?.lastStructuresSnapshotAtMs) || 0);
+  const allowStructures = forceStructures || !prioritizeTerritory || structuresOverdueMs >= Math.max(
+    structureIntervalMs * (severeTerritoryPressure ? 3.8 : 2.6),
+    900
+  );
+  if (includeStructures && allowStructures) {
     out.structures = cloneWire(Array.isArray(world?.structures) ? world.structures : []) || [];
     if (runtime && typeof runtime === "object") runtime.lastStructuresSnapshotAtMs = now;
     included = true;
   }
 
-  const includeOperations = forceFull || ((now - (Number(runtime?.lastOperationsSnapshotAtMs) || 0)) >= operationsIntervalMs);
-  if (includeOperations) {
+  const includeOperations = forceOperations || forceFull || ((now - (Number(runtime?.lastOperationsSnapshotAtMs) || 0)) >= operationsIntervalMs);
+  const operationsOverdueMs = now - (Number(runtime?.lastOperationsSnapshotAtMs) || 0);
+  const allowOperations = forceOperations || !prioritizeTerritory || operationsOverdueMs >= Math.max(
+    operationsIntervalMs * (severeTerritoryPressure ? 2.9 : 2.1),
+    280
+  );
+  if (includeOperations && allowOperations) {
     out.operations = cloneWire(Array.isArray(world?.operations) ? world.operations : []) || [];
     out.tradeDeals = cloneWire(Array.isArray(world?.tradeDeals) ? world.tradeDeals : []) || [];
     out.tradeRequests = cloneWire(Array.isArray(world?.tradeRequests) ? world.tradeRequests : []) || [];
@@ -2524,8 +2610,13 @@ function serializeEntitiesDelta(world, runtime, forceFull = false) {
     included = true;
   }
 
-  const includeMobile = forceFull || ((now - (Number(runtime?.lastMobileSnapshotAtMs) || 0)) >= mobileIntervalMs);
-  if (includeMobile) {
+  const includeMobile = forceMobile || forceFull || ((now - (Number(runtime?.lastMobileSnapshotAtMs) || 0)) >= mobileIntervalMs);
+  const mobileOverdueMs = now - (Number(runtime?.lastMobileSnapshotAtMs) || 0);
+  const allowMobile = forceMobile || !prioritizeTerritory || mobileOverdueMs >= Math.max(
+    mobileIntervalMs * (severeTerritoryPressure ? 2.3 : 1.7),
+    220
+  );
+  if (includeMobile && allowMobile) {
     out.ships = cloneWire(Array.isArray(world?.ships) ? world.ships : []) || [];
     out.nukeFlights = cloneWire(Array.isArray(world?.nukeFlights) ? world.nukeFlights : []) || [];
     out.airborneMissions = cloneWire(Array.isArray(world?.airborneMissions) ? world.airborneMissions : []) || [];
@@ -2533,15 +2624,17 @@ function serializeEntitiesDelta(world, runtime, forceFull = false) {
     included = true;
   }
 
-  if (!included && !forceFull) {
+  if (!included && !forceFull && !forceStructures && !forceOperations && !forceMobile) {
     const lastAt = Number(runtime?.lastEntitySnapshotAtMs) || 0;
     if ((now - lastAt) < dynamicEntityIntervalMs) return undefined;
-    // Safety valve: send operations cadence if the world is quiet for too long.
-    out.operations = cloneWire(Array.isArray(world?.operations) ? world.operations : []) || [];
-    out.tradeDeals = cloneWire(Array.isArray(world?.tradeDeals) ? world.tradeDeals : []) || [];
-    out.tradeRequests = cloneWire(Array.isArray(world?.tradeRequests) ? world.tradeRequests : []) || [];
-    if (runtime && typeof runtime === "object") runtime.lastOperationsSnapshotAtMs = now;
-    included = true;
+    if (!prioritizeTerritory) {
+      // Safety valve: send operations cadence if the world is quiet for too long.
+      out.operations = cloneWire(Array.isArray(world?.operations) ? world.operations : []) || [];
+      out.tradeDeals = cloneWire(Array.isArray(world?.tradeDeals) ? world.tradeDeals : []) || [];
+      out.tradeRequests = cloneWire(Array.isArray(world?.tradeRequests) ? world.tradeRequests : []) || [];
+      if (runtime && typeof runtime === "object") runtime.lastOperationsSnapshotAtMs = now;
+      included = true;
+    }
   }
 
   if (!included) return undefined;
@@ -2748,6 +2841,20 @@ function remapSnapshotForSession(packetRaw, assignedNationIdRaw) {
   if (packet.worldMeta && typeof packet.worldMeta === "object") {
     remapDeepNationKeys(packet.worldMeta.gameOver, assigned, REMAP_ID_KEYS);
     remapDeepNationKeys(packet.worldMeta.matchOutcome, assigned, REMAP_ID_KEYS);
+    if (Array.isArray(packet.worldMeta.humanNationIds)) {
+      for (let i = 0; i < packet.worldMeta.humanNationIds.length; i++) {
+        packet.worldMeta.humanNationIds[i] = mapCanonicalToLocalNationId(Number(packet.worldMeta.humanNationIds[i]) | 0, assigned);
+      }
+      packet.worldMeta.humanNationIds.sort((a, b) => (a | 0) - (b | 0));
+    }
+    if (Array.isArray(packet.worldMeta.humanPlayers)) {
+      for (let i = 0; i < packet.worldMeta.humanPlayers.length; i++) {
+        const row = packet.worldMeta.humanPlayers[i];
+        if (!row || typeof row !== "object") continue;
+        row.nationId = mapCanonicalToLocalNationId(Number(row.nationId) | 0, assigned);
+      }
+      packet.worldMeta.humanPlayers.sort((a, b) => (Number(a?.nationId) | 0) - (Number(b?.nationId) | 0));
+    }
     const spawnPhase = packet.worldMeta.spawnPhase;
     if (spawnPhase && typeof spawnPhase === "object") {
       if (Array.isArray(spawnPhase.pickedIds)) {
@@ -2913,7 +3020,19 @@ function computeStateHashForWorld(world, tickRaw, assignedNationIdRaw) {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
+function buildSnapshotPacket(
+  lobby,
+  runtime,
+  {
+    fullSync = false,
+    forceStats = false,
+    forceRelations = false,
+    forceEvents = false,
+    forceStructures = false,
+    forceOperations = false,
+    forceMobile = false
+  } = {}
+) {
   const world = runtime.world;
   const now = nowMs();
   const spawnActive = !!(world?._spawnPhase && world._spawnPhase.active);
@@ -2958,17 +3077,18 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
   const eventsTargetMs = territoryPriority
     ? Math.round(eventsIntervalMs * Math.max(2.6, territoryMetaScale * 1.10))
     : (loadShedding ? Math.round(eventsIntervalMs * 2.1) : eventsIntervalMs);
-  const includeStats = fullSync || (
+  const includeStats = fullSync || forceStats || (
     statsDueMs >= statsTargetMs
   );
-  const includeRelations = fullSync || (!spawnActive && (
+  const includeRelations = fullSync || forceRelations || (!spawnActive && (
     relationsDueMs >= relationsTargetMs
   ));
-  const includeEvents = fullSync || (!spawnActive && (
+  const includeEvents = fullSync || forceEvents || (!spawnActive && (
     eventsDueMs >= eventsTargetMs
   ));
   const packet = {
     type: fullSync ? "full_sync" : "snapshot_delta",
+    packetSeq: nextRuntimePacketSeq(runtime),
     serverTime: now,
     code: lobby.code,
     tick: runtime.simTick | 0,
@@ -2976,7 +3096,17 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
     _loadShedding: loadShedding,
     _territoryPriority: territoryPriority,
     worldMeta: serializeWorldMeta(lobby, runtime),
-    changedEntities: serializeEntitiesDelta(world, runtime, fullSync),
+    changedEntities: serializeEntitiesDelta(world, runtime, fullSync, {
+      loadShedding,
+      territoryPriority,
+      tileBacklogSize,
+      avgSnapshotBytes: Math.max(0, Number(ensureRuntimeNetStats(runtime)?.avgSnapshotBytes) | 0),
+      backpressuredSockets: Number(runtime?.backpressuredSockets) | 0,
+      mediumBackpressuredSockets: Number(runtime?.mediumBackpressuredSockets) | 0,
+      forceStructures,
+      forceOperations,
+      forceMobile
+    }),
     nationStats: includeStats ? serializeNationStats(world) : undefined,
     leaderboard: includeStats ? serializeLeaderboard(world) : undefined,
     relations: includeRelations ? serializeRelations(world) : undefined
@@ -3071,6 +3201,43 @@ function buildSnapshotPacket(lobby, runtime, { fullSync = false } = {}) {
   }
 
   return packet;
+}
+
+function buildTerritoryPulsePacket(lobby, runtime) {
+  const world = runtime?.world;
+  if (!world) return null;
+  const consumeResult = consumeChangedTiles(world, runtime);
+  runtime.ownerDeltaOverflowed = !!consumeResult.overflow;
+  if ((consumeResult.trimmed | 0) > 0) activateOwnerSweep(runtime, "territory_pulse_trimmed");
+  if (consumeResult.overflow) activateOwnerSweep(runtime, "territory_pulse_overflow");
+
+  let tileCap = Math.min(MATCH_TILE_DELTA_CAP, MATCH_TERRITORY_PULSE_CAP);
+  const avgSnapshotBytes = Math.max(0, Number(ensureRuntimeNetStats(runtime)?.avgSnapshotBytes) | 0);
+  if ((Number(runtime?.backpressuredSockets) | 0) > 0) {
+    tileCap = Math.round(tileCap * 0.72);
+  } else if ((Number(runtime?.mediumBackpressuredSockets) | 0) > 0) {
+    tileCap = Math.round(tileCap * 0.84);
+  }
+  if (avgSnapshotBytes >= MATCH_SNAPSHOT_TARGET_BYTES_HARD) {
+    tileCap = Math.round(tileCap * 0.72);
+  }
+  tileCap = Math.max(180, Math.min(Math.max(180, MATCH_TILE_DELTA_DRAIN_MIN), tileCap));
+
+  const changedTiles = drainRuntimeTileDeltaBacklog(runtime, tileCap);
+  if (runtime.ownerSweepActive && changedTiles.length < tileCap) {
+    appendOwnerSweepChunk(world, runtime, changedTiles, Math.max(0, tileCap - changedTiles.length));
+  }
+  if (changedTiles.length <= 0) return null;
+
+  return {
+    type: "territory_delta",
+    packetSeq: nextRuntimePacketSeq(runtime),
+    serverTime: nowMs(),
+    code: lobby?.code,
+    tick: runtime.simTick | 0,
+    ownerVersion: Number(world.ownerVersion) | 0,
+    changedTiles
+  };
 }
 
 function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual") {
@@ -3169,8 +3336,17 @@ function resolveRuntimeStateHashEveryTicks(runtime) {
   );
 }
 
-function broadcastSnapshotDelta(lobby, runtime) {
-  const base = buildSnapshotPacket(lobby, runtime, { fullSync: false });
+function broadcastSnapshotDelta(lobby, runtime, optionsRaw = null) {
+  const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : null;
+  const base = buildSnapshotPacket(lobby, runtime, {
+    fullSync: false,
+    forceStats: !!options?.forceStats,
+    forceRelations: !!options?.forceRelations,
+    forceEvents: !!options?.forceEvents,
+    forceStructures: !!options?.forceStructures,
+    forceOperations: !!options?.forceOperations,
+    forceMobile: !!options?.forceMobile
+  });
   if (base._ownerOverflow) {
     const worldTiles = Math.max(0, Number(runtime?.world?.owner?.length) | 0);
     const safeTiles = Math.max(120000, Number(MATCH_FULL_SYNC_OWNER_PACKED_SAFE_TILES) | 0);
@@ -3230,6 +3406,24 @@ function broadcastSnapshotDelta(lobby, runtime) {
   }
   if (anyBackpressured) activateOwnerSweep(runtime, "backpressure_snapshot_drop");
   runtime.backpressuredSockets = backpressured;
+}
+
+function broadcastTerritoryPulse(lobby, runtime) {
+  const base = buildTerritoryPulsePacket(lobby, runtime);
+  if (!base) return false;
+
+  let sentAny = false;
+  for (const [sessionId, ws] of lobby.sockets.entries()) {
+    const assignment = runtime.assignmentsBySession.get(sessionId);
+    if (!assignment) continue;
+    const mapped = remapSnapshotForSession(base, assignment.nationId);
+    mapped.type = "territory_delta";
+    const wirePayload = maybePackChangedTilesForWire(mapped, { aggressive: true });
+    const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, wirePayload);
+    if (sent.sent) sentAny = true;
+  }
+  if (!sentAny) restoreChangedTilesToBacklog(runtime, base.changedTiles);
+  return sentAny;
 }
 
 function pickSpawnViaFailsafe(world, nationId) {
@@ -3434,6 +3628,17 @@ function flushRuntimeTick(lobby, runtime, now) {
         : MATCH_SNAPSHOT_INTERVAL_MIN_MS;
   snapshotIntervalMs = Math.max(playerMinSnapshotIntervalMs, Math.min(MATCH_SNAPSHOT_INTERVAL_MAX_MS, snapshotIntervalMs));
 
+  let territoryPulseIntervalMs = MATCH_TERRITORY_PULSE_INTERVAL_MS;
+  if (loadScale > 1) territoryPulseIntervalMs = Math.round(territoryPulseIntervalMs * (1 + ((loadScale - 1) * 0.22)));
+  if (playerLoadScale > 1) territoryPulseIntervalMs = Math.round(territoryPulseIntervalMs * (1 + ((playerLoadScale - 1) * 0.12)));
+  if (runtime.simAccMs > (stepMs * 1.25)) territoryPulseIntervalMs = Math.round(territoryPulseIntervalMs * 1.08);
+  if ((runtime.backpressuredSockets | 0) > 0) territoryPulseIntervalMs = Math.round(territoryPulseIntervalMs * 1.20);
+  else if ((runtime.mediumBackpressuredSockets | 0) > 0) territoryPulseIntervalMs = Math.round(territoryPulseIntervalMs * 1.10);
+  territoryPulseIntervalMs = Math.max(
+    MATCH_TERRITORY_PULSE_INTERVAL_MS,
+    Math.min(MATCH_TERRITORY_PULSE_INTERVAL_MAX_MS, territoryPulseIntervalMs)
+  );
+
   let entityDeltaIntervalMs = MATCH_ENTITY_DELTA_INTERVAL_MS;
   if (loadScale > 1) entityDeltaIntervalMs = Math.round(entityDeltaIntervalMs * (1 + ((loadScale - 1) * 0.55)));
   if (playerLoadScale > 1) entityDeltaIntervalMs = Math.round(entityDeltaIntervalMs * (1 + ((playerLoadScale - 1) * 0.28)));
@@ -3484,8 +3689,19 @@ function flushRuntimeTick(lobby, runtime, now) {
     && (runtime.mediumBackpressuredSockets | 0) <= 0
     && runtime.simAccMs <= (stepMs * 1.1)
     && (now - lastSnapshotAtMs) >= accelIntervalMs;
+  const tileBacklogSize = Math.max(0, Number(runtime?.tileDeltaBacklog?.size) | 0);
+  const territoryPulseDue = tileBacklogSize > 0
+    && !due
+    && !forceDue
+    && !acceleratedDue
+    && (now - (Number(runtime.lastTerritoryPulseAtMs) || 0)) >= territoryPulseIntervalMs
+    && (now - lastSnapshotAtMs) < Math.max(10, Math.round(snapshotIntervalMs * 0.9));
+  if (territoryPulseDue && broadcastTerritoryPulse(lobby, runtime)) {
+    runtime.lastTerritoryPulseAtMs = now;
+  }
   if (due || forceDue || acceleratedDue) {
     runtime.lastSnapshotAtMs = now;
+    runtime.lastTerritoryPulseAtMs = now;
     broadcastSnapshotDelta(lobby, runtime);
   }
 
@@ -3610,6 +3826,116 @@ function shouldPushPostCommandFullSync(cmdRaw) {
   );
 }
 
+function shouldForceImmediatePostCommandSnapshot(cmdRaw) {
+  const cmd = String(cmdRaw || "").trim().toLowerCase();
+  if (!cmd) return false;
+  if (cmd === "set_attack_ratio" || cmd === "set_mobilization") return false;
+  return true;
+}
+
+function createCommandSnapshotPolicy() {
+  return {
+    forceStats: false,
+    forceRelations: false,
+    forceEvents: false,
+    forceStructures: false,
+    forceOperations: false,
+    forceMobile: false
+  };
+}
+
+function hasForcedCommandSnapshotPolicy(policyRaw) {
+  const policy = (policyRaw && typeof policyRaw === "object") ? policyRaw : null;
+  if (!policy) return false;
+  return !!(
+    policy.forceStats ||
+    policy.forceRelations ||
+    policy.forceEvents ||
+    policy.forceStructures ||
+    policy.forceOperations ||
+    policy.forceMobile
+  );
+}
+
+function resolveCommandSnapshotPolicy(cmdRaw) {
+  const cmd = String(cmdRaw || "").trim().toLowerCase();
+  const policy = createCommandSnapshotPolicy();
+  if (!cmd || cmd === "set_attack_ratio" || cmd === "set_mobilization" || cmd === "pick_spawn" || cmd === "regenerate_match") {
+    return policy;
+  }
+
+  policy.forceEvents = true;
+
+  if (
+    cmd === "start_neutral" ||
+    cmd === "start_war_focus" ||
+    cmd === "start_burst_expand" ||
+    cmd === "start_burst_attack" ||
+    cmd === "cancel_all_operations" ||
+    cmd === "cancel_operation" ||
+    cmd === "place_structure" ||
+    cmd === "start_missile_silo_build" ||
+    cmd === "start_airbase_transport_build" ||
+    cmd === "launch_missile_warhead" ||
+    cmd === "launch_airbase_transport" ||
+    cmd === "send_warship" ||
+    cmd === "start_port_trade" ||
+    cmd === "start_research" ||
+    cmd === "donate" ||
+    cmd === "cancel_ship"
+  ) {
+    policy.forceStats = true;
+  }
+
+  if (
+    cmd === "declare_war" ||
+    cmd === "betray_alliance" ||
+    cmd === "request_ceasefire" ||
+    cmd === "request_alliance" ||
+    cmd === "respond_ceasefire_request" ||
+    cmd === "respond_alliance_request"
+  ) {
+    policy.forceRelations = true;
+  }
+
+  if (
+    cmd === "start_neutral" ||
+    cmd === "start_war_focus" ||
+    cmd === "start_burst_expand" ||
+    cmd === "start_burst_attack" ||
+    cmd === "cancel_all_operations" ||
+    cmd === "cancel_operation" ||
+    cmd === "create_trade_deal" ||
+    cmd === "request_trade_deal" ||
+    cmd === "respond_trade_request" ||
+    cmd === "cancel_trade_request" ||
+    cmd === "cancel_trade_deal" ||
+    cmd === "start_port_trade"
+  ) {
+    policy.forceOperations = true;
+  }
+
+  if (
+    cmd === "place_structure" ||
+    cmd === "start_missile_silo_build" ||
+    cmd === "start_airbase_transport_build"
+  ) {
+    policy.forceStructures = true;
+  }
+
+  if (
+    cmd === "send_warship" ||
+    cmd === "cancel_ship" ||
+    cmd === "start_port_trade" ||
+    cmd === "launch_missile_warhead" ||
+    cmd === "launch_airbase_transport"
+  ) {
+    policy.forceMobile = true;
+  }
+
+  return policy;
+}
+
 function applyAuthoritativeCommand(world, cmdRaw, argsRaw) {
   if (!world) return { ok: false, reason: "World unavailable." };
   const cmd = String(cmdRaw || "").trim();
@@ -3716,9 +4042,9 @@ function applyPostRegenerateRuntimeState(lobby, runtime, argsRaw) {
   }
   runtime.ownerSweepCursor = 0;
   runtime.ownerSweepActive = false;
+  applyRuntimeAssignmentsToWorld(lobby, runtime);
   applyRuntimeMatchStartModifiers(runtime.world, lobby.matchConfig);
   applyRuntimeMatchWorldRestrictions(runtime.world, lobby.matchConfig);
-  applyRuntimeAssignmentsToWorld(lobby, runtime);
   activateOwnerSweep(runtime, "regenerate_match");
   touchLobby(lobby);
   broadcastLobby(lobby, "lobby_update");
@@ -3820,6 +4146,8 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
   // Push an authoritative delta immediately after accepted input to reduce visible input latency.
   try {
     const cmd = String(input.cmd || "").trim().toLowerCase();
+    const snapshotPolicy = resolveCommandSnapshotPolicy(cmd);
+    const mustEchoCommandState = hasForcedCommandSnapshotPolicy(snapshotPolicy);
     const allowActorFastSync = (
       shouldPushPostCommandFullSync(cmd) &&
       ws &&
@@ -3835,7 +4163,24 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
         sendFullSyncToSession(lobby, runtime, sessionId, ws, `post_cmd_${cmd}`);
       }
       runtime.lastSnapshotAtMs = nowMs();
-      broadcastSnapshotDelta(lobby, runtime);
+      broadcastSnapshotDelta(lobby, runtime, snapshotPolicy);
+      return;
+    }
+
+    const now = nowMs();
+    const immediatePostCmdMinMs = Math.max(18, Math.round(MATCH_SNAPSHOT_INTERVAL_MIN_MS * 0.55));
+    const sinceImmediatePostCmdMs = now - (Number(runtime.lastImmediatePostCommandSnapshotAtMs) || 0);
+    const shouldForceImmediateSnapshot = (
+      shouldForceImmediatePostCommandSnapshot(cmd) &&
+      ws &&
+      ws.readyState === WebSocket.OPEN &&
+      socketBufferedAmount(ws) <= MATCH_BACKPRESSURE_RECOVERY_SYNC_BUFFER_BYTES &&
+      sinceImmediatePostCmdMs >= immediatePostCmdMinMs
+    );
+    if (shouldForceImmediateSnapshot) {
+      runtime.lastImmediatePostCommandSnapshotAtMs = now;
+      runtime.lastSnapshotAtMs = now;
+      broadcastSnapshotDelta(lobby, runtime, snapshotPolicy);
       return;
     }
 
@@ -3849,9 +4194,9 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
     if (allowActorFastSync && !heavyWorld) {
       sendFullSyncToSession(lobby, runtime, sessionId, ws, `post_cmd_${cmd}`);
     }
-    if (!heavyWorld && backlogMs <= (stepMs * 1.5)) {
+    if (mustEchoCommandState || (!heavyWorld && backlogMs <= (stepMs * 1.5))) {
       runtime.lastSnapshotAtMs = nowMs();
-      broadcastSnapshotDelta(lobby, runtime);
+      broadcastSnapshotDelta(lobby, runtime, snapshotPolicy);
     }
   } catch {
     // Keep command success path resilient; periodic snapshots continue.
@@ -4296,12 +4641,7 @@ const server = createServer(async (req, res) => {
 
 const wss = new WebSocketServer({
   noServer: true,
-  perMessageDeflate: {
-    threshold: 1024,
-    clientNoContextTakeover: true,
-    serverNoContextTakeover: true,
-    concurrencyLimit: 6
-  }
+  perMessageDeflate: false
 });
 console.log(`[multiplayer-server] build=${SERVER_BUILD_ID} instance=${SERVER_INSTANCE_ID}`);
 

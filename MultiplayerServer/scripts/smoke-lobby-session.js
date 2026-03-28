@@ -16,6 +16,30 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
 
+function findNationStatsRow(packet, nationIdRaw) {
+  const nationId = Math.max(1, Number(nationIdRaw) | 0);
+  const rows = Array.isArray(packet?.nationStats) ? packet.nationStats : [];
+  return rows.find((row) => (Number(row?.id) | 0) === nationId) || null;
+}
+
+function findHumanPlayerRow(packet, nameRaw) {
+  const target = String(nameRaw || "").trim();
+  const rows = Array.isArray(packet?.worldMeta?.humanPlayers) ? packet.worldMeta.humanPlayers : [];
+  return rows.find((row) => String(row?.name || "").trim() === target) || null;
+}
+
+function nationStateFingerprint(row) {
+  if (!row || typeof row !== "object") return "";
+  return JSON.stringify({
+    name: String(row.name || "").trim(),
+    gold: Math.max(0, Math.floor(Number(row.gold) || 0)),
+    population: Math.max(0, Math.floor(Number(row.population) || 0)),
+    infantry: Math.max(0, Math.floor(Number(row.infantry) || 0)),
+    attackRatio: Math.round((Number(row.attackRatio) || 0) * 1000),
+    mobilization: Math.round((Number(row.mobilization) || 0) * 1000)
+  });
+}
+
 function requestJson(method, route, body = null) {
   return new Promise((resolve, reject) => {
     const payload = body == null ? null : Buffer.from(JSON.stringify(body));
@@ -204,7 +228,9 @@ async function main() {
       code,
       playerName: "Guest"
     });
-    if (!String(joined?.data?.sessionToken || "").trim()) {
+    const guestSessionId = String(joined?.data?.sessionId || "");
+    const guestSessionToken = String(joined?.data?.sessionToken || "").trim();
+    if (!guestSessionToken) {
       throw new Error("Join response is missing sessionToken.");
     }
 
@@ -212,10 +238,18 @@ async function main() {
       `${WS_BASE_URL}/ws?code=${encodeURIComponent(code)}&sessionToken=${encodeURIComponent(sessionToken)}`
     );
     const hostTracker = createWsTracker(hostWs);
+    const guestWs = new WebSocket(
+      `${WS_BASE_URL}/ws?code=${encodeURIComponent(code)}&sessionToken=${encodeURIComponent(guestSessionToken)}`
+    );
+    const guestTracker = createWsTracker(guestWs);
 
     const hello = await hostTracker.next((msg) => msg?.type === "hello");
     if (String(hello?.viewer?.sessionId || "") !== sessionId) {
       throw new Error("Websocket token auth did not bind to the original host session.");
+    }
+    const guestHello = await guestTracker.next((msg) => msg?.type === "hello");
+    if (String(guestHello?.viewer?.sessionId || "") !== guestSessionId) {
+      throw new Error("Guest websocket token auth did not bind to the joined guest session.");
     }
 
     hostWs.send(JSON.stringify({ type: "ping", clientTime: Date.now() }));
@@ -242,12 +276,71 @@ async function main() {
     }
 
     await hostTracker.next((msg) => !!msg?.lobby?.started);
+    await guestTracker.next((msg) => !!msg?.lobby?.started);
     const fullSync = await hostTracker.next((msg) => msg?.type === "full_sync", 15000);
     if (!fullSync || String(fullSync?.code || "") !== code) {
       throw new Error("Started match did not deliver a valid authoritative full_sync packet.");
     }
+    const guestFullSync = await guestTracker.next((msg) => msg?.type === "full_sync", 15000);
+    if (!guestFullSync || String(guestFullSync?.code || "") !== code) {
+      throw new Error("Guest did not receive a valid authoritative full_sync packet.");
+    }
     if (!Array.isArray(fullSync?.events) || !Array.isArray(fullSync?.globalEvents)) {
       throw new Error("Started match full_sync is missing split event feeds.");
+    }
+    if (!Array.isArray(fullSync?.worldMeta?.humanNationIds) || fullSync.worldMeta.humanNationIds.length < 2) {
+      throw new Error("Started match full_sync is missing authoritative human nation metadata.");
+    }
+    if (!Array.isArray(fullSync?.worldMeta?.humanPlayers) || fullSync.worldMeta.humanPlayers.length < 2) {
+      throw new Error("Started match full_sync is missing authoritative human player registry metadata.");
+    }
+    if ((Number(fullSync?.packetSeq) | 0) <= 0) {
+      throw new Error("Started match full_sync is missing packet sequencing metadata.");
+    }
+    const hostHumanNationIds = Array.isArray(fullSync?.worldMeta?.humanNationIds)
+      ? fullSync.worldMeta.humanNationIds.map((id) => Number(id) | 0).sort((a, b) => a - b)
+      : [];
+    const guestHumanNationIds = Array.isArray(guestFullSync?.worldMeta?.humanNationIds)
+      ? guestFullSync.worldMeta.humanNationIds.map((id) => Number(id) | 0).sort((a, b) => a - b)
+      : [];
+    if (hostHumanNationIds.join(",") !== "1,2") {
+      throw new Error("Host full_sync did not expose both human nations with local ids 1 and 2.");
+    }
+    if (guestHumanNationIds.join(",") !== "1,2") {
+      throw new Error("Guest full_sync did not expose both human nations with local ids 1 and 2.");
+    }
+
+    const hostHumanSelf = findHumanPlayerRow(fullSync, "Host");
+    const hostHumanGuest = findHumanPlayerRow(fullSync, "Guest");
+    const guestHumanSelf = findHumanPlayerRow(guestFullSync, "Guest");
+    const guestHumanHost = findHumanPlayerRow(guestFullSync, "Host");
+    if ((Number(hostHumanSelf?.nationId) | 0) !== 1 || (Number(hostHumanGuest?.nationId) | 0) !== 2) {
+      throw new Error("Host full_sync human player registry did not preserve remote human player visibility.");
+    }
+    if ((Number(guestHumanSelf?.nationId) | 0) !== 1 || (Number(guestHumanHost?.nationId) | 0) !== 2) {
+      throw new Error("Guest full_sync human player registry did not remap human players into local ids.");
+    }
+
+    const hostSelfStats = findNationStatsRow(fullSync, 1);
+    const hostGuestStats = findNationStatsRow(fullSync, 2);
+    const guestSelfStats = findNationStatsRow(guestFullSync, 1);
+    const guestHostStats = findNationStatsRow(guestFullSync, 2);
+    if (!hostSelfStats || !hostGuestStats || !guestSelfStats || !guestHostStats) {
+      throw new Error("Started match full_sync is missing human nation stat rows.");
+    }
+
+    const hostSelfFingerprint = nationStateFingerprint(hostSelfStats);
+    const hostGuestFingerprint = nationStateFingerprint(hostGuestStats);
+    const guestSelfFingerprint = nationStateFingerprint(guestSelfStats);
+    const guestHostFingerprint = nationStateFingerprint(guestHostStats);
+    if (!hostSelfFingerprint || !hostGuestFingerprint || !guestSelfFingerprint || !guestHostFingerprint) {
+      throw new Error("Started match full_sync could not fingerprint human nation state.");
+    }
+    if (hostSelfFingerprint === hostGuestFingerprint) {
+      throw new Error("Human nations were flattened into the same authoritative stat profile.");
+    }
+    if (guestSelfFingerprint !== hostGuestFingerprint || guestHostFingerprint !== hostSelfFingerprint) {
+      throw new Error("Per-session full_sync remap did not preserve distinct human nation state.");
     }
 
     const startedState = await requestJson("POST", "/api/lobbies/state", { code, sessionToken });
@@ -264,16 +357,41 @@ async function main() {
       nationId: viewerNationId,
       seq: 1,
       clientTime: Date.now(),
-      cmd: "set_attack_ratio",
-      args: [viewerNationId, 0.42]
+      cmd: "declare_war",
+      args: [viewerNationId, 2]
     }));
     const ack = await hostTracker.next((msg) => msg?.type === "cmd_ack", 15000);
     if ((Number(ack?.ackSeq) | 0) !== 1) {
       throw new Error("Authoritative match input did not ack the expected sequence.");
     }
+    const hasWarState = (msg) => {
+      if (!msg || (msg.type !== "snapshot_delta" && msg.type !== "full_sync")) return false;
+      const wars = Array.isArray(msg?.relations?.wars) ? msg.relations.wars : [];
+      const warSeen = wars.some((row) => Array.isArray(row) && row.length >= 2 && (
+        ((Number(row[0]) | 0) === 1 && (Number(row[1]) | 0) === 2) ||
+        ((Number(row[0]) | 0) === 2 && (Number(row[1]) | 0) === 1)
+      ));
+      if (!warSeen) return false;
+      const playerEvents = Array.isArray(msg?.events) ? msg.events : [];
+      const globalEvents = Array.isArray(msg?.globalEvents) ? msg.globalEvents : [];
+      return [...playerEvents, ...globalEvents].some((row) => {
+        if (!row || typeof row !== "object") return false;
+        if (String(row?.kind || "").toLowerCase() !== "war_declared") return false;
+        const from = Number(row?.from) | 0;
+        const to = Number(row?.to) | 0;
+        return (
+          (from === 1 && to === 2) ||
+          (from === 2 && to === 1)
+        );
+      });
+    };
+    await hostTracker.next(hasWarState, 15000);
+    await guestTracker.next(hasWarState, 15000);
 
     try { hostWs.close(); } catch {}
     hostTracker.dispose();
+    try { guestWs.close(); } catch {}
+    guestTracker.dispose();
     await sleep(300);
 
     const reconnectWs = new WebSocket(
@@ -290,6 +408,15 @@ async function main() {
     }
     if (!Array.isArray(reconnectFullSync?.events) || !Array.isArray(reconnectFullSync?.globalEvents)) {
       throw new Error("Reconnect full_sync is missing split event feeds.");
+    }
+    if (!Array.isArray(reconnectFullSync?.worldMeta?.humanNationIds) || reconnectFullSync.worldMeta.humanNationIds.length < 2) {
+      throw new Error("Reconnect full_sync is missing authoritative human nation metadata.");
+    }
+    if (!Array.isArray(reconnectFullSync?.worldMeta?.humanPlayers) || reconnectFullSync.worldMeta.humanPlayers.length < 2) {
+      throw new Error("Reconnect full_sync is missing authoritative human player registry metadata.");
+    }
+    if ((Number(reconnectFullSync?.packetSeq) | 0) <= 0) {
+      throw new Error("Reconnect full_sync is missing packet sequencing metadata.");
     }
 
     try { reconnectWs.close(); } catch {}
@@ -310,7 +437,13 @@ async function main() {
         "ws_receives_started_state",
         "started_match_delivers_full_sync",
         "full_sync_includes_split_event_feeds",
+        "full_sync_includes_human_nation_metadata",
+        "full_sync_includes_human_player_registry",
+        "full_sync_remaps_remote_human_players_into_local_slots",
+        "full_sync_preserves_distinct_human_nation_state",
+        "full_sync_includes_packet_sequence",
         "started_match_accepts_authoritative_input",
+        "declare_war_immediately_syncs_relations_to_all_players",
         "started_match_reconnect_restores_full_sync"
       ],
       stdoutTail: stdout.trim().split(/\r?\n/).filter(Boolean).slice(-8),

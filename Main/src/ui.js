@@ -1955,7 +1955,7 @@ export function createHUD() {
             rowA.className = "dockOpRow";
             const aLabel = document.createElement("div");
             aLabel.className = "dockOpLabel";
-            aLabel.textContent = "Attacking Infantry";
+            aLabel.textContent = "Active Attacking Infantry";
             const aVal = document.createElement("div");
             aVal.className = "dockOpValue isAttack";
             aVal.textContent = fmtCompact(troops);

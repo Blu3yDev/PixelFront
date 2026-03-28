@@ -83,16 +83,13 @@ to avoid heavy AI/world specs causing lag spikes on smaller deployments.
 
 You can deploy this folder directly as a Render Web Service, or use `render.yaml`.
 Runtime should be **Node**, not Python.
+Just make sure the deployed service can also access the shared `Main/src` runtime.
 
-## Railway path notes
+## Runtime path notes
 
-If your service runs from `/app/server.js`, the server first tries local `src` runtime files, then `Main/src` candidates.
-
-The repo now includes a vendored runtime fallback in `MultiplayerServer/src`:
-- `MultiplayerServer/src/game` (authoritative World runtime)
-- `MultiplayerServer/src/EarthMap` (Earth assets)
-
-So deploying only `MultiplayerServer` works out of the box.
+The multiplayer server now loads the authoritative shared runtime directly from `Main/src`.
+There is no separate vendored gameplay runtime inside `MultiplayerServer`.
+If you deploy only the server subtree, you must still make `Main/src` available to it.
 
 Set these Railway env vars when needed:
 - `PIXELFRONT_MAIN_SRC_DIR=/app/Main/src`

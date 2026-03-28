@@ -14,6 +14,9 @@ import {
   POP_GROWTH_CATCHUP_EXP,
   POP_GROWTH_CATCHUP_MAX,
   POP_GROWTH_RECOVERY_K,
+  STABILITY_ECON_MUL_MIN,
+  STABILITY_GROWTH_MUL_MIN,
+  STABILITY_REINFORCE_MUL_MIN,
   TROOP_CAP_BARRACK_BONUS_K,
   TROOP_CAP_BARRACK_BONUS_MAX,
   TROOP_CAP_FRAC_MAX,
@@ -275,6 +278,11 @@ export function installEconomy(World) {
         n.popCap = popCap;
         n.effectiveLand = econLand;
         n.overextensionPenalty = overextensionPenalty;
+        const stability = typeof this._stabilityFactor === "function"
+          ? clamp01(this._stabilityFactor(id))
+          : 1.0;
+        const stabilityGrowthMul = STABILITY_GROWTH_MUL_MIN + ((1 - STABILITY_GROWTH_MUL_MIN) * stability);
+        const stabilityGoldMul = STABILITY_ECON_MUL_MIN + ((1 - STABILITY_ECON_MUL_MIN) * stability);
 
         const oldPop = n.population;
         const popGap = Math.max(0, popCap - oldPop);
@@ -294,12 +302,12 @@ export function installEconomy(World) {
             newPop = oldPop + (targetPop - oldPop) * decayMix;
           } else {
             // Keep a weak but non-zero demographic recovery while collapsed.
-            newPop = oldPop + desiredPopPS * dt * COLLAPSE_GROWTH_MUL * foodGrowthMul;
+            newPop = oldPop + desiredPopPS * dt * COLLAPSE_GROWTH_MUL * foodGrowthMul * stabilityGrowthMul;
           }
         } else {
           const growthMul = recoveryActive ? COLLAPSE_RECOVERY_GROWTH_MUL : 1.0;
           const overextensionGrowthMul = Math.max(0.72, 0.58 + (0.42 * overextensionPenalty));
-          newPop = oldPop + desiredPopPS * dt * growthMul * overextensionGrowthMul * foodGrowthMul;
+          newPop = oldPop + desiredPopPS * dt * growthMul * overextensionGrowthMul * foodGrowthMul * stabilityGrowthMul;
         }
         if (newPop > popCap) newPop = popCap;
         if (newPop < 0) newPop = 0;
@@ -331,7 +339,7 @@ export function installEconomy(World) {
           (GOLD_PER_CITY_S * cities * cityGoldMul);
         const collapseMul = collapseActive ? COLLAPSE_GOLD_MUL : 1.0;
         const recoveryMul = recoveryActive ? COLLAPSE_RECOVERY_GOLD_MUL : 1.0;
-        const goldPS = goldBase * mobilizationMul * overextensionPenalty * collapseMul * recoveryMul;
+        const goldPS = goldBase * mobilizationMul * overextensionPenalty * stabilityGoldMul * collapseMul * recoveryMul;
         n.gold += goldPS * dt;
         n.goldPS = goldPS;
 
@@ -350,8 +358,7 @@ export function installEconomy(World) {
         if (n.gold < 0) n.gold = 0;
         if (n.infantry < 0) n.infantry = 0;
 
-        // Stability (war effectiveness only)
-        const stability = typeof this._stabilityFactor === "function" ? this._stabilityFactor(id) : 1.0;
+        // Stability now also feeds directly into growth, gold output, and reinforcement pacing.
         n.stabilityFactor = clamp01(stability);
         n.stabilityPct = Math.round(100 * n.stabilityFactor);
 
@@ -394,10 +401,14 @@ export function installEconomy(World) {
         const mobTrainMul = 0.70 + 1.10 * mob;
         const recoveryMul = recoveryActive ? COLLAPSE_RECOVERY_REGEN_MUL : 1.0;
         const foodReinforceMul = Math.max(0.15, Number(n.foodReinforceMul) || 1);
+        const stability = typeof this._stabilityFactor === "function"
+          ? clamp01(this._stabilityFactor(id))
+          : clamp01(Number(n.stabilityFactor) || 1);
+        const stabilityReinforceMul = STABILITY_REINFORCE_MUL_MIN + ((1 - STABILITY_REINFORCE_MUL_MIN) * stability);
         const researchBonuses = (typeof this.getResearchBonuses === "function") ? this.getResearchBonuses(id) : null;
         const barracksRegenMul = 1 + Math.max(0, Number(researchBonuses?.barracksRegenMul) || 0);
         // Simple refill rule: base training speed + additive barracks bonus.
-        const k = Math.max(0, (TROOP_REGEN_K + (TROOP_REGEN_BONUS_PER_BARRACK * barr)) * mobTrainMul * recoveryMul * foodReinforceMul * barracksRegenMul);
+        const k = Math.max(0, (TROOP_REGEN_K + (TROOP_REGEN_BONUS_PER_BARRACK * barr)) * mobTrainMul * recoveryMul * foodReinforceMul * stabilityReinforceMul * barracksRegenMul);
 
         const diff = cap - n.infantry;
         const gain = diff > 0 ? (diff * k * dt) : 0;

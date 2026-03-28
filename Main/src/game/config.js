@@ -93,9 +93,9 @@ export const NUKE_WARHEAD = Object.freeze({
     key: "atomic",
     label: "Atomic Bomb",
     buildGoldCost: 1250000,
-    buildTimeS: 28,
-    blastRadiusTiles: 28,
-    neutralizeTileCap: 2400,
+    buildTimeS: 25,
+    blastRadiusTiles: 31,
+    neutralizeTileCap: 3100,
     // 0 = unlimited (destroy all structures inside blast radius)
     structureDestroyCap: 0,
     launchStabilityPenaltyPct: 1.6,
@@ -106,9 +106,9 @@ export const NUKE_WARHEAD = Object.freeze({
     key: "hydrogen",
     label: "Hydrogen Bomb",
     buildGoldCost: 6250000,
-    buildTimeS: 55,
-    blastRadiusTiles: 70,
-    neutralizeTileCap: 15500,
+    buildTimeS: 50,
+    blastRadiusTiles: 78,
+    neutralizeTileCap: 18800,
     // 0 = unlimited (destroy all structures inside blast radius)
     structureDestroyCap: 0,
     launchStabilityPenaltyPct: 4.2,
@@ -158,9 +158,9 @@ export const RESOURCE_STOCK_CAP = Object.freeze({
 });
 
 export const RESOURCE_PRODUCTION_PER_STRUCTURE_S = Object.freeze({
-  foodPerCity: 12.5,
-  steelPerFactory: 2.5,
-  oilPerCoastalRig: 3.2
+  foodPerCity: 10.5,
+  steelPerFactory: 2.0,
+  oilPerCoastalRig: 2.5
 });
 
 export const RESOURCE_FOOD_CONSUMPTION_PER_POP_S = 0.00036;
@@ -244,7 +244,7 @@ export const PORT_TRADE_COOLDOWN_S = 120.0;
 // Trade ships are durable enough that warships don’t insta-delete them.
 export const TRADE_SHIP_HP = 90;
 // Movement in water-cells per second (grid-walk; keeps ships on water tiles).
-export const TRADE_SHIP_SPEED_CPS = 6.0;
+export const TRADE_SHIP_SPEED_CPS = 6.7;
 // Random-walk trip length (in water steps). Longer = longer routes.
 export const TRADE_TRIP_STEPS_MIN = 220;
 export const TRADE_TRIP_STEPS_MAX = 520;
@@ -262,7 +262,7 @@ export const TRADE_EVENT_COOLDOWN_S = 1.8;
 export const TRADE_SHIP_RESPAWN_S = 30.0;
 // ===== NAVY (Section 3: Warships + Transports) =====
 export const WARSHIP_MAX_ACTIVE = 0; // 0 = unlimited
-export const WARSHIP_SPEED_CPS = 3.4;
+export const WARSHIP_SPEED_CPS = 3.9;
 export const WARSHIP_HP = 95;
 export const WARSHIP_DPS = 30;
 export const WARSHIP_RANGE_TILES = 3.5;
@@ -276,7 +276,7 @@ export const WAR_EVENT_COOLDOWN_S = 0.65;
 
 // Set to 0 to disable the active transport cap.
 export const TRANSPORT_MAX_ACTIVE = 0;
-export const TRANSPORT_SPEED_CPS = 6.3;
+export const TRANSPORT_SPEED_CPS = 6.9;
 export const TRANSPORT_HP = 60;
 // Beachhead: claim landing tile + up to 4 neighbors (if neutral land + infantry cost available).
 export const BEACHHEAD_MAX_TILES = 5;
@@ -737,20 +737,26 @@ export const WAR_POWER_SATURATION = 0.58;
 // Player still gets a tiny passive defence edge in auto-war, but not enough to stall large mismatches.
 export const WAR_PASSIVE_PLAYER_DEFENCE_MUL = 1.05;
 export const WAR_PASSIVE_PLAYER_FLIP_DAMP = 1.03;
-export const WAR_MIN_STABILITY = 0.40;
-export const WAR_STABILITY_BASE_WAR_PENALTY = 0.08;
+export const WAR_MIN_STABILITY = 0.26;
+export const WAR_STABILITY_BASE_WAR_PENALTY = 0.11;
+export const STABILITY_LAND_SAFE_TILES = 1800;
+export const STABILITY_LAND_PENALTY_MAX = 0.24;
+export const STABILITY_LAND_PENALTY_K = 1 / 5200;
+export const STABILITY_ECON_MUL_MIN = 0.38;
+export const STABILITY_GROWTH_MUL_MIN = 0.44;
+export const STABILITY_REINFORCE_MUL_MIN = 0.30;
 
 // War exhaustion: prolonged active wars slowly reduce stability.
 // Tuning goals: little to no pain for short wars, meaningful pressure for drawn-out multi-front wars,
 // and quick relief if players pause with ceasefires or make peace.
-export const WAR_EXHAUSTION_GRACE_S = 105.0;
+export const WAR_EXHAUSTION_GRACE_S = 78.0;
 export const WAR_EXHAUSTION_RAMP_S = 300.0;
-export const WAR_EXHAUSTION_GAIN_PER_S = 1 / 720;
+export const WAR_EXHAUSTION_GAIN_PER_S = 1 / 560;
 export const WAR_EXHAUSTION_MULTI_WAR_GAIN_BONUS = 0.12;
 export const WAR_EXHAUSTION_PAUSE_RECOVER_PER_S = 1 / 110;
 export const WAR_EXHAUSTION_PEACE_RECOVER_PER_S = 1 / 80;
 export const WAR_EXHAUSTION_WARTIME_DECAY_PER_S = 2.2;
-export const WAR_EXHAUSTION_STABILITY_MAX_PENALTY = 0.09;
+export const WAR_EXHAUSTION_STABILITY_MAX_PENALTY = 0.18;
 
 // OpenFront-style: attack ratio directly represents committed attack troops.
 export const ATTACK_COMMIT_MIN = 0.00;
@@ -769,8 +775,8 @@ export const WAR_ENGAGE_TROOPS_PER_CONTACT = 305;  // troops that can meaningful
 export const WAR_FIRE_K = 0.0033;                  // kill rate per engaged troop (scaled by stability)
 export const WAR_ATTACK_EXPOSE_MUL_MIN = 1.00;     // legacy, unused by simplified attack-ratio model
 export const WAR_ATTACK_EXPOSE_MUL_MAX = 1.00;     // legacy, unused by simplified attack-ratio model
-export const WAR_STABILITY_LOSS_MUL_MIN = 0.95;       // loss multiplier when stable
-export const WAR_STABILITY_LOSS_MUL_MAX = 1.95;       // loss multiplier when unstable
+export const WAR_STABILITY_LOSS_MUL_MIN = 0.90;       // loss multiplier when stable
+export const WAR_STABILITY_LOSS_MUL_MAX = 2.85;       // loss multiplier when unstable
 
 export const WAR_GOLD_PER_CONTACT_S = 1.80;         // ongoing logistics cost per contact per second
 export const WAR_GOLD_PER_CAPTURE_TILE = 32.0;      // extra cost to take/hold ground

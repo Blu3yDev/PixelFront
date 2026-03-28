@@ -47,9 +47,7 @@ function resolveEarthAssetPaths() {
 
   const dirs = uniquePaths([
     ...envDir,
-    ...roots.map((r) => path.join(r, "Main", "src", "EarthMap")),
-    ...roots.map((r) => path.join(r, "src", "EarthMap")),
-    ...roots.map((r) => path.join(r, "EarthMap"))
+    ...roots.map((r) => path.join(r, "Main", "src", "EarthMap"))
   ]);
 
   const tried = [];

@@ -925,6 +925,11 @@ async function syncCountryIdentityOverrides(force = false) {
 
   const countries = await loadRestCountriesIndex();
   const nations = Array.isArray(world.nation) ? world.nation : [];
+  const multiplayerMatchActive = isMultiplayerMatchEnabled();
+  const humanPlayersByNation = (world?._multiplayerHumanPlayersByNation && typeof world._multiplayerHumanPlayersByNation === "object")
+    ? world._multiplayerHumanPlayersByNation
+    : null;
+  const hasHumanPlayerRegistry = !!(humanPlayersByNation && Object.keys(humanPlayersByNation).length > 0);
   let aiFlagsDirty = false;
   let playerFlagDirty = false;
 
@@ -932,23 +937,44 @@ async function syncCountryIdentityOverrides(force = false) {
     const nation = nations[id];
     if (!nation || typeof nation !== "object") continue;
 
+    const humanRow = (humanPlayersByNation && humanPlayersByNation[id] && typeof humanPlayersByNation[id] === "object")
+      ? humanPlayersByNation[id]
+      : null;
+    const humanName = String(humanRow?.name || "").trim();
+    const humanIdentityKey = String(humanRow?.playerId || humanRow?.sessionId || "").trim();
     const countryId = Math.max(0, Number(nation.countryId) | 0);
     const countryCode = String(nation.countryCode || "").trim().toUpperCase();
     const countryName = String(nation.countryName || "").trim();
     const overrideCode = resolveCountryIdentityOverrideCode(countryCode, countryName);
     const resolvedCode = overrideCode || countryCode;
-    const sig = `${countryId}|${countryCode}|${countryName}|${resolvedCode}`;
+    const isRemoteHumanNation = (id !== OWNER.PLAYER) && !!(nation.isHuman || humanIdentityKey || humanName);
+    const sig = `${countryId}|${countryCode}|${countryName}|${resolvedCode}|${isRemoteHumanNation ? 1 : 0}`;
     const existingFlagUrl = (id === OWNER.PLAYER)
       ? String(activePlayerFlagImageUrl || "").trim()
       : String(activeNationFlagImagesById[id] || "").trim();
-    const needsFlagRetry = (countryId > 0) && !existingFlagUrl;
+    const needsFlagRetry = !isRemoteHumanNation && (countryId > 0) && !existingFlagUrl;
     if (!force && countryIdentitySigByNation.get(id) === sig && !needsFlagRetry) continue;
     countryIdentitySigByNation.set(id, sig);
+
+    if (isRemoteHumanNation) {
+      if (humanName) {
+        nation.name = humanName;
+      }
+      if (activeNationFlagImagesById[id]) {
+        delete activeNationFlagImagesById[id];
+        aiFlagsDirty = true;
+      }
+      continue;
+    }
+
+    if (multiplayerMatchActive && id !== OWNER.PLAYER && !multiplayerHasAuthoritativeSync) {
+      continue;
+    }
 
     if (id !== OWNER.PLAYER) {
       if (countryId > 0 && countryName) {
         nation.name = countryName;
-      } else {
+      } else if (!multiplayerMatchActive || multiplayerHasAuthoritativeSync || hasHumanPlayerRegistry) {
         nation.name = `Bot ${id - 1}`;
       }
     }
@@ -1396,6 +1422,7 @@ let multiplayerWorldSyncOriginals = new Map();
 const multiplayerSnapshotBuffer = new Map();
 let multiplayerLatestServerTick = 0;
 let multiplayerLastAppliedTick = 0;
+let multiplayerLastAppliedPacketSeq = 0;
 let multiplayerAwaitingFullSync = false;
 let multiplayerLastSnapshotAtMs = 0;
 let multiplayerLastFullSyncRequestAtMs = 0;
@@ -1427,25 +1454,25 @@ const multiplayerStanceCommandState = {
 };
 
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
-const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 5000;
-const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 2300;
-const MULTIPLAYER_FULL_SYNC_REQUEST_MAX_COOLDOWN_MS = 12000;
+const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 6500;
+const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 3000;
+const MULTIPLAYER_FULL_SYNC_REQUEST_MAX_COOLDOWN_MS = 15000;
 const MULTIPLAYER_HASH_MISMATCH_COOLDOWN_MS = 2200;
 const MULTIPLAYER_HUD_STATUS_COOLDOWN_MS = 1200;
 const MULTIPLAYER_LABEL_RECOMPUTE_INTERVAL_MS = 300;
-const MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS = 12;
-const MULTIPLAYER_CATCHUP_HIDE_GAP_TICKS = 7;
+const MULTIPLAYER_CATCHUP_SHOW_GAP_TICKS = 16;
+const MULTIPLAYER_CATCHUP_HIDE_GAP_TICKS = 10;
 const MULTIPLAYER_CATCHUP_SHOW_MIN_MS = 700;
-const MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS = 16;
-const MULTIPLAYER_CATCHUP_HARD_GAP_TICKS = 34;
+const MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS = 20;
+const MULTIPLAYER_CATCHUP_HARD_GAP_TICKS = 42;
 const MULTIPLAYER_CATCHUP_STICKY_MS = 240;
-const MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS = 160;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 5.2;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 8.8;
-const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 14.0;
-const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 14;
-const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 32;
-const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 56;
+const MULTIPLAYER_CATCHUP_EARLY_RESYNC_GAP_TICKS = 220;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_NORMAL_MS = 6.6;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_SOFT_MS = 11.2;
+const MULTIPLAYER_DRAIN_TIME_BUDGET_HARD_MS = 16.8;
+const MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL = 18;
+const MULTIPLAYER_DRAIN_PACKET_CAP_SOFT = 40;
+const MULTIPLAYER_DRAIN_PACKET_CAP_HARD = 68;
 const MULTIPLAYER_DRAIN_MIN_INTERVAL_MS = 4;
 const MULTIPLAYER_DEFERRED_UI_SYNC_INTERVAL_MS = 90;
 const MULTIPLAYER_HASH_VERIFY_MIN_INTERVAL_MS = 900;
@@ -1554,6 +1581,7 @@ function resetMultiplayerSnapshotState() {
   multiplayerSnapshotBuffer.clear();
   multiplayerLatestServerTick = 0;
   multiplayerLastAppliedTick = 0;
+  multiplayerLastAppliedPacketSeq = 0;
   multiplayerAwaitingFullSync = false;
   multiplayerHasAuthoritativeSync = false;
   multiplayerDroppedDeltaPackets = false;
@@ -2305,7 +2333,7 @@ function applyMultiplayerNationStats(worldRef, nationStats) {
 
   syncNationFlagsFromAuthoritative(worldRef);
   worldRef.player = worldRef.nation[OWNER.PLAYER] || worldRef.player || null;
-  scheduleCountryIdentitySync(true);
+  scheduleCountryIdentitySync(false);
 }
 
 function applyMultiplayerRelations(worldRef, rel) {
@@ -2389,6 +2417,54 @@ function applyMultiplayerEvents(worldRef, eventsRaw, globalEventsRaw = undefined
   }
 }
 
+function applyMultiplayerHumanPlayers(worldRef, humanPlayersRaw) {
+  if (!worldRef || !Array.isArray(worldRef.nation)) return false;
+  const rows = Array.isArray(humanPlayersRaw) ? humanPlayersRaw : [];
+  const nextByNation = Object.create(null);
+  let flagsChanged = false;
+  let namesChanged = false;
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || typeof row !== "object") continue;
+    const nationId = Math.max(1, Number(row.nationId) | 0);
+    if (nationId <= 0 || nationId >= worldRef.nation.length) continue;
+    const nation = worldRef.nation[nationId];
+    if (!nation || typeof nation !== "object") continue;
+    const safeName = String(row.name || nation.name || `Player ${nationId}`).trim();
+    const safeFlag = (row.flag && typeof row.flag === "object") ? sanitizeFlag(row.flag) : null;
+    nextByNation[nationId] = {
+      nationId,
+      playerId: String(row.playerId || "").trim(),
+      sessionId: String(row.sessionId || "").trim(),
+      isHost: !!row.isHost,
+      name: safeName,
+      flag: safeFlag
+    };
+    if (safeName && String(nation.name || "").trim() !== safeName) {
+      nation.name = safeName;
+      namesChanged = true;
+    }
+    if (safeFlag) {
+      const prevKey = nation.flag && typeof nation.flag === "object"
+        ? JSON.stringify(sanitizeFlag(nation.flag))
+        : "";
+      const nextKey = JSON.stringify(safeFlag);
+      if (prevKey !== nextKey) {
+        nation.flag = safeFlag;
+        flagsChanged = true;
+      }
+    }
+    nation.isHuman = true;
+    nation.isAiControlled = false;
+  }
+
+  worldRef._multiplayerHumanPlayersByNation = nextByNation;
+  if (flagsChanged) syncNationFlagsFromAuthoritative(worldRef);
+  if (namesChanged || flagsChanged) scheduleCountryIdentitySync(false);
+  return namesChanged || flagsChanged;
+}
+
 function applyMultiplayerWorldMeta(worldRef, packet) {
   if (!worldRef) return;
   const meta = (packet?.worldMeta && typeof packet.worldMeta === "object") ? packet.worldMeta : {};
@@ -2397,10 +2473,39 @@ function applyMultiplayerWorldMeta(worldRef, packet) {
   if (Number.isFinite(t) && t >= 0) worldRef.time = t;
   const ownerVersion = Number(meta.ownerVersion);
   if (Number.isFinite(ownerVersion) && ownerVersion >= 0) worldRef.ownerVersion = Math.max(0, ownerVersion | 0);
-  worldRef.gameOver = cloneMultiplayerPayload(meta.gameOver) || null;
-  worldRef.matchOutcome = cloneMultiplayerPayload(meta.matchOutcome) || null;
-  worldRef.focusOpId = Math.max(0, Number(meta.focusOpId) | 0);
+  if (Object.prototype.hasOwnProperty.call(meta, "gameOver")) {
+    worldRef.gameOver = cloneMultiplayerPayload(meta.gameOver) || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(meta, "matchOutcome")) {
+    worldRef.matchOutcome = cloneMultiplayerPayload(meta.matchOutcome) || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(meta, "focusOpId")) {
+    worldRef.focusOpId = Math.max(0, Number(meta.focusOpId) | 0);
+  }
   worldRef._simTick = tick;
+
+  if (Array.isArray(meta.humanNationIds) && Array.isArray(worldRef.nation)) {
+    const humanIds = new Set();
+    let humanStateChanged = false;
+    for (let i = 0; i < meta.humanNationIds.length; i++) {
+      const id = Math.max(1, Number(meta.humanNationIds[i]) | 0);
+      if (id > 0) humanIds.add(id);
+    }
+    for (let id = 1; id < worldRef.nation.length; id++) {
+      const nation = worldRef.nation[id];
+      if (!nation || typeof nation !== "object") continue;
+      const isHuman = humanIds.has(id);
+      if (!!nation.isHuman !== isHuman) humanStateChanged = true;
+      nation.isHuman = isHuman;
+      if (isHuman) nation.isAiControlled = false;
+      else if (id !== OWNER.PLAYER) nation.isAiControlled = true;
+    }
+    if (humanStateChanged) scheduleCountryIdentitySync(false);
+  }
+
+  if (Array.isArray(meta.humanPlayers)) {
+    applyMultiplayerHumanPlayers(worldRef, meta.humanPlayers);
+  }
 
   const spawnRaw = (meta.spawnPhase && typeof meta.spawnPhase === "object")
     ? (cloneMultiplayerPayload(meta.spawnPhase) || null)
@@ -2463,6 +2568,40 @@ function applyMultiplayerWorldMeta(worldRef, packet) {
   }
 
   worldRef._spawnPhase = spawnRaw;
+}
+
+function resolveMultiplayerPacketSeq(packetRaw) {
+  const packet = (packetRaw && typeof packetRaw === "object") ? packetRaw : null;
+  if (!packet) return 0;
+  const seq = Math.max(0, Number(packet.packetSeq) | 0);
+  if (seq > 0) return seq;
+  const tick = Math.max(0, Number(packet.tick) | 0);
+  return tick > 0 ? tick : 0;
+}
+
+function applyMultiplayerTerritoryPacket(packet) {
+  const worldRef = multiplayerWorldSyncWorld;
+  if (!worldRef || !packet || typeof packet !== "object") return false;
+  let ownerApplied = 0;
+  if (packet.changedTilesPacked) {
+    ownerApplied = applyPackedOwnerChangesFromBase64(
+      worldRef,
+      packet.changedTilesPacked,
+      String(packet?.changedTilesPackedFormat || "u32_u16_le")
+    );
+  } else if (Array.isArray(packet.changedTiles) && packet.changedTiles.length > 0) {
+    ownerApplied = applyOwnerChangesFromList(worldRef, packet.changedTiles);
+  }
+  const ownerVersion = Number(packet?.ownerVersion);
+  if (Number.isFinite(ownerVersion) && ownerVersion >= 0) {
+    worldRef.ownerVersion = Math.max(0, ownerVersion | 0);
+  }
+  if (ownerApplied > 0) {
+    flushMultiplayerPixelWrites(worldRef, ownerApplied);
+    worldRef.dirty = true;
+  }
+  multiplayerLastSnapshotAtMs = Date.now();
+  return ownerApplied > 0;
 }
 
 function flushMultiplayerPixelWrites(worldRef, ownerAppliedHint = 0) {
@@ -2815,6 +2954,7 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
   }
 
   multiplayerLastAppliedTick = Math.max(multiplayerLastAppliedTick, tick);
+  multiplayerLastAppliedPacketSeq = Math.max(multiplayerLastAppliedPacketSeq, resolveMultiplayerPacketSeq(packet));
   multiplayerLatestServerTick = Math.max(multiplayerLatestServerTick, tick);
   multiplayerLastSnapshotAtMs = Date.now();
   multiplayerAwaitingFullSync = false;
@@ -3097,8 +3237,8 @@ function trimMultiplayerSnapshotBufferTo(keepCountRaw) {
   let trimmed = 0;
   const sorted = Array.from(multiplayerSnapshotBuffer.keys()).sort((a, b) => a - b);
   while (sorted.length > keepCount) {
-    const dropTick = sorted.shift();
-    multiplayerSnapshotBuffer.delete(dropTick);
+    const dropSeq = sorted.shift();
+    multiplayerSnapshotBuffer.delete(dropSeq);
     trimmed++;
   }
   if (trimmed > 0) multiplayerDroppedDeltaPackets = true;
@@ -3107,10 +3247,13 @@ function trimMultiplayerSnapshotBufferTo(keepCountRaw) {
 function queueMultiplayerSnapshotPacket(packet) {
   if (!packet || typeof packet !== "object") return;
   const tick = Math.max(0, Number(packet.tick) | 0);
+  const packetSeq = resolveMultiplayerPacketSeq(packet);
   if (tick <= 0) return;
-  if (tick <= multiplayerLastAppliedTick) return;
-  if (multiplayerSnapshotBuffer.has(tick)) return;
-  multiplayerSnapshotBuffer.set(tick, packet);
+  if (packetSeq > 0 && packetSeq <= multiplayerLastAppliedPacketSeq) return;
+  if (tick <= multiplayerLastAppliedTick && packetSeq <= 0) return;
+  const key = packetSeq > 0 ? packetSeq : tick;
+  if (multiplayerSnapshotBuffer.has(key)) return;
+  multiplayerSnapshotBuffer.set(key, packet);
   multiplayerLatestServerTick = Math.max(multiplayerLatestServerTick, tick);
   multiplayerLastSnapshotAtMs = Date.now();
 
@@ -3200,27 +3343,39 @@ function drainMultiplayerSnapshotBuffer(force = false) {
     : softCatchup
       ? MULTIPLAYER_DRAIN_PACKET_CAP_SOFT
       : MULTIPLAYER_DRAIN_PACKET_CAP_NORMAL;
+  const visualFlushPacketBatch = hardCatchup ? 10 : (softCatchup ? 4 : 2);
+  const visualFlushOwnerThreshold = hardCatchup ? 18000 : (softCatchup ? 7000 : 2200);
 
   if (!progressed) {
-    let candidateTicks = [];
-    for (const tick of multiplayerSnapshotBuffer.keys()) {
-      const t = Math.max(0, Number(tick) | 0);
-      if (t <= (multiplayerLastAppliedTick | 0)) continue;
-      if (t > targetTick) continue;
-      candidateTicks.push(t);
+    let candidateSeqs = [];
+    for (const [packetSeq, packet] of multiplayerSnapshotBuffer.entries()) {
+      const seq = Math.max(0, Number(packetSeq) | 0);
+      const packetTick = Math.max(0, Number(packet?.tick) | 0);
+      if (seq > 0 && seq <= (multiplayerLastAppliedPacketSeq | 0)) continue;
+      if (packetTick <= 0 || packetTick > targetTick) continue;
+      candidateSeqs.push(seq);
     }
-    if (candidateTicks.length > 1) candidateTicks.sort((a, b) => a - b);
+    if (candidateSeqs.length > 1) candidateSeqs.sort((a, b) => a - b);
 
-    for (let i = 0; i < candidateTicks.length; i++) {
+    for (let i = 0; i < candidateSeqs.length; i++) {
       if (processedPackets >= packetCap) break;
       if (hasPerfNow && (performance.now() - drainStartMs) >= drainBudgetMs) break;
-      const nextTick = candidateTicks[i] | 0;
-      const packet = multiplayerSnapshotBuffer.get(nextTick);
-      multiplayerSnapshotBuffer.delete(nextTick);
+      const nextSeq = candidateSeqs[i] | 0;
+      const packet = multiplayerSnapshotBuffer.get(nextSeq);
+      multiplayerSnapshotBuffer.delete(nextSeq);
       if (!packet) continue;
       applyMultiplayerSnapshotPacket(packet, false, { deferVisualSync: true });
       progressed = true;
       processedPackets++;
+      if (
+        !hardCatchup &&
+        (
+          (processedPackets % visualFlushPacketBatch) === 0 ||
+          (Math.max(0, multiplayerDeferredOwnerAppliedHint | 0) >= visualFlushOwnerThreshold)
+        )
+      ) {
+        flushDeferredMultiplayerVisualSync();
+      }
     }
   }
 
@@ -3228,7 +3383,14 @@ function drainMultiplayerSnapshotBuffer(force = false) {
     flushDeferredMultiplayerVisualSync();
   }
 
-  if (multiplayerDroppedDeltaPackets && !multiplayerAwaitingFullSync) {
+  if (
+    multiplayerDroppedDeltaPackets &&
+    !multiplayerAwaitingFullSync &&
+    (
+      gapTicks >= MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS ||
+      (now - multiplayerLastSnapshotAtMs) > 1600
+    )
+  ) {
     requestMultiplayerFullSync("delta_trim_repair");
   }
 
@@ -3497,11 +3659,14 @@ function connectMultiplayerMatchSocket() {
       return;
     }
 
+    if (type === "territory_delta") {
+      if (!multiplayerHasAuthoritativeSync) return;
+      applyMultiplayerTerritoryPacket(msg);
+      return;
+    }
+
     if (type === "full_sync") {
       resetMultiplayerSnapshotState();
-      const tick = Math.max(0, Number(msg?.tick) | 0);
-      multiplayerLastAppliedTick = Math.max(0, tick);
-      multiplayerLatestServerTick = Math.max(0, tick);
       applyMultiplayerSnapshotPacket(msg, true);
       return;
     }
@@ -15205,6 +15370,7 @@ function canPlayerSeeNation(targetId) {
   if (!isAdvancedFogOfWarEnabled()) return true;
   if (id === OWNER.PLAYER) return true;
   if (!world) return false;
+  if (world?.nation?.[id]?.isHuman) return true;
   if (typeof world._bordersTouch === "function" && world._bordersTouch(OWNER.PLAYER, id)) return true;
   return !!world.isNationInRadarCoverage?.(OWNER.PLAYER, id);
 }
@@ -15214,6 +15380,7 @@ function hasIntelAdjacency(targetId) {
   if (id <= 0) return false;
   if (id === OWNER.PLAYER) return true;
   if (!world) return false;
+  if (world?.nation?.[id]?.isHuman) return true;
   if (typeof world._bordersTouch === "function" && world._bordersTouch(OWNER.PLAYER, id)) return true;
   return isAdvancedFogOfWarEnabled() && !!world.isNationInRadarCoverage?.(OWNER.PLAYER, id);
 }
@@ -16274,6 +16441,25 @@ function getOperationViewCell(op) {
   return null;
 }
 
+function getOperationViewPoint(op) {
+  if (!op) return null;
+
+  const cx = Number(op?.centroid?.x);
+  const cy = Number(op?.centroid?.y);
+  if (Number.isFinite(cx) && Number.isFinite(cy)) return { x: cx, y: cy };
+
+  if (String(op.kind || "") === "burst") {
+    const ax = Number(op.aimX);
+    const ay = Number(op.aimY);
+    if (Number.isFinite(ax) && Number.isFinite(ay)) return { x: ax + 0.5, y: ay + 0.5 };
+  }
+
+  const cell = getOperationViewCell(op);
+  if (cell) return { x: (Number(cell.x) || 0) + 0.5, y: (Number(cell.y) || 0) + 0.5 };
+
+  return null;
+}
+
 function viewOperationSmooth(opId) {
   const id = opId | 0;
   if (!world || !renderer || !id) return;
@@ -16285,14 +16471,14 @@ function viewOperationSmooth(opId) {
     return;
   }
 
-  const cell = getOperationViewCell(op);
-  if (!cell) {
-    hud.setOpMessage("No active frontline found for this operation.");
+  const focus = getOperationViewPoint(op);
+  if (!focus) {
+    hud.setOpMessage("Could not locate the operation center.");
     return;
   }
 
-  const tx = (cell.x | 0) + 0.5;
-  const ty = (cell.y | 0) + 0.5;
+  const tx = Number(focus.x);
+  const ty = Number(focus.y);
   if (typeof renderer.setCameraTarget === "function") {
     renderer.setCameraTarget(tx, ty);
   } else {
@@ -16496,22 +16682,19 @@ function getPlayerAnchorCell() {
 }
 
 function getOperationDirectionCenter(op) {
-  if (!op) return null;
+  return getOperationViewPoint(op);
+}
 
-  const cx = Number(op?.centroid?.x);
-  const cy = Number(op?.centroid?.y);
-  if (Number.isFinite(cx) && Number.isFinite(cy)) return { x: cx, y: cy };
-
-  if (String(op.kind || "") === "burst") {
-    const ax = Number(op.aimX);
-    const ay = Number(op.aimY);
-    if (Number.isFinite(ax) && Number.isFinite(ay)) return { x: ax + 0.5, y: ay + 0.5 };
+function getOperationActiveAttackingTroops(op) {
+  if (!op) return 0;
+  const livePool = Number(op.attackPool);
+  if (Number.isFinite(livePool)) return Math.max(0, Math.floor(livePool));
+  const committed = Number(op.committedAtStart);
+  const casualties = Number(op.casualties);
+  if (Number.isFinite(committed) || Number.isFinite(casualties)) {
+    return Math.max(0, Math.floor((Number.isFinite(committed) ? committed : 0) - (Number.isFinite(casualties) ? casualties : 0)));
   }
-
-  const cell = getOperationViewCell(op);
-  if (cell) return { x: (cell.x | 0) + 0.5, y: (cell.y | 0) + 0.5 };
-
-  return null;
+  return 0;
 }
 
 function expansionDirectionLabel(op) {
@@ -16579,29 +16762,30 @@ function refreshOpUI(quick = false) {
 
   const list = ops.map((op) => {
     let pct = op.total > 0 ? op.claimed / op.total : 0;
+    const activeAttacking = getOperationActiveAttackingTroops(op);
 
     let title = "Expansion Op";
     let subtitle = `${Math.round(pct * 100)}%`;
 
     if (op.kind === "neutral") {
       const dir = expansionDirectionLabel(op);
-      const attacking = Math.max(0, Math.floor(Number(op.attackPool) || 0));
       title = `Expansion on ${dir}`;
-      subtitle = `${Math.round(pct * 100)}% - Attacking ${fmtCompactLocal(attacking)}`;
+      subtitle = `${Math.round(pct * 100)}% - Active attacking infantry ${fmtCompactLocal(activeAttacking)}`;
       dockOps.push({
         id: op.id,
         title: `Expansion on ${dir}`,
         opTitle: `Expansion on ${dir}`,
         groupKey: `expansion:${op.id | 0}`,
         groupTitle: `Expansion on ${dir}`,
-        attackingTroops: Math.max(0, Number(op.attackPool) || 0),
+        attackingTroops: activeAttacking,
         expansionOnly: true,
         onView: (id) => viewOperationSmooth(id)
       });
     } else if (op.kind === "war") {
       title = "Focus Attack";
       const defName = world.nation[op.defender]?.name || `AI ${op.defender - 1}`;
-      subtitle = `${Math.round(pct * 100)}% - vs ${defName}`;
+      const losses = Math.max(0, Math.floor(Number(op.casualties) || 0));
+      subtitle = `${Math.round(pct * 100)}% - vs ${defName} | Active attacking infantry ${fmtCompactLocal(activeAttacking)} | Casualties ${fmtCompactLocal(losses)}`;
       dockOps.push({
         id: op.id,
         title: `War of ${defName}`,
@@ -16610,7 +16794,7 @@ function refreshOpUI(quick = false) {
         groupTitle: `War of ${defName}`,
         defenderId: op.defender | 0,
         canReinforce: true,
-        attackingTroops: Math.max(0, Number(op.attackPool) || 0),
+        attackingTroops: activeAttacking,
         enemyAttackingTroops: enemyCounterattackPressure(op.defender | 0),
         enemyCasualties: Math.max(0, Number(op.enemyCasualties) || 0),
         casualties: Math.max(0, Number(op.casualties) || 0),
@@ -16619,9 +16803,8 @@ function refreshOpUI(quick = false) {
     } else if (op.kind === "burstWar") {
       title = "Attack";
       const defName = world.nation[op.defender]?.name || `AI ${op.defender - 1}`;
-      const attacking = Math.max(0, Math.floor(Number(op.attackPool) || 0));
       const losses = Math.max(0, Math.floor(Number(op.casualties) || 0));
-      subtitle = `vs ${defName} | Attacking ${fmtCompactLocal(attacking)} | Casualties ${fmtCompactLocal(losses)}`;
+      subtitle = `vs ${defName} | Active attacking infantry ${fmtCompactLocal(activeAttacking)} | Casualties ${fmtCompactLocal(losses)}`;
       dockOps.push({
         id: op.id,
         title: `War of ${defName}`,
@@ -16630,7 +16813,7 @@ function refreshOpUI(quick = false) {
         groupTitle: `War of ${defName}`,
         defenderId: op.defender | 0,
         canReinforce: true,
-        attackingTroops: Math.max(0, Number(op.attackPool) || 0),
+        attackingTroops: activeAttacking,
         enemyAttackingTroops: enemyCounterattackPressure(op.defender | 0),
         enemyCasualties: Math.max(0, Number(op.enemyCasualties) || 0),
         casualties: Math.max(0, Number(op.casualties) || 0),
@@ -16638,16 +16821,15 @@ function refreshOpUI(quick = false) {
       });
     } else if (op.kind === "burst") {
       const dir = expansionDirectionLabel(op);
-      const attacking = Math.max(0, Math.floor(Number(op.attackPool) || 0));
       title = `Expansion on ${dir}`;
-      subtitle = `Spent ${Math.round(pct * 100)}% | +${Math.floor(op.tilesCaptured || 0)} tiles | Attacking ${fmtCompactLocal(attacking)}`;
+      subtitle = `Spent ${Math.round(pct * 100)}% | +${Math.floor(op.tilesCaptured || 0)} tiles | Active attacking infantry ${fmtCompactLocal(activeAttacking)}`;
       dockOps.push({
         id: op.id,
         title: `Expansion on ${dir}`,
         opTitle: `Expansion on ${dir}`,
         groupKey: `expansion:${op.id | 0}`,
         groupTitle: `Expansion on ${dir}`,
-        attackingTroops: Math.max(0, Number(op.attackPool) || 0),
+        attackingTroops: activeAttacking,
         expansionOnly: true,
         onView: (id) => viewOperationSmooth(id)
       });

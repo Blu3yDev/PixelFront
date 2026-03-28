@@ -19,8 +19,23 @@ import {
 import { clamp01, clamp8, clampInt, fbm01, hash01, lerp, mulberry32, noise2, ridgeFbm01, smoothstep01, title } from "../utils.js";
 
 function isHighValueNukeStructureType(typeRaw) {
+  return aiStrategicStructureWeight(typeRaw) >= 5.8;
+}
+
+function aiStrategicStructureWeight(typeRaw) {
   const t = String(typeRaw || "");
-  return t === "missile_silo" || t === "abm_launcher" || t === "factory" || t === "capital";
+  if (t === "capital") return 10.6;
+  if (t === "missile_silo") return 9.8;
+  if (t === "abm_launcher") return 8.9;
+  if (t === "factory") return 7.4;
+  if (t === "research_lab") return 6.8;
+  if (t === "airbase") return 6.2;
+  if (t === "coastal_rig") return 6.0;
+  if (t === "barracks") return 5.0;
+  if (t === "city") return 4.4;
+  if (t === "port") return 4.1;
+  if (t === "defence_post") return 2.2;
+  return 0;
 }
 
 const AI_TRADE_RESOURCES = Object.freeze(["food", "steel", "oil"]);
@@ -646,6 +661,46 @@ export function installAI(World) {
       return true;
     }
 
+  World.prototype._aiEnemyStrategicPressureAt = function(defenderId, centerIdx, radiusTiles = 16, coastalBias = 0) {
+      const D = defenderId | 0;
+      const idx = centerIdx | 0;
+      if (D <= 0 || idx < 0 || idx >= this.owner.length || !this.land[idx]) return 0;
+
+      const cx = idx % this.w;
+      const cy = (idx / this.w) | 0;
+      const r = Math.max(2, Number(radiusTiles) || 2);
+      const r2 = r * r;
+      const coastBias = Math.max(0, Number(coastalBias) || 0);
+      let score = 0;
+
+      for (let i = 0; i < this.structures.length; i++) {
+        const st = this.structures[i];
+        if (!st || (st.owner | 0) !== D) continue;
+        const base = aiStrategicStructureWeight(st.type);
+        if (!(base > 0)) continue;
+
+        const dx = (st.x | 0) - cx;
+        const dy = (st.y | 0) - cy;
+        const d2 = (dx * dx) + (dy * dy);
+        if (d2 > r2) continue;
+
+        const falloff = 0.34 + (0.66 * (1 - Math.min(1, d2 / Math.max(1, r2))));
+        const stackCount = Math.max(
+          0,
+          (typeof this._structureOperationalCount === "function")
+            ? (this._structureOperationalCount(st) | 0)
+            : ((st.count | 0) || 1)
+        );
+        if (stackCount <= 0) continue;
+        const coastalMul = (coastBias > 0 && this._touchesWater4(((st.y | 0) * this.w) + (st.x | 0)))
+          ? (1 + coastBias)
+          : 1;
+        score += base * falloff * coastalMul * Math.min(1.8, 0.86 + stackCount * 0.14);
+      }
+
+      return score;
+    }
+
   World.prototype._aiBuildWarFocusSelection = function(attackerId, defenderId, wantTiles = 72) {
       const A = attackerId | 0;
       const D = defenderId | 0;
@@ -665,8 +720,10 @@ export function installAI(World) {
       for (let i = 0; i < probes; i++) {
         const idx = candidates[(this._rng() * candidates.length) | 0] | 0;
         const weak = this._enemyTileWeakness(A, D, idx);
-        if (weak > seedWeak) {
-          seedWeak = weak;
+        const strategic = this._aiEnemyStrategicPressureAt(D, idx, 16, 0.12);
+        const score = weak + Math.min(1.6, strategic * 0.12);
+        if (score > seedWeak) {
+          seedWeak = score;
           seed = idx;
         }
       }
@@ -1209,30 +1266,41 @@ export function installAI(World) {
 
         const enemyCoast = this._aiSampleCoastalOwnedTiles(D, 150, 700, A);
         if (enemyCoast.length < 8) continue;
-
-        const can = this.canStartOverseasWar(A, D, enemyCoast);
-        if (!can.ok || !can.route) continue;
-
         const wantTiles = clampInt(Math.round(24 + clamp01(Number(p.focusP ?? 0.14)) * 94), 18, 110);
-        const selection = this._aiBuildLandingSelection(D, can.route.land.x | 0, can.route.land.y | 0, wantTiles, 20);
-        if (selection.length < 6) continue;
+        const probeCount = Math.min(28, enemyCoast.length);
+        const step = Math.max(1, Math.floor(enemyCoast.length / Math.max(1, probeCount)));
+        const offset = (this._rng() * enemyCoast.length) | 0;
 
-        const routeDist =
-          Math.abs((can.route.spawn.x | 0) - (can.route.land.x | 0)) +
-          Math.abs((can.route.spawn.y | 0) - (can.route.land.y | 0));
-        const enemyLand = Math.max(1, this.landOwnedCount[D] | 0);
+        for (let k = 0; k < probeCount; k++) {
+          const coastIdx = enemyCoast[(offset + (k * step)) % enemyCoast.length] | 0;
+          const can = this.canStartOverseasWar(A, D, [coastIdx]);
+          if (!can.ok || !can.route) continue;
 
-        let score = 0;
-        score += selection.length * 1.45;
-        score += Math.min(18, routeDist * 0.08);
-        score += Math.min(14, enemyLand * 0.0022);
-        score += (ratio - 0.72) * 6.0;
-        if ((ai.lastWarTarget | 0) === D) score += 2.4;
-        if ((ai.lastTransportTarget | 0) === D) score -= 1.6;
+          const landIdx = ((can.route.land.y | 0) * this.w) + (can.route.land.x | 0);
+          const selection = this._aiBuildLandingSelection(D, can.route.land.x | 0, can.route.land.y | 0, wantTiles, 20);
+          if (selection.length < 6) continue;
 
-        if (score > bestScore) {
-          bestScore = score;
-          best = { defender: D, route: can.route, selection };
+          const routeDist =
+            Math.abs((can.route.spawn.x | 0) - (can.route.land.x | 0)) +
+            Math.abs((can.route.spawn.y | 0) - (can.route.land.y | 0));
+          const enemyLand = Math.max(1, this.landOwnedCount[D] | 0);
+          const coastalPressure = this._aiEnemyStrategicPressureAt(D, landIdx, 14, 0.34);
+          const inlandPressure = this._aiEnemyStrategicPressureAt(D, landIdx, 24, 0.10);
+
+          let score = 0;
+          score += selection.length * 1.35;
+          score += Math.min(24, coastalPressure * 0.92);
+          score += Math.min(18, inlandPressure * 0.44);
+          score += Math.min(14, routeDist * 0.06);
+          score += Math.min(14, enemyLand * 0.0022);
+          score += (ratio - 0.72) * 6.0;
+          if ((ai.lastWarTarget | 0) === D) score += 2.4;
+          if ((ai.lastTransportTarget | 0) === D) score -= 1.6;
+
+          if (score > bestScore) {
+            bestScore = score;
+            best = { defender: D, route: can.route, selection };
+          }
         }
       }
 
@@ -2249,16 +2317,8 @@ export function installAI(World) {
     }
 
   World.prototype._aiNukeStructureBaseWeight = function(type) {
-      const t = String(type || "");
-      if (t === "missile_silo") return 8.8;
-      if (t === "abm_launcher") return 6.6;
-      if (t === "factory") return 5.1;
-      if (t === "capital") return 4.8;
-      if (t === "barracks") return 4.0;
-      if (t === "city") return 3.1;
-      if (t === "port") return 2.4;
-      if (t === "defence_post") return 1.9;
-      return 1.2;
+      const base = aiStrategicStructureWeight(type);
+      return base > 0 ? base : 1.2;
     }
 
   World.prototype._aiScoreNukeTargetCell = function(attackerId, defenderId, x, y, blastRadiusTiles) {

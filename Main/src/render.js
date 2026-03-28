@@ -5,6 +5,8 @@ import { OWNER } from "./game/core/world.js";
 import {
   AIRBASE_LAUNCH_RADIUS_TILES,
   ABM_RADIUS_TILES,
+  WAR_ENGAGE_TROOPS_PER_CONTACT,
+  WAR_MIN_INF_TO_ADVANCE,
   CAMERA_PAN_OVERSCROLL_VIEWPORT,
   CAPITAL_DEFENCE_RADIUS_TILES,
   DEFENCE_POST_RADIUS_TILES,
@@ -146,6 +148,12 @@ function fmtCompact(v) {
   return sign + s + units[u];
 }
 
+function fmtFrontlineTroops(v) {
+  const n = Math.max(0, Math.round(Number(v) || 0));
+  if (n < 1_000_000) return n.toLocaleString("en-US");
+  return fmtCompact(n);
+}
+
 function roundTo(v, step) {
   const s = Math.max(1, step | 0);
   return Math.round(v / s) * s;
@@ -168,6 +176,7 @@ function fogDarkenChannel(value, floor, mix) {
 function hasIntelAdjacency(world, ownerId) {
   if (ownerId === OWNER.PLAYER) return true;
   if (!world) return false;
+  if (world?.nation?.[ownerId | 0]?.isHuman) return true;
   if (typeof world._bordersTouch === "function" && world._bordersTouch(OWNER.PLAYER, ownerId | 0)) return true;
   return !!world.isNationInRadarCoverage?.(OWNER.PLAYER, ownerId | 0);
 }
@@ -190,6 +199,45 @@ function estimatePopulationText(world, ownerId, pop) {
   if (high <= low) high = low + step;
 
   return `${fmtCompact(low)}-${fmtCompact(high)}`;
+}
+
+function getNationFrontCommit(nation) {
+  const attackCommit = Number(nation?.attackCommit ?? nation?.aggression);
+  if (Number.isFinite(attackCommit)) return clamp01(attackCommit);
+  const attackRatio = Number(nation?.attackRatio);
+  if (Number.isFinite(attackRatio)) return clamp01(attackRatio);
+  return 0.20;
+}
+
+function asIndexArray(value, maxTake = 96) {
+  const limit = Math.max(1, maxTake | 0);
+  if (!value) return [];
+
+  const src = Array.isArray(value)
+    ? value
+    : (typeof value[Symbol.iterator] === "function")
+      ? Array.from(value)
+      : [];
+  if (src.length <= 0) return [];
+
+  const out = [];
+  const seen = new Set();
+  const stride = Math.max(1, Math.ceil(src.length / limit));
+  for (let i = 0; i < src.length && out.length < limit; i += stride) {
+    const idx = Number(src[i]) | 0;
+    if (seen.has(idx)) continue;
+    seen.add(idx);
+    out.push(idx);
+  }
+  if (out.length >= limit) return out;
+
+  for (let i = 0; i < src.length && out.length < limit; i++) {
+    const idx = Number(src[i]) | 0;
+    if (seen.has(idx)) continue;
+    seen.add(idx);
+    out.push(idx);
+  }
+  return out;
 }
 
 function hash2i(x, y, seed) {
@@ -333,6 +381,13 @@ export class Renderer {
     this._relationLayoutCache = new Map();
     this._relationLayoutCacheVersion = -1;
     this._relationLayoutCacheLastPruneAt = 0;
+    this._frontlineOverlayMarkers = [];
+    this._frontlineOverlayOwnerVersion = -1;
+    this._frontlineOverlayOpSignature = "";
+    this._frontlineOverlayNextRefreshAt = 0;
+    this._frontlineOverlayTrackByKey = new Map();
+    this._frontlineOverlayLastFrameAt = performance.now() * 0.001;
+    this._frontlineOverlayAnchorCache = new Map();
     this._playerVisibleNationIds = new Set([OWNER.PLAYER]);
     this._playerVisionOwnerVersion = -1;
     this._playerVisionRadarVersion = -1;
@@ -3490,6 +3545,10 @@ export class Renderer {
     }
 
     const nextVisible = new Set([OWNER.PLAYER]);
+    for (let id = 1; id <= nationCount; id++) {
+      if (id === OWNER.PLAYER) continue;
+      if (world?.nation?.[id]?.isHuman) nextVisible.add(id);
+    }
     if (typeof world._bordersTouch === "function") {
       for (let id = 1; id <= nationCount; id++) {
         if (id === OWNER.PLAYER) continue;
@@ -3527,6 +3586,7 @@ export class Renderer {
     if (!this._isAdvancedFogOfWarEnabled()) return true;
     if (ownerId <= OWNER.NONE) return true;
     if (ownerId === OWNER.PLAYER) return true;
+    if (this.world?.nation?.[ownerId]?.isHuman) return true;
     this._syncPlayerVisionState();
     return !!this._playerVisibleNationIds?.has(ownerId);
   }
@@ -4734,6 +4794,851 @@ export class Renderer {
 
 
 
+
+  _snapPointToOwnerTile(ownerId, xRaw, yRaw, maxRadius = 12) {
+    const world = this.world;
+    const ownerArr = world?.owner;
+    const landArr = world?.land;
+    const worldW = world?.w | 0;
+    const worldH = world?.h | 0;
+    const ownerIdInt = ownerId | 0;
+    if (!ownerArr || !landArr || worldW <= 0 || worldH <= 0 || ownerIdInt <= OWNER.NONE) return null;
+
+    const isOwned = (tx, ty) => {
+      if (tx < 0 || ty < 0 || tx >= worldW || ty >= worldH) return false;
+      const idx = ty * worldW + tx;
+      return !!landArr[idx] && ((ownerArr[idx] | 0) === ownerIdInt);
+    };
+
+    const x0 = clamp(Math.floor(Number(xRaw) || 0), 0, worldW - 1) | 0;
+    const y0 = clamp(Math.floor(Number(yRaw) || 0), 0, worldH - 1) | 0;
+    if (isOwned(x0, y0)) return { x: x0 + 0.5, y: y0 + 0.5 };
+
+    let best = null;
+    let bestD2 = Infinity;
+    const rMax = Math.max(1, maxRadius | 0);
+    for (let r = 1; r <= rMax; r++) {
+      const xMin = x0 - r;
+      const xMax = x0 + r;
+      const yMin = y0 - r;
+      const yMax = y0 + r;
+
+      for (let x = xMin; x <= xMax; x++) {
+        const topY = yMin;
+        const bottomY = yMax;
+        if (isOwned(x, topY)) {
+          const dx = x - x0;
+          const dy = topY - y0;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < bestD2) { bestD2 = d2; best = { x: x + 0.5, y: topY + 0.5 }; }
+        }
+        if (isOwned(x, bottomY)) {
+          const dx = x - x0;
+          const dy = bottomY - y0;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < bestD2) { bestD2 = d2; best = { x: x + 0.5, y: bottomY + 0.5 }; }
+        }
+      }
+
+      for (let y = yMin + 1; y <= yMax - 1; y++) {
+        const leftX = xMin;
+        const rightX = xMax;
+        if (isOwned(leftX, y)) {
+          const dx = leftX - x0;
+          const dy = y - y0;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < bestD2) { bestD2 = d2; best = { x: leftX + 0.5, y: y + 0.5 }; }
+        }
+        if (isOwned(rightX, y)) {
+          const dx = rightX - x0;
+          const dy = y - y0;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < bestD2) { bestD2 = d2; best = { x: rightX + 0.5, y: y + 0.5 }; }
+        }
+      }
+
+      if (best) return best;
+    }
+
+    return null;
+  }
+
+  _sampleWarFrontierTiles(attackerId, defenderId, op = null) {
+    const world = this.world;
+    const attacker = attackerId | 0;
+    const defender = defenderId | 0;
+    const out = [];
+    const seen = new Set();
+    const add = (idxRaw) => {
+      const idx = Number(idxRaw) | 0;
+      if (seen.has(idx)) return;
+      seen.add(idx);
+      out.push(idx);
+    };
+
+    const frontier = asIndexArray(op?.frontier, 80);
+    for (let i = 0; i < frontier.length; i++) add(frontier[i]);
+
+    if (out.length <= 0) {
+      const target = asIndexArray(op?.target, 96);
+      const canTouch = typeof world?._touchesOwner4 === "function";
+      const ownerArr = world?.owner;
+      const landArr = world?.land;
+      for (let i = 0; i < target.length; i++) {
+        const idx = target[i] | 0;
+        if (!landArr?.[idx]) continue;
+        if ((ownerArr?.[idx] | 0) !== defender) continue;
+        if (canTouch && !world._touchesOwner4(idx, attacker)) continue;
+        add(idx);
+      }
+    }
+
+    if (out.length > 0) return out;
+
+    if (typeof world?._collectFrontlineCandidates === "function") {
+      const scratch = [];
+      const sampled = world._collectFrontlineCandidates(attacker, defender, 64, 1800, scratch);
+      const rows = Array.isArray(sampled) ? sampled : scratch;
+      for (let i = 0; i < rows.length; i++) add(rows[i]);
+    }
+
+    return out;
+  }
+
+  _buildFrontlineGeometry(attackerId, defenderId, borderTiles) {
+    const world = this.world;
+    const ownerArr = world?.owner;
+    const landArr = world?.land;
+    const worldW = world?.w | 0;
+    const worldH = world?.h | 0;
+    const attacker = attackerId | 0;
+    const defender = defenderId | 0;
+    if (!ownerArr || !landArr || worldW <= 0 || worldH <= 0) return null;
+
+    let atkSumX = 0;
+    let atkSumY = 0;
+    let atkCount = 0;
+    let defSumX = 0;
+    let defSumY = 0;
+    let defCount = 0;
+    const limit = Math.min(Math.max(1, borderTiles.length | 0), 72);
+
+    for (let i = 0; i < limit; i++) {
+      const idx = borderTiles[i] | 0;
+      if (idx < 0 || idx >= (worldW * worldH)) continue;
+      if (!landArr[idx]) continue;
+      if ((ownerArr[idx] | 0) !== defender) continue;
+
+      const x = idx % worldW;
+      const y = (idx / worldW) | 0;
+      defSumX += x + 0.5;
+      defSumY += y + 0.5;
+      defCount++;
+
+      const neighbors = [
+        [x - 1, y],
+        [x + 1, y],
+        [x, y - 1],
+        [x, y + 1]
+      ];
+      for (let n = 0; n < neighbors.length; n++) {
+        const nx = neighbors[n][0] | 0;
+        const ny = neighbors[n][1] | 0;
+        if (nx < 0 || ny < 0 || nx >= worldW || ny >= worldH) continue;
+        const nIdx = (ny * worldW + nx) | 0;
+        if (!landArr[nIdx]) continue;
+        if ((ownerArr[nIdx] | 0) !== attacker) continue;
+        atkSumX += nx + 0.5;
+        atkSumY += ny + 0.5;
+        atkCount++;
+      }
+    }
+
+    if (defCount <= 0 || atkCount <= 0) return null;
+
+    const atkAvgX = atkSumX / atkCount;
+    const atkAvgY = atkSumY / atkCount;
+    const defAvgX = defSumX / defCount;
+    const defAvgY = defSumY / defCount;
+    const midX = (atkAvgX + defAvgX) * 0.5;
+    const midY = (atkAvgY + defAvgY) * 0.5;
+
+    const attackerNudgeX = midX + ((atkAvgX - midX) * 0.95);
+    const attackerNudgeY = midY + ((atkAvgY - midY) * 0.95);
+    const defenderNudgeX = midX + ((defAvgX - midX) * 0.95);
+    const defenderNudgeY = midY + ((defAvgY - midY) * 0.95);
+
+    const attackerPoint = this._snapPointToOwnerTile(attacker, attackerNudgeX, attackerNudgeY, 12)
+      || this._snapPointToOwnerTile(attacker, atkAvgX, atkAvgY, 16);
+    const defenderPoint = this._snapPointToOwnerTile(defender, defenderNudgeX, defenderNudgeY, 12)
+      || this._snapPointToOwnerTile(defender, defAvgX, defAvgY, 16);
+    if (!attackerPoint || !defenderPoint) return null;
+
+    return {
+      midX,
+      midY,
+      attackerAvgX: atkAvgX,
+      attackerAvgY: atkAvgY,
+      defenderAvgX: defAvgX,
+      defenderAvgY: defAvgY,
+      attackerPoint,
+      defenderPoint,
+      ownerPoints: {
+        [attacker]: attackerPoint,
+        [defender]: defenderPoint
+      },
+      weight: Math.max(1, Math.min(defCount, atkCount))
+    };
+  }
+
+  _computeWarPairFallbackCounts(aId, bId, contactsHint = 1) {
+    const world = this.world;
+    const a = aId | 0;
+    const b = bId | 0;
+    const nA = world?.nation?.[a];
+    const nB = world?.nation?.[b];
+    if (!nA || !nB) return { [a]: 0, [b]: 0 };
+
+    const contacts = Math.max(1, Number(contactsHint) || 1);
+    const contactCap = contacts * Math.max(1, Number(WAR_ENGAGE_TROOPS_PER_CONTACT) || 1);
+    const countFor = (nationId, nation) => {
+      const canAttack = (nationId !== OWNER.PLAYER) && ((Number(nation?.infantry) || 0) >= (Number(WAR_MIN_INF_TO_ADVANCE) || 1));
+      if (!canAttack) return 0;
+      const committed = Math.max(0, (Number(nation?.infantry) || 0) * getNationFrontCommit(nation));
+      return Math.max(0, Math.min(committed, contactCap));
+    };
+
+    return {
+      [a]: countFor(a, nA),
+      [b]: countFor(b, nB)
+    };
+  }
+
+  _resolveFrontlineInteriorPoint(ownerId, midX, midY, nearX, nearY, fallbackX, fallbackY, desiredTiles = 6) {
+    const owner = ownerId | 0;
+    let dirX = (Number(nearX) || 0) - (Number(midX) || 0);
+    let dirY = (Number(nearY) || 0) - (Number(midY) || 0);
+    let len = Math.hypot(dirX, dirY);
+
+    if (len < 0.001) {
+      dirX = (Number(fallbackX) || 0) - (Number(midX) || 0);
+      dirY = (Number(fallbackY) || 0) - (Number(midY) || 0);
+      len = Math.hypot(dirX, dirY);
+    }
+
+    if (len < 0.001) {
+      const nationPos = this.world?.getNationLabelPos?.(owner);
+      dirX = (Number(nationPos?.x) || 0) - (Number(midX) || 0);
+      dirY = (Number(nationPos?.y) || 0) - (Number(midY) || 0);
+      len = Math.hypot(dirX, dirY);
+    }
+
+    if (len < 0.001) dirX = 1;
+    else {
+      dirX /= len;
+      dirY /= len;
+    }
+
+    const offset = Math.max(3.5, Number(desiredTiles) || 6);
+    const tx = (Number(midX) || 0) + dirX * offset;
+    const ty = (Number(midY) || 0) + dirY * offset;
+
+    return this._snapPointToOwnerTile(owner, tx, ty, 18)
+      || this._snapPointToOwnerTile(owner, nearX, nearY, 12)
+      || this._snapPointToOwnerTile(owner, fallbackX, fallbackY, 16)
+      || null;
+  }
+
+  _measureOwnerSpanAt(ownerId, xRaw, yRaw) {
+    const world = this.world;
+    const ownerArr = world?.owner;
+    const landArr = world?.land;
+    const worldW = world?.w | 0;
+    const worldH = world?.h | 0;
+    const owner = ownerId | 0;
+    if (!ownerArr || !landArr || worldW <= 0 || worldH <= 0 || owner <= OWNER.NONE) {
+      return { spanX: 0, spanY: 0 };
+    }
+
+    const x = clamp(Math.floor(Number(xRaw) || 0), 0, worldW - 1) | 0;
+    const y = clamp(Math.floor(Number(yRaw) || 0), 0, worldH - 1) | 0;
+    const idx = y * worldW + x;
+    if (!landArr[idx] || (ownerArr[idx] | 0) !== owner) return { spanX: 0, spanY: 0 };
+
+    let x0 = x;
+    while (x0 > 0) {
+      const i = y * worldW + (x0 - 1);
+      if (!landArr[i] || (ownerArr[i] | 0) !== owner) break;
+      x0--;
+    }
+    let x1 = x;
+    while ((x1 + 1) < worldW) {
+      const i = y * worldW + (x1 + 1);
+      if (!landArr[i] || (ownerArr[i] | 0) !== owner) break;
+      x1++;
+    }
+
+    let y0 = y;
+    while (y0 > 0) {
+      const i = (y0 - 1) * worldW + x;
+      if (!landArr[i] || (ownerArr[i] | 0) !== owner) break;
+      y0--;
+    }
+    let y1 = y;
+    while ((y1 + 1) < worldH) {
+      const i = (y1 + 1) * worldW + x;
+      if (!landArr[i] || (ownerArr[i] | 0) !== owner) break;
+      y1++;
+    }
+
+    return {
+      spanX: (x1 - x0 + 1),
+      spanY: (y1 - y0 + 1)
+    };
+  }
+
+  _syncFrontlineOverlayTracks(markers, dt) {
+    const tracks = this._frontlineOverlayTrackByKey;
+    const liveKeys = new Set();
+    const claimedTrackKeys = new Set();
+    const smoothDt = Math.max(0.001, Number(dt) || 0.016);
+    const posT = 1 - Math.exp(-2.2 * smoothDt);
+    const alphaOutT = 1 - Math.exp(-6 * smoothDt);
+    const out = [];
+
+    for (let i = 0; i < markers.length; i++) {
+      const marker = markers[i];
+      if (!marker || !Array.isArray(marker.sides) || marker.sides.length <= 0) continue;
+
+      let markerKey = String(marker.key || `front:${i}`);
+      let track = tracks.get(markerKey);
+      if (!track) {
+        const pairKey = String(marker.pairKey || "");
+        let best = null;
+        let bestD2 = Infinity;
+        const trackEntries = Array.from(tracks.entries());
+        for (let t = 0; t < trackEntries.length; t++) {
+          const [existingKey, cand] = trackEntries[t];
+          if (claimedTrackKeys.has(existingKey)) continue;
+          if (String(cand?.pairKey || "") !== pairKey) continue;
+          const dx = (Number(cand?.midX) || 0) - (Number(marker.midX) || 0);
+          const dy = (Number(cand?.midY) || 0) - (Number(marker.midY) || 0);
+          const d2 = dx * dx + dy * dy;
+          if (d2 < bestD2 && d2 <= (36 * 36)) {
+            bestD2 = d2;
+            best = { existingKey, track: cand };
+          }
+        }
+        if (best?.track) {
+          track = best.track;
+          markerKey = String(best.existingKey || markerKey);
+        }
+      }
+      liveKeys.add(markerKey);
+      claimedTrackKeys.add(markerKey);
+      if (!track) {
+        track = {
+          key: markerKey,
+          pairKey: String(marker.pairKey || ""),
+          midX: Number(marker.midX) || 0,
+          midY: Number(marker.midY) || 0,
+          alpha: 1,
+          sides: new Map()
+        };
+        tracks.set(markerKey, track);
+      }
+
+      track.key = markerKey;
+      track.pairKey = String(marker.pairKey || track.pairKey || "");
+      track.midX = lerp(Number(track.midX) || 0, Number(marker.midX) || 0, posT);
+      track.midY = lerp(Number(track.midY) || 0, Number(marker.midY) || 0, posT);
+      track.alpha = 1;
+
+      const nextSides = [];
+      const liveSideKeys = new Set();
+      for (let s = 0; s < marker.sides.length; s++) {
+        const side = marker.sides[s];
+        const sideKey = String(side?.key || `${markerKey}:${s}`);
+        liveSideKeys.add(sideKey);
+        let sideTrack = track.sides.get(sideKey);
+        if (!sideTrack) {
+          sideTrack = {
+            key: sideKey,
+            ownerId: side.ownerId | 0,
+            x: Number(side.x) || 0,
+            y: Number(side.y) || 0,
+            troops: Math.max(0, Number(side.troops) || 0),
+            land: Math.max(0, Number(side.land) || 0),
+            spanX: Math.max(0, Number(side.spanX) || 0),
+            spanY: Math.max(0, Number(side.spanY) || 0),
+            alpha: 1
+          };
+          track.sides.set(sideKey, sideTrack);
+        }
+
+        sideTrack.ownerId = side.ownerId | 0;
+        sideTrack.x = lerp(Number(sideTrack.x) || 0, Number(side.x) || 0, posT);
+        sideTrack.y = lerp(Number(sideTrack.y) || 0, Number(side.y) || 0, posT);
+        sideTrack.troops = lerp(Number(sideTrack.troops) || 0, Math.max(0, Number(side.troops) || 0), posT);
+        sideTrack.land = Math.max(0, Number(side.land) || 0);
+        sideTrack.spanX = Math.max(0, Number(side.spanX) || 0);
+        sideTrack.spanY = Math.max(0, Number(side.spanY) || 0);
+        sideTrack.alpha = 1;
+        nextSides.push(sideTrack);
+      }
+
+      const sideEntries = Array.from(track.sides.entries());
+      for (let s = 0; s < sideEntries.length; s++) {
+        const [sideKey, sideTrack] = sideEntries[s];
+        if (liveSideKeys.has(sideKey)) continue;
+        sideTrack.alpha = lerp(Number(sideTrack.alpha) || 0, 0, alphaOutT);
+        if ((Number(sideTrack.alpha) || 0) <= 0.025) {
+          track.sides.delete(sideKey);
+          continue;
+        }
+        nextSides.push(sideTrack);
+      }
+
+      if ((Number(track.alpha) || 0) > 0.025 && nextSides.length > 0) {
+        out.push({
+          key: markerKey,
+          midX: track.midX,
+          midY: track.midY,
+          alpha: track.alpha,
+          sides: nextSides
+        });
+      }
+    }
+
+    const trackEntries = Array.from(tracks.entries());
+    for (let i = 0; i < trackEntries.length; i++) {
+      const [markerKey, track] = trackEntries[i];
+      if (liveKeys.has(markerKey)) continue;
+      track.alpha = lerp(Number(track.alpha) || 0, 0, alphaOutT);
+      const sideEntries = Array.from(track.sides.entries());
+      for (let s = 0; s < sideEntries.length; s++) {
+        const [sideKey, sideTrack] = sideEntries[s];
+        sideTrack.alpha = lerp(Number(sideTrack.alpha) || 0, 0, alphaOutT);
+        if ((Number(sideTrack.alpha) || 0) <= 0.025) track.sides.delete(sideKey);
+      }
+      if ((Number(track.alpha) || 0) <= 0.025 || track.sides.size <= 0) {
+        tracks.delete(markerKey);
+        continue;
+      }
+      out.push({
+        key: markerKey,
+        midX: track.midX,
+        midY: track.midY,
+        alpha: track.alpha,
+        sides: Array.from(track.sides.values())
+      });
+    }
+
+    return out;
+  }
+
+  _resolveFrontlineOperationTroops(op) {
+    if (!op) return 0;
+    const livePool = Number(op.attackPool);
+    if (Number.isFinite(livePool)) return Math.max(0, livePool);
+    const committed = Number(op.committedAtStart);
+    const casualties = Number(op.casualties);
+    if (Number.isFinite(committed) || Number.isFinite(casualties)) {
+      return Math.max(0, (Number.isFinite(committed) ? committed : 0) - (Number.isFinite(casualties) ? casualties : 0));
+    }
+    return 0;
+  }
+
+  _buildFrontlineOverlayMarkers() {
+    const world = this.world;
+    const nowT = Number(world?.time) || 0;
+    const ownerVersion = world?.ownerVersion | 0;
+    const ops = Array.isArray(world?.operations) ? world.operations : [];
+    const opSignature = ops
+      .filter((op) => {
+        if (!op) return false;
+        const kind = String(op.kind || "");
+        return kind === "war" || kind === "burstWar";
+      })
+      .map((op) => {
+        const frontierSize = Array.isArray(op?.frontier) ? op.frontier.length : (op?.frontier?.size | 0);
+        return [
+          op.id | 0,
+          op.attacker | 0,
+          op.defender | 0,
+          String(op.kind || ""),
+          Math.round(this._resolveFrontlineOperationTroops(op)),
+          frontierSize | 0
+        ].join(":");
+      })
+      .join("|");
+
+    if (
+      ownerVersion === (this._frontlineOverlayOwnerVersion | 0) &&
+      opSignature === String(this._frontlineOverlayOpSignature || "") &&
+      nowT < (Number(this._frontlineOverlayNextRefreshAt) || 0)
+    ) {
+      return this._frontlineOverlayMarkers;
+    }
+
+    const pairToMarkers = new Map();
+    const pairCoverage = new Set();
+    const mergeThresholdSq = Number.POSITIVE_INFINITY;
+
+    const mergeMarker = (pairKey, aId, bId, geometry, attackCounts) => {
+      let arr = pairToMarkers.get(pairKey);
+      if (!arr) {
+        arr = [];
+        pairToMarkers.set(pairKey, arr);
+      }
+
+      let marker = null;
+      let markerIdx = -1;
+      let bestD2 = Infinity;
+      for (let i = 0; i < arr.length; i++) {
+        const cand = arr[i];
+        const dx = Number(cand.midX) - Number(geometry.midX);
+        const dy = Number(cand.midY) - Number(geometry.midY);
+        const d2 = dx * dx + dy * dy;
+        if (d2 <= mergeThresholdSq && d2 < bestD2) {
+          bestD2 = d2;
+          marker = cand;
+          markerIdx = i;
+        }
+      }
+
+      if (!marker) {
+        marker = {
+          pairKey,
+          a: aId | 0,
+          b: bId | 0,
+          midX: Number(geometry.midX) || 0,
+          midY: Number(geometry.midY) || 0,
+          weight: Math.max(1, Number(geometry.weight) || 1),
+          contacts: Math.max(1, Number(geometry.weight) || 1),
+          sideCounts: { [aId | 0]: 0, [bId | 0]: 0 },
+          sideAnchors: {
+            [aId | 0]: { x: Number(geometry.ownerPoints?.[aId]?.x) || 0, y: Number(geometry.ownerPoints?.[aId]?.y) || 0, w: 1 },
+            [bId | 0]: { x: Number(geometry.ownerPoints?.[bId]?.x) || 0, y: Number(geometry.ownerPoints?.[bId]?.y) || 0, w: 1 }
+          }
+        };
+        arr.push(marker);
+        markerIdx = arr.length - 1;
+      } else {
+        const nextWeight = marker.weight + Math.max(1, Number(geometry.weight) || 1);
+        marker.midX = ((marker.midX * marker.weight) + (Number(geometry.midX) || 0) * Math.max(1, Number(geometry.weight) || 1)) / Math.max(1, nextWeight);
+        marker.midY = ((marker.midY * marker.weight) + (Number(geometry.midY) || 0) * Math.max(1, Number(geometry.weight) || 1)) / Math.max(1, nextWeight);
+        marker.weight = nextWeight;
+        marker.contacts = Math.max(marker.contacts, Number(geometry.weight) || 1);
+
+        const syncAnchor = (ownerId, point) => {
+          const id = ownerId | 0;
+          const cur = marker.sideAnchors[id] || { x: 0, y: 0, w: 0 };
+          const addW = Math.max(1, Number(geometry.weight) || 1);
+          const totalW = cur.w + addW;
+          marker.sideAnchors[id] = {
+            x: ((cur.x * cur.w) + (Number(point?.x) || 0) * addW) / Math.max(1, totalW),
+            y: ((cur.y * cur.w) + (Number(point?.y) || 0) * addW) / Math.max(1, totalW),
+            w: totalW
+          };
+        };
+        syncAnchor(aId, geometry.ownerPoints?.[aId]);
+        syncAnchor(bId, geometry.ownerPoints?.[bId]);
+      }
+
+      const ids = Object.keys(attackCounts || {});
+      for (let i = 0; i < ids.length; i++) {
+        const id = Number(ids[i]) | 0;
+        marker.sideCounts[id] = (Number(marker.sideCounts[id]) || 0) + Math.max(0, Number(attackCounts[id]) || 0);
+      }
+
+      return arr[markerIdx];
+    };
+
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
+      if (!op) continue;
+      const kind = String(op.kind || "");
+      if (kind !== "war" && kind !== "burstWar") continue;
+
+      const attacker = op.attacker | 0;
+      const defender = op.defender | 0;
+      if (attacker <= OWNER.NONE || defender <= OWNER.NONE || attacker === defender) continue;
+      if (attacker !== OWNER.PLAYER && defender !== OWNER.PLAYER) continue;
+
+      const lo = attacker < defender ? attacker : defender;
+      const hi = attacker < defender ? defender : attacker;
+      const pairKey = `${lo}:${hi}`;
+
+      const borderTiles = this._sampleWarFrontierTiles(attacker, defender, op);
+      const geometry = this._buildFrontlineGeometry(attacker, defender, borderTiles);
+      if (!geometry) continue;
+      const opCx = Number(op?.centroid?.x);
+      const opCy = Number(op?.centroid?.y);
+      if (Number.isFinite(opCx) && Number.isFinite(opCy)) {
+        geometry.midX = opCx;
+        geometry.midY = opCy;
+      }
+
+      mergeMarker(pairKey, lo, hi, geometry, {
+        [attacker]: this._resolveFrontlineOperationTroops(op)
+      });
+      pairCoverage.add(pairKey);
+    }
+
+    if (typeof world?._pair === "function") {
+      const nationCount = Math.max(1, Number(world._nationCount) | 0);
+      const now = Number(world.time) || 0;
+      for (let a = 1; a <= nationCount; a++) {
+        const nA = world.nation?.[a];
+        if (!nA?.alive) continue;
+        for (let b = a + 1; b <= nationCount; b++) {
+          const nB = world.nation?.[b];
+          if (!nB?.alive) continue;
+          if (a !== OWNER.PLAYER && b !== OWNER.PLAYER) continue;
+
+          const p = world._pair(a, b) | 0;
+          if ((world._atWar?.[p] | 0) !== 1) continue;
+          if ((Number(world._alliedUntil?.[p]) || 0) > now) continue;
+          if ((Number(world._ceasefireUntil?.[p]) || 0) > now) continue;
+          if (typeof world._bordersTouch === "function" && !world._bordersTouch(a, b, ownerVersion)) continue;
+
+          const pairKey = `${a}:${b}`;
+          const borderTiles = this._sampleWarFrontierTiles(a, b, null);
+          const geometry = this._buildFrontlineGeometry(a, b, borderTiles);
+          if (!geometry) continue;
+
+          if (!pairCoverage.has(pairKey)) {
+            mergeMarker(pairKey, a, b, geometry, {});
+            pairCoverage.add(pairKey);
+          }
+
+          const autoCounts = this._computeWarPairFallbackCounts(a, b, borderTiles.length || geometry.weight || 1);
+          const markers = pairToMarkers.get(pairKey) || [];
+          for (let m = 0; m < markers.length; m++) {
+            const marker = markers[m];
+            const perMarkerA = (Number(autoCounts[a]) || 0) / Math.max(1, markers.length);
+            const perMarkerB = (Number(autoCounts[b]) || 0) / Math.max(1, markers.length);
+            marker.sideCounts[a] = Math.max(Number(marker.sideCounts[a]) || 0, perMarkerA);
+            marker.sideCounts[b] = Math.max(Number(marker.sideCounts[b]) || 0, perMarkerB);
+          }
+        }
+      }
+    }
+
+    const out = [];
+    const nextAnchorKeys = new Set();
+    const pairEntries = Array.from(pairToMarkers.values());
+    for (let i = 0; i < pairEntries.length; i++) {
+      const markers = pairEntries[i];
+      for (let m = 0; m < markers.length; m++) {
+        const marker = markers[m];
+        const a = marker.a | 0;
+        const b = marker.b | 0;
+
+        const leftAnchor = marker.sideAnchors[a];
+        const rightAnchor = marker.sideAnchors[b];
+
+        const countA = Math.max(0, Number(marker.sideCounts[a]) || 0);
+        const countB = Math.max(0, Number(marker.sideCounts[b]) || 0);
+        if (countA <= 0 && countB <= 0) continue;
+
+        const aDesired = clamp(4.6 + Math.sqrt(Math.max(0, countA)) / 155 + Math.min(2.1, marker.weight * 0.06), 4.8, 9.4);
+        const bDesired = clamp(4.6 + Math.sqrt(Math.max(0, countB)) / 155 + Math.min(2.1, marker.weight * 0.06), 4.8, 9.4);
+        const aPoint = this._resolveFrontlineInteriorPoint(
+          a,
+          marker.midX,
+          marker.midY,
+          Number(leftAnchor?.x) || 0,
+          Number(leftAnchor?.y) || 0,
+          Number(leftAnchor?.x) || 0,
+          Number(leftAnchor?.y) || 0,
+          aDesired
+        );
+        const bPoint = this._resolveFrontlineInteriorPoint(
+          b,
+          marker.midX,
+          marker.midY,
+          Number(rightAnchor?.x) || 0,
+          Number(rightAnchor?.y) || 0,
+          Number(rightAnchor?.x) || 0,
+          Number(rightAnchor?.y) || 0,
+          bDesired
+        );
+        if (!aPoint || !bPoint) continue;
+
+        const aLand = Math.max(0, Number(world?.landOwnedCount?.[a]) | 0);
+        const bLand = Math.max(0, Number(world?.landOwnedCount?.[b]) | 0);
+        const aSpan = this._measureOwnerSpanAt(a, aPoint.x, aPoint.y);
+        const bSpan = this._measureOwnerSpanAt(b, bPoint.x, bPoint.y);
+        if (aLand < 18 || bLand < 18) continue;
+        if (aSpan.spanX < 4 || aSpan.spanY < 2) continue;
+        if (bSpan.spanX < 4 || bSpan.spanY < 2) continue;
+
+        const markerKey = String(marker.pairKey || `${a}:${b}`);
+        nextAnchorKeys.add(markerKey);
+        const cachedAnchor = this._frontlineOverlayAnchorCache.get(markerKey) || null;
+        let stableMidX = Number(marker.midX) || 0;
+        let stableMidY = Number(marker.midY) || 0;
+        let stableAPoint = { x: aPoint.x, y: aPoint.y };
+        let stableBPoint = { x: bPoint.x, y: bPoint.y };
+
+        if (cachedAnchor && (cachedAnchor.ownerVersion | 0) === (ownerVersion | 0)) {
+          const midShift = Math.hypot(stableMidX - (Number(cachedAnchor.midX) || 0), stableMidY - (Number(cachedAnchor.midY) || 0));
+          if (midShift < 4.5) {
+            stableMidX = Number(cachedAnchor.midX) || stableMidX;
+            stableMidY = Number(cachedAnchor.midY) || stableMidY;
+          }
+
+          const prevA = cachedAnchor.sides?.[a];
+          const prevB = cachedAnchor.sides?.[b];
+          if (prevA) {
+            const shift = Math.hypot((aPoint.x - (Number(prevA.x) || 0)), (aPoint.y - (Number(prevA.y) || 0)));
+            if (shift < 3.25) stableAPoint = { x: Number(prevA.x) || aPoint.x, y: Number(prevA.y) || aPoint.y };
+          }
+          if (prevB) {
+            const shift = Math.hypot((bPoint.x - (Number(prevB.x) || 0)), (bPoint.y - (Number(prevB.y) || 0)));
+            if (shift < 3.25) stableBPoint = { x: Number(prevB.x) || bPoint.x, y: Number(prevB.y) || bPoint.y };
+          }
+        }
+
+        this._frontlineOverlayAnchorCache.set(markerKey, {
+          ownerVersion,
+          midX: stableMidX,
+          midY: stableMidY,
+          sides: {
+            [a]: { x: stableAPoint.x, y: stableAPoint.y },
+            [b]: { x: stableBPoint.x, y: stableBPoint.y }
+          }
+        });
+
+        out.push({
+          key: markerKey,
+          pairKey: marker.pairKey,
+          midX: stableMidX,
+          midY: stableMidY,
+          sides: [
+            { key: `${markerKey}:${a}`, ownerId: a, x: stableAPoint.x, y: stableAPoint.y, troops: countA, land: aLand, spanX: aSpan.spanX, spanY: aSpan.spanY },
+            { key: `${markerKey}:${b}`, ownerId: b, x: stableBPoint.x, y: stableBPoint.y, troops: countB, land: bLand, spanX: bSpan.spanX, spanY: bSpan.spanY }
+          ]
+        });
+      }
+    }
+
+    const cachedAnchorKeys = Array.from(this._frontlineOverlayAnchorCache.keys());
+    for (let i = 0; i < cachedAnchorKeys.length; i++) {
+      const key = cachedAnchorKeys[i];
+      if (!nextAnchorKeys.has(key)) this._frontlineOverlayAnchorCache.delete(key);
+    }
+
+    this._frontlineOverlayMarkers = out;
+    this._frontlineOverlayOwnerVersion = ownerVersion;
+    this._frontlineOverlayOpSignature = opSignature;
+    this._frontlineOverlayNextRefreshAt = nowT + 0.28;
+    return out;
+  }
+
+  _drawFrontlineOverlaySide(ctx, v, marker, side, fade) {
+    const world = this.world;
+    const zoom = Math.max(0.0001, Number(v.zoom) || 1);
+    const dx = Number(v.dx) || 0;
+    const dy = Number(v.dy) || 0;
+    const ownerId = side.ownerId | 0;
+    const troops = Math.max(0, Number(side.troops) || 0);
+    const alpha = clamp(fade * (Number(side.alpha) || 1) * (Number(marker.alpha) || 1), 0, 1);
+    if (ownerId <= OWNER.NONE || troops <= 0 || alpha <= 0.01) return;
+
+    const px = dx + (Number(side.x) || 0) * zoom;
+    const py = dy + (Number(side.y) || 0) * zoom;
+    const midX = dx + (Number(marker.midX) || 0) * zoom;
+    const midY = dy + (Number(marker.midY) || 0) * zoom;
+    if (px < -220 || py < -220 || px > v.canvasW + 220 || py > v.canvasH + 220) return;
+
+    const tint = world?.getOwnerTint?.(ownerId) || { r: 180, g: 190, b: 210 };
+    const r = clamp(Number(tint.r) || 180, 0, 255) | 0;
+    const g = clamp(Number(tint.g) || 190, 0, 255) | 0;
+    const b = clamp(Number(tint.b) || 210, 0, 255) | 0;
+    const text = fmtFrontlineTroops(troops);
+    const lineAngle = Math.atan2(py - midY, px - midX);
+    const drawAngle = clamp(lineAngle * 0.26, -0.20, 0.20);
+    const land = Math.max(0, Number(side.land) || 0);
+    const spanX = Math.max(0, Number(side.spanX) || 0);
+    const spanY = Math.max(0, Number(side.spanY) || 0);
+    if (land < 18 || spanX < 4 || spanY < 2) return;
+
+    const territoryScale = clamp((Math.sqrt(Math.max(1, land)) - 3) / 14, 0, 1);
+    const spanScale = clamp(Math.min(spanX / 16, spanY / 7), 0, 1);
+    const sizeScale = Math.max(0, Math.min(territoryScale, spanScale));
+    if (sizeScale < 0.18) return;
+
+    let fontPx = clamp((12 + (zoom * 1.05)) * lerp(0.72, 1.0, sizeScale), 11, 22);
+
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(drawAngle);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = `900 italic ${fontPx}px "Arial Black", "Segoe UI", sans-serif`;
+    const maxWidth = Math.max(18, spanX * zoom * 0.82);
+    const maxHeight = Math.max(12, spanY * zoom * 0.88);
+    const measured = Math.max(1, ctx.measureText(text).width);
+    const shrink = Math.min(1, maxWidth / measured, maxHeight / Math.max(1, fontPx * 1.1));
+    if (shrink < 0.62) {
+      ctx.restore();
+      return;
+    }
+    if (shrink < 0.999) {
+      fontPx = Math.max(10.5, fontPx * shrink);
+      ctx.font = `900 italic ${fontPx}px "Arial Black", "Segoe UI", sans-serif`;
+    }
+    ctx.lineJoin = "round";
+    ctx.shadowColor = `rgba(${r},${g},${b},${(0.28 * alpha).toFixed(3)})`;
+    ctx.shadowBlur = 7;
+    ctx.lineWidth = Math.max(2, Math.round(fontPx * 0.22));
+    ctx.strokeStyle = `rgba(18,15,22,${(0.92 * alpha).toFixed(3)})`;
+    ctx.strokeText(text, 0, 0);
+    ctx.fillStyle = `rgba(${Math.min(255, r + 20)},${Math.min(255, g + 14)},${Math.min(255, b + 12)},${(0.98 * alpha).toFixed(3)})`;
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
+  }
+
+  _drawFrontlineTroopTextScreen(ctx, v) {
+    const zoom = Number(v.zoom) || 1;
+    if (zoom < 0.9) return;
+
+    const markers = this._buildFrontlineOverlayMarkers();
+
+    const now = performance.now() * 0.001;
+    const dt = Math.max(0.001, Math.min(0.08, now - (Number(this._frontlineOverlayLastFrameAt) || now)));
+    this._frontlineOverlayLastFrameAt = now;
+    const smoothed = this._syncFrontlineOverlayTracks(Array.isArray(markers) ? markers : [], dt);
+    if (!Array.isArray(smoothed) || smoothed.length <= 0) return;
+
+    const fade = clamp((zoom - 0.86) / 0.55, 0, 1);
+    if (fade <= 0.001) return;
+
+    ctx.save();
+    ctx.setTransform(v.dpr, 0, 0, v.dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+
+    for (let i = 0; i < smoothed.length; i++) {
+      const marker = smoothed[i];
+      const sides = Array.isArray(marker?.sides) ? marker.sides : [];
+      if (sides.length <= 0) continue;
+
+      const visibleSides = sides.filter((side) => (
+        (Math.max(0, Number(side?.land) || 0) >= 18) &&
+        (Math.max(0, Number(side?.spanX) || 0) >= 4) &&
+        (Math.max(0, Number(side?.spanY) || 0) >= 2)
+      ));
+      if (visibleSides.length <= 0) continue;
+
+      this._drawFrontlineOverlaySide(ctx, v, marker, sides[0], fade);
+      if (sides.length > 1) this._drawFrontlineOverlaySide(ctx, v, marker, sides[1], fade);
+    }
+
+    ctx.restore();
+  }
 
   _drawNationLabelsScreen(ctx, v) {
     const world = this.world;
@@ -6160,6 +7065,7 @@ export class Renderer {
     this._drawDivisionsScreen(ctx, v, selectedDivisionId);
     if (cset.showShips !== false) this._drawShipsScreen(ctx, v, selectedShipId);
     if (cset.showNationLabels !== false) this._drawNationLabelsScreen(ctx, v);
+    this._drawFrontlineTroopTextScreen(ctx, v);
     this._drawRubberLineScreen(ctx, v, rubberLine);
     this._drawBrushGhostScreen(ctx, v, brushGhost);
     if (cset.atmosphereEnabled !== false) {

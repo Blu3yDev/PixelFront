@@ -1788,7 +1788,7 @@ export function installWar(World) {
       Number(capture.encircledFrac) ||
       (captured > 0 ? (encircled / captured) : 0)
     );
-    if (passiveDefender) effort *= 1.18;
+    if (passiveDefender) effort *= 1.04;
 
     // Occupation / manpower spent to hold ground.
     nAtk.infantry = Math.max(0, nAtk.infantry - effort * WAR_OCCUPY_TROOPS_PER_TILE);
@@ -2135,6 +2135,11 @@ export function installWar(World) {
       dPer *= defMul;
     }
 
+    // Manual-player defense should not hemorrhage infantry just for holding a line.
+    if ((defender | 0) === OWNER.PLAYER) {
+      dPer *= 0.34;
+    }
+
     const aLoss = capturedTiles * aPer;
     const dLoss = capturedTiles * dPer;
 
@@ -2353,9 +2358,11 @@ export function installWar(World) {
     const landPenalty = Math.max(0, Number(STABILITY_LAND_PENALTY_MAX) || 0)
       * (1 - Math.exp(-landOver * Math.max(0, Number(STABILITY_LAND_PENALTY_K) || 0)));
     const exhaustionPenalty = Math.max(0, Number(WAR_EXHAUSTION_STABILITY_MAX_PENALTY) || 0.10) * Math.pow(exhaustion, 1.15);
-    const activeWarPenalty = this._anyWar(id) ? Math.max(0, Number(WAR_STABILITY_BASE_WAR_PENALTY) || 0.02) : 0.0;
+    const activeWar = this._anyWar(id);
+    const activeWarPenalty = activeWar ? Math.max(0, Number(WAR_STABILITY_BASE_WAR_PENALTY) || 0.02) : 0.0;
     const warPenalty = activeWarPenalty + exhaustionPenalty;
-    const s = 0.62 + 0.26 * citySupport - 0.18 * mobilization - warPenalty - landPenalty;
+    const peaceRecoveryBonus = activeWar ? 0 : Math.max(0, 0.05 - exhaustion * 0.03);
+    const s = 0.68 + 0.24 * citySupport - 0.14 * mobilization - warPenalty - landPenalty + peaceRecoveryBonus;
     return Math.max(WAR_MIN_STABILITY, Math.min(1.0, s));
   };
 

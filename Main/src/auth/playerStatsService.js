@@ -16,6 +16,25 @@ function clampNonNegativeInt(raw, fallback = 0) {
   return Math.max(0, Math.floor(n));
 }
 
+const MAX_TRACKED_SESSION_PLAYTIME_SECONDS = 12 * 60 * 60;
+const MAX_RECOVERED_SESSION_IDLE_GRACE_SECONDS = 90;
+
+function clampTrackedSessionPlaytime(raw, fallback = 0) {
+  return Math.min(
+    MAX_TRACKED_SESSION_PLAYTIME_SECONDS,
+    clampNonNegativeInt(raw, fallback)
+  );
+}
+
+function clampLeaderboardTotalPlaytime(raw, gamesPlayedRaw = 0) {
+  const gamesPlayed = clampNonNegativeInt(gamesPlayedRaw);
+  if (gamesPlayed <= 0) return 0;
+  return Math.min(
+    clampNonNegativeInt(raw),
+    gamesPlayed * MAX_TRACKED_SESSION_PLAYTIME_SECONDS
+  );
+}
+
 function readSupabaseErrorStatus(error) {
   const status = Number(error?.status ?? error?.statusCode);
   return Number.isFinite(status) ? status : 0;
@@ -164,12 +183,21 @@ export function createPlayerStatsService(options = null) {
     if (!userId) return null;
     const matchMode = cleanText(src.matchMode).toLowerCase() === "multiplayer" ? "multiplayer" : "singleplayer";
     const startedAtMs = clampNonNegativeInt(src.startedAtMs, Date.now());
+    const lastSeenAtMs = Math.max(
+      startedAtMs,
+      clampNonNegativeInt(src.lastSeenAtMs, startedAtMs)
+    );
     return {
       sessionKey: cleanText(src.sessionKey || buildSessionKey(userId, matchMode, startedAtMs)),
       userId,
       displayName: normalizeDisplayName(src.displayName || "Player"),
       matchMode,
       startedAtMs,
+      lastSeenAtMs,
+      lastKnownPlaytimeSeconds: clampTrackedSessionPlaytime(
+        src.lastKnownPlaytimeSeconds,
+        src.playtimeSeconds
+      ),
       finalized: false
     };
   }
@@ -211,7 +239,7 @@ export function createPlayerStatsService(options = null) {
         display_name: normalizeDisplayName(payload.display_name || src.displayName || "Player"),
         outcome,
         did_win: payload.did_win === true || outcome === "win",
-        playtime_seconds: clampNonNegativeInt(payload.playtime_seconds || src.playtimeSeconds),
+        playtime_seconds: clampTrackedSessionPlaytime(payload.playtime_seconds || src.playtimeSeconds),
         match_mode: matchMode,
         played_at: cleanText(payload.played_at || src.playedAt || new Date().toISOString())
       }
@@ -259,15 +287,31 @@ export function createPlayerStatsService(options = null) {
     return writePendingQueue(queue.filter((record) => record.key !== key));
   }
 
+  function resolveSessionPlaytimeSeconds(session, optionsRaw = null) {
+    const sessionRef = normalizePersistedActiveSession(session);
+    if (!sessionRef) return 0;
+    const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : {};
+    const knownPlaytimeSeconds = clampTrackedSessionPlaytime(sessionRef.lastKnownPlaytimeSeconds);
+    const explicitPlaytimeSeconds = Number(options.playtimeSeconds);
+    if (Number.isFinite(explicitPlaytimeSeconds)) {
+      return clampTrackedSessionPlaytime(Math.max(knownPlaytimeSeconds, explicitPlaytimeSeconds));
+    }
+    if (options.allowElapsedFallback === true) {
+      const elapsedSeconds = Math.max(0, (Date.now() - sessionRef.startedAtMs) / 1000);
+      return clampTrackedSessionPlaytime(Math.max(knownPlaytimeSeconds, elapsedSeconds));
+    }
+    const idleSeconds = Math.max(0, (Date.now() - sessionRef.lastSeenAtMs) / 1000);
+    return clampTrackedSessionPlaytime(
+      knownPlaytimeSeconds + Math.min(MAX_RECOVERED_SESSION_IDLE_GRACE_SECONDS, idleSeconds)
+    );
+  }
+
   function buildInsertPayload(session, optionsRaw = null) {
     const sessionRef = normalizePersistedActiveSession(session);
     if (!sessionRef) return null;
     const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : {};
     const outcome = normalizeOutcome(options.outcome);
-    const playtimeSeconds = clampNonNegativeInt(
-      options.playtimeSeconds,
-      Math.max(0, (Date.now() - sessionRef.startedAtMs) / 1000)
-    );
+    const playtimeSeconds = resolveSessionPlaytimeSeconds(sessionRef, options);
     const displayName = normalizeDisplayName(options.displayName || sessionRef.displayName || "Player");
     return {
       key: cleanText(sessionRef.sessionKey || buildSessionKey(sessionRef.userId, sessionRef.matchMode, sessionRef.startedAtMs)),
@@ -294,8 +338,8 @@ export function createPlayerStatsService(options = null) {
     }
     const pendingRecord = buildInsertPayload(persisted, {
       outcome: "abandon",
-      playtimeSeconds: Math.max(0, (Date.now() - persisted.startedAtMs) / 1000),
-      displayName: persisted.displayName
+      displayName: persisted.displayName,
+      allowElapsedFallback: false
     });
     const queued = upsertPendingRecord(pendingRecord);
     if (queued) clearPersistedActiveSession(persisted.sessionKey);
@@ -446,7 +490,8 @@ export function createPlayerStatsService(options = null) {
     if (activeSession && !activeSession.finalized) {
       const abandoned = buildInsertPayload(activeSession, {
         outcome: "abandon",
-        displayName: activeSession.displayName
+        displayName: activeSession.displayName,
+        allowElapsedFallback: true
       });
       upsertPendingRecord(abandoned);
       clearPersistedActiveSession(activeSession.sessionKey);
@@ -459,6 +504,8 @@ export function createPlayerStatsService(options = null) {
       displayName,
       matchMode: cleanText(options.matchMode || "singleplayer").toLowerCase() === "multiplayer" ? "multiplayer" : "singleplayer",
       startedAtMs,
+      lastSeenAtMs: startedAtMs,
+      lastKnownPlaytimeSeconds: 0,
       finalized: false
     };
     persistActiveSession(activeSession);
@@ -467,6 +514,20 @@ export function createPlayerStatsService(options = null) {
 
   function hasActiveSession() {
     return !!(activeSession && !activeSession.finalized);
+  }
+
+  function updateSessionProgress(playtimeSecondsRaw = null) {
+    if (!activeSession || activeSession.finalized) return false;
+    const nextSeenAtMs = Math.max(activeSession.startedAtMs, Date.now());
+    const nextPlaytimeSeconds = Number.isFinite(Number(playtimeSecondsRaw))
+      ? clampTrackedSessionPlaytime(
+        Math.max(activeSession.lastKnownPlaytimeSeconds || 0, Number(playtimeSecondsRaw))
+      )
+      : clampTrackedSessionPlaytime(activeSession.lastKnownPlaytimeSeconds);
+    activeSession.lastSeenAtMs = nextSeenAtMs;
+    activeSession.lastKnownPlaytimeSeconds = nextPlaytimeSeconds;
+    persistActiveSession(activeSession);
+    return true;
   }
 
   async function finalizeSession(optionsRaw = null) {
@@ -489,7 +550,8 @@ export function createPlayerStatsService(options = null) {
     const pendingRecord = buildInsertPayload(activeSession, {
       outcome,
       playtimeSeconds: options.playtimeSeconds,
-      displayName
+      displayName,
+      allowElapsedFallback: true
     });
     const queued = upsertPendingRecord(pendingRecord);
     clearPersistedActiveSession(activeSession.sessionKey);
@@ -509,15 +571,25 @@ export function createPlayerStatsService(options = null) {
     return true;
   }
 
-  function normalizeLeaderboardRows(rows) {
+  function normalizeLeaderboardRows(rows, statsRaw = null) {
+    const stats = (statsRaw && typeof statsRaw === "object") ? statsRaw : null;
     const list = Array.isArray(rows) ? rows : [];
-    return list.map((row) => ({
-      userId: cleanText(row?.user_id || row?.userId),
-      name: normalizeDisplayName(row?.display_name || row?.displayName || "Player"),
-      gamesPlayed: clampNonNegativeInt(row?.games_played || row?.gamesPlayed),
-      wins: clampNonNegativeInt(row?.wins),
-      playtimeSeconds: clampNonNegativeInt(row?.playtime_seconds || row?.playtimeSeconds)
-    }));
+    let clampedPlaytimeCount = 0;
+    const normalized = list.map((row) => {
+      const gamesPlayed = clampNonNegativeInt(row?.games_played || row?.gamesPlayed);
+      const rawPlaytimeSeconds = clampNonNegativeInt(row?.playtime_seconds || row?.playtimeSeconds);
+      const playtimeSeconds = clampLeaderboardTotalPlaytime(rawPlaytimeSeconds, gamesPlayed);
+      if (playtimeSeconds !== rawPlaytimeSeconds) clampedPlaytimeCount += 1;
+      return {
+        userId: cleanText(row?.user_id || row?.userId),
+        name: normalizeDisplayName(row?.display_name || row?.displayName || "Player"),
+        gamesPlayed,
+        wins: clampNonNegativeInt(row?.wins),
+        playtimeSeconds
+      };
+    });
+    if (stats) stats.clampedPlaytimeCount = clampedPlaytimeCount;
+    return normalized;
   }
 
   async function fetchLeaderboardFromView(limit = leaderboardLimit) {
@@ -530,7 +602,11 @@ export function createPlayerStatsService(options = null) {
       .order("display_name", { ascending: true })
       .limit(limit);
     if (error) throw error;
-    return normalizeLeaderboardRows(data);
+    const stats = { clampedPlaytimeCount: 0 };
+    return {
+      rows: normalizeLeaderboardRows(data, stats),
+      clampedPlaytimeCount: stats.clampedPlaytimeCount
+    };
   }
 
   async function fetchLeaderboardFallback(limit = leaderboardLimit) {
@@ -568,7 +644,7 @@ export function createPlayerStatsService(options = null) {
       prev.name = normalizeDisplayName(nameLookup.get(userId) || row.display_name || prev.name || "Player");
       prev.gamesPlayed += 1;
       prev.wins += row.did_win ? 1 : 0;
-      prev.playtimeSeconds += clampNonNegativeInt(row.playtime_seconds);
+      prev.playtimeSeconds += clampTrackedSessionPlaytime(row.playtime_seconds);
       grouped.set(userId, prev);
     }
 
@@ -591,7 +667,17 @@ export function createPlayerStatsService(options = null) {
       // Leaderboard fetch should still work if pending sync fails.
     }
     try {
-      return await fetchLeaderboardFromView(limit);
+      const viewResult = await fetchLeaderboardFromView(limit);
+      if ((viewResult?.clampedPlaytimeCount || 0) <= 0) {
+        return Array.isArray(viewResult?.rows) ? viewResult.rows : [];
+      }
+      try {
+        const user = await getAuthedUser();
+        if (user) return await fetchLeaderboardFallback(limit);
+      } catch {
+        // Fall back to the sanitized view rows when raw session access is unavailable.
+      }
+      return Array.isArray(viewResult?.rows) ? viewResult.rows : [];
     } catch {
       return await fetchLeaderboardFallback(limit);
     }
@@ -610,6 +696,7 @@ export function createPlayerStatsService(options = null) {
     enabled: true,
     hasActiveSession,
     startSession,
+    updateSessionProgress,
     finalizeSession,
     syncProfile,
     fetchLeaderboard,

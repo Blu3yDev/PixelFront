@@ -5,6 +5,12 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { loadEarthDataNode } from "./earthDataNode.js";
+import {
+  CONTINENT_KEYS,
+  countCountriesForContinentSelection,
+  deriveEarthDataForContinents,
+  sanitizeContinentSelection
+} from "../Main/src/game/data/earthContinents.js";
 
 const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
@@ -142,6 +148,7 @@ const MAP_SOURCE_POLITICAL_EARTH = "political_earth";
 const MAP_SOURCE_EARTH = "earth";
 const MAP_SOURCE_CUSTOM = "custom";
 const GAME_MODE_CLASSIC = "classic";
+const GAME_MODE_CONTINENTAL = "continental";
 const GAME_MODE_DIVISIONS = "divisions";
 const DEFAULT_SIM_DT_S = 1 / 60;
 const OWNER_PLAYER = 1;
@@ -223,6 +230,7 @@ const DEFAULT_MATCH_CONFIG = Object.freeze({
   aiCount: null,
   difficulty: "normal",
   gameMode: GAME_MODE_CLASSIC,
+  continents: Object.freeze([...CONTINENT_KEYS]),
   mapMode: MAP_MODE_WORLD,
   mapSource: MAP_SOURCE_POLITICAL_EARTH,
   customMapId: "",
@@ -730,7 +738,13 @@ function sanitizeMatchConfig(raw) {
     ? difficultyRaw
     : DEFAULT_MATCH_CONFIG.difficulty;
   const gameModeRaw = String(src.gameMode || DEFAULT_MATCH_CONFIG.gameMode).trim().toLowerCase();
-  const gameMode = gameModeRaw === GAME_MODE_DIVISIONS ? GAME_MODE_DIVISIONS : GAME_MODE_CLASSIC;
+  const gameMode = gameModeRaw === GAME_MODE_DIVISIONS
+    ? GAME_MODE_DIVISIONS
+    : (gameModeRaw === GAME_MODE_CONTINENTAL ? GAME_MODE_CONTINENTAL : GAME_MODE_CLASSIC);
+  const continents = sanitizeContinentSelection(
+    src.continents ?? src.selectedContinents ?? DEFAULT_MATCH_CONFIG.continents,
+    DEFAULT_MATCH_CONFIG.continents
+  );
   const mapSourceRaw = String(src.mapSource ?? src.mapMode ?? DEFAULT_MATCH_CONFIG.mapSource).trim().toLowerCase();
   const mapSource = mapSourceRaw === MAP_SOURCE_CUSTOM
     ? MAP_SOURCE_CUSTOM
@@ -755,6 +769,7 @@ function sanitizeMatchConfig(raw) {
     aiCount,
     difficulty,
     gameMode,
+    continents,
     mapMode,
     mapSource,
     customMapId: String(src.customMapId || "").trim(),
@@ -820,9 +835,10 @@ function resolveMatchCountryClaimEnabled(matchConfigRaw) {
 
 function resolveMatchGameMode(matchConfigRaw) {
   const cfg = sanitizeMatchConfig(matchConfigRaw) || DEFAULT_MATCH_CONFIG;
-  return String(cfg.gameMode || GAME_MODE_CLASSIC).trim().toLowerCase() === GAME_MODE_DIVISIONS
-    ? GAME_MODE_DIVISIONS
-    : GAME_MODE_CLASSIC;
+  const mode = String(cfg.gameMode || GAME_MODE_CLASSIC).trim().toLowerCase();
+  if (mode === GAME_MODE_DIVISIONS) return GAME_MODE_DIVISIONS;
+  if (mode === GAME_MODE_CONTINENTAL) return GAME_MODE_CONTINENTAL;
+  return GAME_MODE_CLASSIC;
 }
 
 function scaleNationResources(nation, goldMul, troopMul) {
@@ -1973,6 +1989,13 @@ function pushPlayerLeftEvent(lobby, player) {
   runtime.lastEventsSnapshotAtMs = 0;
 }
 
+function clearRuntimePlayerLoaded(runtime, sessionIdRaw) {
+  const loadState = runtime?.playerLoadedBySession;
+  const sessionId = String(sessionIdRaw || "").trim();
+  if (!sessionId || !loadState || typeof loadState.delete !== "function") return;
+  loadState.delete(sessionId);
+}
+
 function removeRuntimeAssignmentForSession(lobby, sessionIdRaw) {
   const runtime = lobby?.runtime;
   if (!runtime?.assignmentsBySession || !runtime.nationToSession) return null;
@@ -1982,6 +2005,7 @@ function removeRuntimeAssignmentForSession(lobby, sessionIdRaw) {
   if (!assignment) return null;
 
   const nationId = Math.max(1, Number(assignment.nationId) | 0);
+  clearRuntimePlayerLoaded(runtime, sessionId);
   runtime.assignmentsBySession.delete(sessionId);
   runtime.nationToSession.delete(nationId);
 
@@ -2147,6 +2171,8 @@ async function ensureLobbyRuntime(lobby) {
   lobby.runtimeInitPromise = (async () => {
     const worldSpec = resolveWorldSpecForLobby(lobby);
     if (!worldSpec) throw new Error("Lobby world spec is missing.");
+    const matchCfg = sanitizeMatchConfig(lobby.matchConfig) || DEFAULT_MATCH_CONFIG;
+    const matchGameMode = resolveMatchGameMode(matchCfg);
 
     const mods = await loadRuntimeModules();
     lobby.matchWorldSpec = worldSpec;
@@ -2156,11 +2182,22 @@ async function ensureLobbyRuntime(lobby) {
     if (effectiveMapMode === MAP_MODE_WORLD) {
       try {
         earthData = await loadEarthDataNode();
+        if (matchGameMode === GAME_MODE_CONTINENTAL) {
+          earthData = deriveEarthDataForContinents(earthData, matchCfg.continents, { gameMode: matchGameMode }) || earthData;
+        }
       } catch (err) {
         const msg = String(err?.message || err || "unknown earth-data failure");
         console.warn(`[runtime-init] lobby=${String(lobby?.code || "")} earth-mode-fallback=${msg}`);
         effectiveMapMode = MAP_MODE_GENERATOR;
       }
+    }
+    let effectiveAiCount = Math.max(1, Number(worldSpec.aiCount) || 1);
+    if (effectiveMapMode === MAP_MODE_WORLD && resolveMatchCountryClaimEnabled(matchCfg)) {
+      const countryCount = matchGameMode === GAME_MODE_CONTINENTAL
+        ? countCountriesForContinentSelection(earthData, matchCfg.continents)
+        : Math.max(0, ((Array.isArray(earthData?.countryCodes) ? earthData.countryCodes.length : 0) | 0) - 1);
+      const aiCap = countryCount > 0 ? Math.max(1, countryCount - 1) : 0;
+      if (aiCap > 0) effectiveAiCount = Math.min(effectiveAiCount, aiCap);
     }
     const world = new mods.World(
       worldSpec.width,
@@ -2169,9 +2206,9 @@ async function ensureLobbyRuntime(lobby) {
       {
         mapMode: effectiveMapMode,
         earthData,
-        aiCount: Math.max(1, Number(worldSpec.aiCount) || 1),
+        aiCount: effectiveAiCount,
         countryClaimEnabled: resolveMatchCountryClaimEnabled(lobby.matchConfig),
-        gameMode: resolveMatchGameMode(lobby.matchConfig)
+        gameMode: matchGameMode
       }
     );
     // Server runtime is authoritative-only; skip expensive render pixel work.
@@ -2179,6 +2216,9 @@ async function ensureLobbyRuntime(lobby) {
 
     if (effectiveMapMode !== requestedMapMode && lobby.matchWorldSpec && typeof lobby.matchWorldSpec === "object") {
       lobby.matchWorldSpec = { ...lobby.matchWorldSpec, mapMode: effectiveMapMode };
+    }
+    if (lobby.matchWorldSpec && typeof lobby.matchWorldSpec === "object" && effectiveAiCount !== (Number(lobby.matchWorldSpec.aiCount) || 0)) {
+      lobby.matchWorldSpec = { ...lobby.matchWorldSpec, aiCount: effectiveAiCount };
     }
 
     const runtime = {
@@ -2343,18 +2383,30 @@ function computeSpawnLoadBarrierState(lobby, runtime, now = nowMs()) {
   const startedAt = Math.max(0, Number(lobby?.startedAt) || 0);
   const readyStartedAt = Math.max(0, Number(runtime?.spawnPhaseReadyStartedAtMs) || 0);
   const players = Array.isArray(lobby?.players) ? lobby.players : [];
+  const assignmentValues = runtime?.assignmentsBySession && typeof runtime.assignmentsBySession.values === "function"
+    ? Array.from(runtime.assignmentsBySession.values())
+    : [];
+  const sessions = assignmentValues.length > 0
+    ? assignmentValues.map((entry) => String(entry?.sessionId || "").trim())
+    : players.map((row) => String(row?.sessionId || "").trim());
   let totalPlayers = 0;
   let readyPlayers = 0;
-  for (let i = 0; i < players.length; i++) {
-    const sessionId = String(players[i]?.sessionId || "").trim();
+  const seenSessions = new Set();
+  for (let i = 0; i < sessions.length; i++) {
+    const sessionId = sessions[i];
     if (!sessionId) continue;
+    if (seenSessions.has(sessionId)) continue;
+    seenSessions.add(sessionId);
     totalPlayers++;
+    const ws = lobby?.sockets?.get?.(sessionId) || null;
+    const socketReady = !!(ws && ws.readyState === WebSocket.OPEN && !ws.initialSyncPending);
     const readyAt = Math.max(0, Number(loadState?.get?.(sessionId)) || 0);
+    if (!socketReady) continue;
     if (readyStartedAt > 0) {
       if (readyAt >= readyStartedAt) readyPlayers++;
-    } else if (readyAt > 0) {
-      readyPlayers++;
+      continue;
     }
+    if (readyAt > 0) readyPlayers++;
   }
 
   const allReady = totalPlayers > 0 && readyPlayers >= totalPlayers;
@@ -4146,6 +4198,7 @@ function flushRuntimeTick(lobby, runtime, now) {
 function closeLobbySocket(lobby, sessionId) {
   const ws = lobby?.sockets?.get(sessionId);
   if (!ws) return;
+  clearRuntimePlayerLoaded(lobby?.runtime, sessionId);
   try { ws.close(); } catch {}
   lobby.sockets.delete(sessionId);
 }
@@ -4750,6 +4803,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
   ws._stateHashMuted = false;
   ws._desyncedSinceBackpressure = false;
   ws._socketCongestionLevel = 0;
+  clearRuntimePlayerLoaded(lobby?.runtime, sessionId);
 
   ws.on("pong", () => {
     ws.isAlive = true;
@@ -4818,6 +4872,8 @@ function attachSocketToLobby(lobby, sessionId, ws) {
         }
       }
       if (!runtime) return;
+      if (lobby.sockets.get(sessionId) !== ws) return;
+      if (ws.initialSyncPending) return;
       const currentStartedAt = Math.max(0, Number(lobby?.startedAt) || 0);
       const reportedStartedAt = Math.max(0, Number(msg?.startedAt) || 0);
       if (reportedStartedAt > 0 && currentStartedAt > 0 && reportedStartedAt !== currentStartedAt) return;
@@ -4864,6 +4920,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
   ws.on("close", () => {
     const cur = lobby.sockets.get(sessionId);
     if (cur === ws) lobby.sockets.delete(sessionId);
+    clearRuntimePlayerLoaded(lobby?.runtime, sessionId);
     markLobbyEmptyState(lobby);
     maybeDestroyLobbyAfterSocketClose(lobby);
   });
@@ -5311,6 +5368,7 @@ setInterval(() => {
       if (ws.isAlive === false) {
         try { ws.terminate(); } catch {}
         lobby.sockets.delete(sid);
+        clearRuntimePlayerLoaded(lobby?.runtime, sid);
         continue;
       }
       ws.isAlive = false;

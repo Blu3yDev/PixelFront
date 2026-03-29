@@ -536,6 +536,10 @@ export function installAI(World) {
         const alliesB = this._aiAllyStrength(B, 0.52);
         let their = this._aiStrength(B) + alliesB;
         their *= Math.max(0.78, 1 - warsB * 0.06);
+        const busyTargetPenalty = warsB > 0 ? Math.min(0.28, warsB * 0.07) : 0;
+        const playerBusyPenalty = (B === OWNER.PLAYER && warsB > 0)
+          ? (0.34 + Math.min(0.34, warsB * 0.12))
+          : 0;
 
         const ratio = myCoalition / Math.max(1, their);
         let minRatio = Number(p.warRatioMin ?? 1.0);
@@ -544,10 +548,14 @@ export function installAI(World) {
         if (warsB >= 1) minRatio -= 0.04;
         if (runaway.id === B) minRatio -= (0.08 + (0.10 * runawayPressure)) * coalition;
         if (!touching) minRatio += endgameMode ? 0.05 : 0.12;
+        minRatio += busyTargetPenalty + playerBusyPenalty;
+        if (B === OWNER.PLAYER && warsB > 0) minRatio += 0.12;
         // Low-readiness states demand stronger local superiority before a declaration.
         minRatio += Math.max(0, 0.50 - readiness) * 0.70;
         minRatio = Math.max(0.98, minRatio);
         if (ratio < minRatio) continue;
+        if (B === OWNER.PLAYER && warsB >= 1 && ratio < (minRatio + 0.22)) continue;
+        if (B === OWNER.PLAYER && warsB >= 2 && ratio < (minRatio + 0.38)) continue;
 
         const landB = Math.max(0, this.landOwnedCount[B] | 0);
 
@@ -563,6 +571,8 @@ export function installAI(World) {
         if (this._countAllies(B) >= Math.max(1, MAX_ALLIES - 1)) score += 0.12;
         if (this._anyWar(B)) score += 0.10;
         if (landB < 120) score -= 0.12;
+        if (warsB > 0) score -= 0.12 + Math.min(0.16, warsB * 0.04);
+        if (B === OWNER.PLAYER && warsB > 0) score -= 0.44 + Math.min(0.34, warsB * 0.10);
         if (!touching) {
           score -= 0.10;
           if (endgameMode) score += Math.min(0.34, landB * 0.0007);
@@ -635,15 +645,23 @@ export function installAI(World) {
           const ours = Math.max(1, Number(myStrength) || 0) + this._aiStrength(ally) * 0.38 + this._aiAllyStrength(A, 0.36);
           const ratio = ours / Math.max(1, their);
           const joinNeed = helpingPlayer ? Math.max(0.94, joinMin - 0.02) : joinMin;
-          if (ratio < joinNeed) continue;
+          const targetWars = this._warsByNation[B] | 0;
+          const busyJoinPenalty = (B === OWNER.PLAYER && targetWars > 0)
+            ? (0.30 + Math.min(0.30, targetWars * 0.12))
+            : (targetWars > 0 ? Math.min(0.12, targetWars * 0.04) : 0);
+          if (ratio < (joinNeed + busyJoinPenalty)) continue;
+          if (B === OWNER.PLAYER && targetWars >= 1 && ratio < (joinNeed + busyJoinPenalty + 0.16)) continue;
+          if (B === OWNER.PLAYER && targetWars >= 2 && ratio < (joinNeed + busyJoinPenalty + 0.32)) continue;
 
           let score = 0;
-          score += (ratio - joinNeed) * 1.2;
+          score += (ratio - (joinNeed + busyJoinPenalty)) * 1.2;
           score += (this._warsByNation[B] | 0) * 0.08;
           if (this._bordersTouch(ally, B)) score += 0.16;
           if (!borderContact) score -= 0.10;
           if (helpingPlayer) score += 0.12;
-          if (B === OWNER.PLAYER) score += 0.05;
+          if (B === OWNER.PLAYER) score -= 0.08;
+          if (targetWars > 0) score -= 0.10 + (busyJoinPenalty * 0.9);
+          if (B === OWNER.PLAYER && targetWars > 0) score -= 0.34 + (busyJoinPenalty * 1.1);
 
           if (score > bestScore) {
             bestScore = score;
@@ -3320,7 +3338,10 @@ export function installAI(World) {
           const theirs = this._aiStrength(B) + this._aiAllyStrength(B, 0.36);
           const ours = myStr + this._aiAllyStrength(A, 0.34);
           const ratio = ours / Math.max(1, theirs);
-          const score = ratio + (this._anyWar(B) ? 0.08 : 0) + (B === OWNER.PLAYER ? 0.10 : 0);
+          const playerPressurePenalty = (B === OWNER.PLAYER)
+            ? (0.06 + Math.min(0.26, (this._warsByNation[B] | 0) * 0.10))
+            : 0;
+          const score = ratio + (this._anyWar(B) ? 0.08 : 0) - playerPressurePenalty;
           if (score > bestWarScore) {
             bestWarScore = score;
             bestWarRatio = ratio;
@@ -3566,6 +3587,7 @@ export function installAI(World) {
             if (intentReady || overwhelming) {
               let declareP = 0.03 + clamp01(Number(p.aggression ?? 0.2)) * 0.44;
               const scoreNorm = clamp01((Number(warPick.score) + 0.10) / 1.30);
+              const targetWars = this._warsByNation[warPick.id] | 0;
               declareP += 0.17 * scoreNorm;
               declareP += 0.17 * readiness;
               if (warPick.ratio > 1.16) declareP += 0.04;
@@ -3577,6 +3599,9 @@ export function installAI(World) {
               if (allyCount > 0) declareP += 0.05;
               if (this._aiHasOperation(A, "neutral") || this._aiHasOperation(A, "burst")) {
                 declareP *= 0.74;
+              }
+              if (warPick.id === OWNER.PLAYER && targetWars > 0) {
+                declareP *= targetWars >= 2 ? 0.18 : 0.34;
               }
               if (endgameMode) {
                 declareP += 0.08;

@@ -5,6 +5,16 @@ import { AIRBASE_LAUNCH_RADIUS_TILES, AIRBASE_TRANSPORT_BUILD_GOLD_COST, AIRBASE
 import { Renderer } from "./render.js";
 import { PaintInput } from "./input.js";
 import { loadEarthData } from "./game/data/earthData.js";
+import {
+  CONTINENT_KEYS,
+  CONTINENT_OPTIONS,
+  countCountriesForContinentSelection,
+  deriveEarthDataForContinents,
+  formatContinentSelection,
+  getContinentalTheatreFrame,
+  isContinentalGameMode,
+  sanitizeContinentSelection
+} from "./game/data/earthContinents.js";
 import { createClient } from "@supabase/supabase-js";
 import { createMainMenuAuthController } from "./auth/mainMenuAuth.js";
 import { createPlayerStatsService } from "./auth/playerStatsService.js";
@@ -414,6 +424,7 @@ const DEFAULT_MATCH_CONFIG = Object.freeze({
   aiCount: null,
   difficulty: "normal",
   gameMode: GAME_MODE.CLASSIC,
+  continents: Object.freeze([...CONTINENT_KEYS]),
   mapMode: MAP_MODE.WORLD_MAP,
   mapSource: MAP_SOURCE.POLITICAL_EARTH,
   customMapId: "",
@@ -435,8 +446,10 @@ const MATCH_DISABLED_STRUCTURE_RULES = Object.freeze([
   Object.freeze({ key: "disableDefencePost", type: "defence_post", label: "Defence Post", buttonId: "btnDefencePost" }),
 ]);
 let earthData = null;
+let earthBaseData = null;
 let earthCountryBotCap = 0;
 let earthCountryBotCapPromise = null;
+let earthContinentCountryCounts = null;
 let activeMatchConfig = loadMatchConfig();
 let liveModifierAccS = 0;
 const MULTIPLAYER_API_BASE = resolveMultiplayerApiBase();
@@ -726,13 +739,19 @@ async function loadEarthCountryBotCap() {
     const geo = await response.json();
     const features = Array.isArray(geo?.features) ? geo.features : [];
     const keys = new Set();
+    const continentCounts = Object.create(null);
     for (let i = 0; i < features.length; i++) {
       const props = features[i]?.properties;
       const key = countryKeyFromFeatureProps(props);
       if (key) keys.add(key);
+      const continentKey = normalizeContinentKey(props?.CONTINENT || props?.REGION_UN || "");
+      if (key && continentKey) {
+        continentCounts[continentKey] = (continentCounts[continentKey] | 0) + 1;
+      }
     }
     const cap = Math.max(1, keys.size - 1);
     earthCountryBotCap = cap;
+    earthContinentCountryCounts = continentCounts;
     return cap;
   })();
 
@@ -749,11 +768,48 @@ function getEarthCountryBotCapFromData(data) {
   return Math.max(0, earthCountryBotCap | 0);
 }
 
+function sumEarthContinentCountryCounts(selectionRaw) {
+  const selection = sanitizeContinentSelection(selectionRaw);
+  const counts = (earthContinentCountryCounts && typeof earthContinentCountryCounts === "object")
+    ? earthContinentCountryCounts
+    : null;
+  if (!counts) return 0;
+  let total = 0;
+  for (let i = 0; i < selection.length; i++) {
+    total += counts[selection[i]] | 0;
+  }
+  return total;
+}
+
+function getEarthCountryBotCapForMatchConfig(matchConfig = null, earthDataRef = null) {
+  const cfg = (matchConfig && typeof matchConfig === "object") ? matchConfig : (activeMatchConfig || DEFAULT_MATCH_CONFIG);
+  const source = String(cfg?.mapSource ?? MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
+  if (source !== MAP_SOURCE.POLITICAL_EARTH) return 0;
+
+  if (isContinentalGameMode(cfg?.gameMode)) {
+    const continents = sanitizeContinentSelection(cfg?.continents ?? DEFAULT_MATCH_CONFIG.continents, DEFAULT_MATCH_CONFIG.continents);
+    const fromData = countCountriesForContinentSelection(earthDataRef, continents);
+    if (fromData > 0) return Math.max(1, fromData - 1);
+    const fromMetadata = sumEarthContinentCountryCounts(continents);
+    if (fromMetadata > 0) return Math.max(1, fromMetadata - 1);
+  }
+
+  return getEarthCountryBotCapFromData(earthDataRef);
+}
+
+function resolveEarthDataForMatchConfig(baseEarthDataRef, matchConfig = null) {
+  const cfg = sanitizeMatchConfig(matchConfig || activeMatchConfig || DEFAULT_MATCH_CONFIG);
+  const base = baseEarthDataRef || null;
+  if (!base || typeof base !== "object") return base;
+  if (!isContinentalGameMode(cfg?.gameMode)) return base;
+  return deriveEarthDataForContinents(base, cfg.continents, { gameMode: cfg.gameMode }) || base;
+}
+
 function clampAiCountForCountryMode(aiCountRaw, matchConfig = null, earthDataRef = null) {
   const ai = Math.max(1, Math.floor(Number(aiCountRaw) || 1));
   const source = String(matchConfig?.mapSource ?? MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
   if (source !== MAP_SOURCE.POLITICAL_EARTH) return ai;
-  const cap = getEarthCountryBotCapFromData(earthDataRef);
+  const cap = getEarthCountryBotCapForMatchConfig(matchConfig, earthDataRef);
   if (!(cap > 0)) return ai;
   return Math.max(1, Math.min(cap, ai));
 }
@@ -1086,8 +1142,13 @@ function computeWorldSize(mapMode = MAP_MODE.GENERATOR, matchConfig = null) {
   const tilesPerNation = Math.max(2000, toPositiveInt(WORLD_SETUP?.tilesPerNation, preset.tilesPerNation ?? 8000));
   const minTilesPerNation = Math.max(1200, toPositiveInt(WORLD_SETUP?.minTilesPerNation, preset.minTilesPerNation ?? 2600));
   const baseAspect = Math.max(1.1, Number(WORLD_SETUP?.aspect ?? preset.aspect ?? 1.6));
-  // Earth map assets are authored at 2:1; keep exact ratio to avoid stretched geography.
-  const aspect = mapMode === MAP_MODE.WORLD_MAP ? 2.0 : baseAspect;
+  // Earth map assets are authored at 2:1, but continental theatres should inherit the selected
+  // theatre's shape so the map feels like a full framed theatre instead of a cropped strip.
+  let aspect = mapMode === MAP_MODE.WORLD_MAP ? 2.0 : baseAspect;
+  if (mapMode === MAP_MODE.WORLD_MAP && isContinentalGameMode(cfg?.gameMode)) {
+    const theatreFrame = getContinentalTheatreFrame(earthBaseData || earthData, cfg?.continents);
+    if (theatreFrame?.aspect > 0) aspect = theatreFrame.aspect;
+  }
   const deviceScale = Math.max(0.6, Number(WORLD_SETUP?.deviceTileCapScale ?? preset.deviceTileCapScale ?? 1.0));
 
   const memGiB = Number(globalThis?.navigator?.deviceMemory);
@@ -1103,10 +1164,11 @@ function computeWorldSize(mapMode = MAP_MODE.GENERATOR, matchConfig = null) {
   const cfgTileCap = Math.max(200000, toPositiveInt(WORLD_SETUP?.maxTotalTiles, preset.maxTotalTiles ?? 900000));
   let maxTiles = Math.max(200000, Math.min(cfgTileCap, deviceTileCap));
 
-  let aiCount = clampAiCountForCountryMode(configuredAi, cfg, earthData);
+  const earthDataForCap = earthBaseData || earthData;
+  let aiCount = clampAiCountForCountryMode(configuredAi, cfg, earthDataForCap);
   const maxAiByTiles = Math.max(1, ((maxTiles / minTilesPerNation) | 0) - 1);
   if (aiCount > maxAiByTiles) aiCount = maxAiByTiles;
-  aiCount = clampAiCountForCountryMode(aiCount, cfg, earthData);
+  aiCount = clampAiCountForCountryMode(aiCount, cfg, earthDataForCap);
 
   const requestedTiles = (aiCount + 1) * tilesPerNation;
   const totalTiles = Math.max(120000, Math.min(maxTiles, requestedTiles));
@@ -1464,10 +1526,16 @@ let multiplayerDeferredUiSyncAtMs = 0;
 let multiplayerLastHashVerifyAtMs = 0;
 let multiplayerDroppedDeltaPackets = false;
 let multiplayerDeferredOwnerAppliedHint = 0;
+let multiplayerPredictionFenceState = null;
 const multiplayerStanceCommandState = {
   set_attack_ratio: { pendingArgs: null, timer: 0, lastSentAtMs: 0 },
   set_mobilization: { pendingArgs: null, timer: 0, lastSentAtMs: 0 }
 };
+const multiplayerMatchDebugPackets = createSocketDebugPacketStats();
+const multiplayerLobbyDebugPackets = createSocketDebugPacketStats();
+let multiplayerLastFullSyncReason = "";
+let multiplayerLastFullSyncAppliedReason = "";
+let multiplayerLastCommandRejectReason = "";
 
 const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 6500;
@@ -1498,6 +1566,7 @@ const MULTIPLAYER_BUFFER_SOFT_CAP = 200;
 const MULTIPLAYER_BUFFER_HARD_CAP = 320;
 const MULTIPLAYER_BUFFER_KEEP_RECENT_SOFT = 140;
 const MULTIPLAYER_BUFFER_KEEP_RECENT_HARD = 72;
+const MULTIPLAYER_PREDICTION_FENCE_MS = 2200;
 const MULTIPLAYER_SPAWN_RETRY_DELAY_MS = 220;
 const MULTIPLAYER_SPAWN_MAX_RETRIES = 3;
 const MULTIPLAYER_MATCH_PING_INTERVAL_MS = 2500;
@@ -1506,6 +1575,75 @@ const MULTIPLAYER_STANCE_CMD_INTERVAL_MS = 44;
 const MULTIPLAYER_DEFERRED_CMD_TTL_MS = 8000;
 const MULTIPLAYER_DEFERRED_CMD_RETRY_MS = 180;
 const MULTIPLAYER_DEFERRED_CMD_MAX = 24;
+
+function createSocketDebugPacketStats() {
+  return {
+    sentPackets: 0,
+    recvPackets: 0,
+    sentBytes: 0,
+    recvBytes: 0,
+    lastSentAtMs: 0,
+    lastRecvAtMs: 0,
+    lastSentType: "",
+    lastRecvType: "",
+    sentByType: Object.create(null),
+    recvByType: Object.create(null)
+  };
+}
+
+function resetSocketDebugPacketStats(stats) {
+  if (!stats || typeof stats !== "object") return;
+  stats.sentPackets = 0;
+  stats.recvPackets = 0;
+  stats.sentBytes = 0;
+  stats.recvBytes = 0;
+  stats.lastSentAtMs = 0;
+  stats.lastRecvAtMs = 0;
+  stats.lastSentType = "";
+  stats.lastRecvType = "";
+  stats.sentByType = Object.create(null);
+  stats.recvByType = Object.create(null);
+}
+
+function bumpSocketDebugPacketCount(map, typeRaw) {
+  const mapRef = (map && typeof map === "object") ? map : null;
+  if (!mapRef) return;
+  const type = String(typeRaw || "unknown").trim() || "unknown";
+  mapRef[type] = Math.max(0, Number(mapRef[type]) | 0) + 1;
+}
+
+function noteSocketDebugOutbound(stats, payload, rawText = "") {
+  if (!stats || typeof stats !== "object") return;
+  const type = String(payload?.type || "unknown").trim() || "unknown";
+  stats.sentPackets = Math.max(0, Number(stats.sentPackets) | 0) + 1;
+  stats.sentBytes = Math.max(0, Number(stats.sentBytes) || 0) + Math.max(0, String(rawText || "").length | 0);
+  stats.lastSentAtMs = Date.now();
+  stats.lastSentType = type;
+  bumpSocketDebugPacketCount(stats.sentByType, type);
+}
+
+function noteSocketDebugInbound(stats, payload, rawText = "") {
+  if (!stats || typeof stats !== "object") return;
+  const type = String(payload?.type || "unknown").trim() || "unknown";
+  stats.recvPackets = Math.max(0, Number(stats.recvPackets) | 0) + 1;
+  stats.recvBytes = Math.max(0, Number(stats.recvBytes) || 0) + Math.max(0, String(rawText || "").length | 0);
+  stats.lastRecvAtMs = Date.now();
+  stats.lastRecvType = type;
+  bumpSocketDebugPacketCount(stats.recvByType, type);
+}
+
+function sendSocketJsonWithDebug(ws, payload, stats = null) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  let raw = "";
+  try {
+    raw = JSON.stringify(payload ?? {});
+    ws.send(raw);
+    noteSocketDebugOutbound(stats, payload, raw);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   setAttackRatio: Object.freeze({ cmd: "set_attack_ratio" }),
@@ -1533,15 +1671,15 @@ const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   clearDivisionOrder: Object.freeze({ cmd: "clear_division_order" }),
   cancelShip: Object.freeze({ cmd: "cancel_ship" }),
   startPortTrade: Object.freeze({ cmd: "start_port_trade", predictLocal: true }),
-  startMissileSiloBuild: Object.freeze({ cmd: "start_missile_silo_build" }),
-  startAirbaseTransportBuild: Object.freeze({ cmd: "start_airbase_transport_build" }),
+  startMissileSiloBuild: Object.freeze({ cmd: "start_missile_silo_build", predictLocal: true }),
+  startAirbaseTransportBuild: Object.freeze({ cmd: "start_airbase_transport_build", predictLocal: true }),
   startBurstExpand: Object.freeze({ cmd: "start_burst_expand", predictLocal: true }),
   startBurstAttack: Object.freeze({ cmd: "start_burst_attack", predictLocal: true }),
   pickSpawn: Object.freeze({ cmd: "pick_spawn" }),
   startResearch: Object.freeze({ cmd: "start_research" }),
   launchMissileWarhead: Object.freeze({ cmd: "launch_missile_warhead" }),
   launchAirbaseTransport: Object.freeze({ cmd: "launch_airbase_transport" }),
-  placeStructure: Object.freeze({ cmd: "place_structure" })
+  placeStructure: Object.freeze({ cmd: "place_structure", predictLocal: true })
 });
 
 function normalizeMultiplayerSession(raw) {
@@ -1600,6 +1738,96 @@ function resetMultiplayerStanceCommandState() {
   }
 }
 
+function createMultiplayerPredictionFenceState() {
+  return {
+    stats: { untilTick: 0, untilServerTime: 0, expiresAtMs: 0 },
+    relations: { untilTick: 0, untilServerTime: 0, expiresAtMs: 0 },
+    structures: { untilTick: 0, untilServerTime: 0, expiresAtMs: 0 },
+    operations: { untilTick: 0, untilServerTime: 0, expiresAtMs: 0 },
+    mobile: { untilTick: 0, untilServerTime: 0, expiresAtMs: 0 }
+  };
+}
+
+function clearMultiplayerPredictionFences() {
+  multiplayerPredictionFenceState = createMultiplayerPredictionFenceState();
+}
+
+function getMultiplayerPredictionFenceState() {
+  if (!multiplayerPredictionFenceState || typeof multiplayerPredictionFenceState !== "object") {
+    multiplayerPredictionFenceState = createMultiplayerPredictionFenceState();
+  }
+  return multiplayerPredictionFenceState;
+}
+
+function resolveMultiplayerPredictionCategories(methodName) {
+  switch (String(methodName || "").trim()) {
+    case "declareWar":
+    case "betrayAlliance":
+      return { relations: true };
+    case "startNeutral":
+    case "startWarFocus":
+    case "startBurstExpand":
+    case "startBurstAttack":
+      return { stats: true, operations: true };
+    case "startPortTrade":
+      return { stats: true, operations: true, mobile: true };
+    case "startMissileSiloBuild":
+    case "startAirbaseTransportBuild":
+    case "placeStructure":
+      return { stats: true, structures: true };
+    default:
+      return null;
+  }
+}
+
+function markMultiplayerPredictionFence(categoriesRaw, baseTickRaw = 0) {
+  const categories = (categoriesRaw && typeof categoriesRaw === "object") ? categoriesRaw : null;
+  if (!categories) return;
+  const state = getMultiplayerPredictionFenceState();
+  const baseTick = Math.max(
+    0,
+    Number(baseTickRaw) | 0,
+    multiplayerLatestServerTick | 0,
+    multiplayerLastAppliedTick | 0,
+    Number(activeMultiplayerSession?.serverTick) | 0
+  );
+  const estimatedServerTime = Math.max(0, Date.now() + (Number(multiplayerServerOffsetMs) || 0));
+  const expiresAtMs = Date.now() + MULTIPLAYER_PREDICTION_FENCE_MS;
+  const keys = Object.keys(categories);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (!categories[key] || !state[key]) continue;
+    state[key].untilTick = Math.max(0, Number(state[key].untilTick) | 0, baseTick);
+    state[key].untilServerTime = Math.max(0, Number(state[key].untilServerTime) || 0, estimatedServerTime);
+    state[key].expiresAtMs = Math.max(0, Number(state[key].expiresAtMs) || 0, expiresAtMs);
+  }
+}
+
+function shouldSkipMultiplayerPredictedCategory(category, packetTickRaw, packetServerTimeRaw = 0) {
+  const key = String(category || "").trim();
+  if (!key) return false;
+  const state = getMultiplayerPredictionFenceState();
+  const entry = state[key];
+  if (!entry || typeof entry !== "object") return false;
+  const now = Date.now();
+  const packetTick = Math.max(0, Number(packetTickRaw) | 0);
+  const packetServerTime = Math.max(0, Number(packetServerTimeRaw) || 0);
+  const expiresAtMs = Math.max(0, Number(entry.expiresAtMs) || 0);
+  const untilTick = Math.max(0, Number(entry.untilTick) | 0);
+  const untilServerTime = Math.max(0, Number(entry.untilServerTime) || 0);
+  const packetIsNewer = (
+    (packetServerTime > 0 && packetServerTime > untilServerTime) ||
+    (packetTick > untilTick)
+  );
+  if (expiresAtMs <= 0 || now >= expiresAtMs || packetIsNewer) {
+    entry.untilTick = 0;
+    entry.untilServerTime = 0;
+    entry.expiresAtMs = 0;
+    return false;
+  }
+  return true;
+}
+
 function clearMultiplayerDeferredCommandQueue() {
   if (multiplayerDeferredCommandFlushTimer) {
     clearTimeout(multiplayerDeferredCommandFlushTimer);
@@ -1633,6 +1861,7 @@ function resetMultiplayerSnapshotState() {
   multiplayerDeferredUiSyncAtMs = 0;
   multiplayerLastHashVerifyAtMs = 0;
   multiplayerPendingSpawnPick = null;
+  clearMultiplayerPredictionFences();
   if (multiplayerPendingSpawnRetryTimer) {
     clearTimeout(multiplayerPendingSpawnRetryTimer);
     multiplayerPendingSpawnRetryTimer = 0;
@@ -1675,26 +1904,18 @@ function maybeReportMultiplayerClientLoaded(startedAtRaw = 0) {
   const startedAt = Math.max(0, Number(startedAtRaw) || Number(sess.startedAt) || 0);
   if (startedAt <= 0) return false;
   if ((Number(sess.loadReportedAt) || 0) === startedAt) return false;
-  try {
-    ws.send(JSON.stringify({
-      type: "client_loaded",
-      startedAt
-    }));
-    sess.loadReportedAt = startedAt;
-    return true;
-  } catch {
-    return false;
-  }
+  const sent = sendSocketJsonWithDebug(ws, {
+    type: "client_loaded",
+    startedAt
+  }, multiplayerMatchDebugPackets);
+  if (!sent) return false;
+  sess.loadReportedAt = startedAt;
+  return true;
 }
 
 function sendMultiplayerMatchPing(ws = multiplayerMatchSocket) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-  try {
-    ws.send(JSON.stringify({ type: "ping", clientTime: Date.now() }));
-    return true;
-  } catch {
-    return false;
-  }
+  return sendSocketJsonWithDebug(ws, { type: "ping", clientTime: Date.now() }, multiplayerMatchDebugPackets);
 }
 
 function startMultiplayerMatchPingLoop(ws) {
@@ -1720,6 +1941,10 @@ function setActiveMultiplayerSession(raw) {
   multiplayerSessionTerminated = false;
   multiplayerPendingInputSeq = 1;
   multiplayerLastAckSeq = 0;
+  multiplayerLastFullSyncReason = "";
+  multiplayerLastFullSyncAppliedReason = "";
+  multiplayerLastCommandRejectReason = "";
+  resetSocketDebugPacketStats(multiplayerMatchDebugPackets);
   clearMultiplayerDeferredCommandQueue();
   resetMultiplayerSnapshotState();
   resetMultiplayerWorldSync();
@@ -1764,11 +1989,7 @@ function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
     const now = Date.now();
     if (now >= multiplayerIdentityRefreshAtMs) {
       multiplayerIdentityRefreshAtMs = now + 1200;
-      try {
-        ws.send(JSON.stringify({ type: "lobby_state_request" }));
-      } catch {
-        // Ignore send errors; reconnect path handles this.
-      }
+      sendSocketJsonWithDebug(ws, { type: "lobby_state_request" }, multiplayerMatchDebugPackets);
       void probeActiveMultiplayerSessionState();
     }
     if (!isSpawnPickCmd) {
@@ -1790,7 +2011,7 @@ function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
     const payloadNationId = useFallbackIdentityForSpawn
       ? Math.max(0, Number(sess?.nationId) | 0)
       : (Number(sess.nationId) | 0);
-    ws.send(JSON.stringify({
+    const sent = sendSocketJsonWithDebug(ws, {
       type: "match_input",
       playerId: payloadPlayerId,
       nationId: payloadNationId,
@@ -1798,7 +2019,8 @@ function sendMultiplayerMatchInput(cmdRaw, argsRaw) {
       clientTime: Date.now(),
       cmd,
       args
-    }));
+    }, multiplayerMatchDebugPackets);
+    if (!sent) throw new Error("match_input_send_failed");
     if (isSpawnPickCmd) {
       multiplayerPendingSpawnPick = {
         x: Number(args?.[1]) | 0,
@@ -2103,6 +2325,9 @@ function installMultiplayerWorldSync(worldRef) {
         try {
           const predicted = original(...args);
           if (predicted && typeof predicted === "object") {
+            if (predicted.ok !== false) {
+              markMultiplayerPredictionFence(resolveMultiplayerPredictionCategories(methodName));
+            }
             return { ...predicted, predicted: true };
           }
         } catch {
@@ -2702,7 +2927,9 @@ function applyAuthoritativeMultiplayerMatchConfig(worldRef, meta) {
   worldRef._countryClaimGuard = false;
   worldRef._gameMode = String(nextCfg.gameMode || GAME_MODE.CLASSIC).toLowerCase() === GAME_MODE.DIVISIONS
     ? GAME_MODE.DIVISIONS
-    : GAME_MODE.CLASSIC;
+    : (String(nextCfg.gameMode || GAME_MODE.CLASSIC).toLowerCase() === GAME_MODE.CONTINENTAL
+      ? GAME_MODE.CONTINENTAL
+      : GAME_MODE.CLASSIC);
 
   if (changed) {
     applyClientSettings(clientSettings, { persist: false, syncHUD: false, announce: false });
@@ -2830,6 +3057,7 @@ function applyMultiplayerTerritoryPacket(packet) {
   const worldRef = multiplayerWorldSyncWorld;
   if (!worldRef || !packet || typeof packet !== "object") return false;
   const tick = Math.max(0, Number(packet.tick) | 0);
+  const packetServerTime = Math.max(0, Number(packet?.serverTime) || 0);
   let ownerApplied = 0;
   if (packet.changedTilesPacked) {
     ownerApplied = applyPackedOwnerChangesFromBase64(
@@ -2844,13 +3072,14 @@ function applyMultiplayerTerritoryPacket(packet) {
   if (Number.isFinite(ownerVersion) && ownerVersion >= 0) {
     worldRef.ownerVersion = Math.max(0, ownerVersion | 0);
   }
-  if (Array.isArray(packet.humanNationStats)) {
+  const allowStats = !shouldSkipMultiplayerPredictedCategory("stats", tick, packetServerTime);
+  if (allowStats && Array.isArray(packet.humanNationStats)) {
     applyMultiplayerNationStats(worldRef, packet.humanNationStats);
   }
-  if (Array.isArray(packet.nationStats)) {
+  if (allowStats && Array.isArray(packet.nationStats)) {
     applyMultiplayerNationStats(worldRef, packet.nationStats);
   }
-  if (Array.isArray(packet.leaderboard)) {
+  if (allowStats && Array.isArray(packet.leaderboard)) {
     applyMultiplayerLeaderboardRows(worldRef, packet.leaderboard);
     worldRef._serverLeaderboard = packet.leaderboard;
   }
@@ -3093,12 +3322,14 @@ function requestMultiplayerFullSync(reasonRaw = "") {
     localHash = "";
   }
   try {
-    ws.send(JSON.stringify({
+    const sent = sendSocketJsonWithDebug(ws, {
       type: "full_sync_request",
       reason,
       clientTick: Math.max(0, multiplayerLastAppliedTick | 0),
       clientHash: localHash
-    }));
+    }, multiplayerMatchDebugPackets);
+    if (!sent) return false;
+    multiplayerLastFullSyncReason = reason;
     multiplayerAwaitingFullSync = true;
     return true;
   } catch {
@@ -3141,6 +3372,40 @@ function maybeHandleMultiplayerStateHashMismatch(packet) {
   requestMultiplayerFullSync("hash_mismatch");
 }
 
+function filterMultiplayerChangedEntitiesForPrediction(changedEntitiesRaw, packetTick, packetServerTime = 0) {
+  const changedEntities = (changedEntitiesRaw && typeof changedEntitiesRaw === "object")
+    ? changedEntitiesRaw
+    : null;
+  if (!changedEntities) return null;
+
+  const out = {};
+  if (Array.isArray(changedEntities.structures) && !shouldSkipMultiplayerPredictedCategory("structures", packetTick, packetServerTime)) {
+    out.structures = changedEntities.structures;
+  }
+  if (Array.isArray(changedEntities.operations) && !shouldSkipMultiplayerPredictedCategory("operations", packetTick, packetServerTime)) {
+    out.operations = changedEntities.operations;
+  }
+  if (Array.isArray(changedEntities.tradeDeals) && !shouldSkipMultiplayerPredictedCategory("operations", packetTick, packetServerTime)) {
+    out.tradeDeals = changedEntities.tradeDeals;
+  }
+  if (Array.isArray(changedEntities.tradeRequests) && !shouldSkipMultiplayerPredictedCategory("operations", packetTick, packetServerTime)) {
+    out.tradeRequests = changedEntities.tradeRequests;
+  }
+  if (Array.isArray(changedEntities.divisions) && !shouldSkipMultiplayerPredictedCategory("mobile", packetTick, packetServerTime)) {
+    out.divisions = changedEntities.divisions;
+  }
+  if (Array.isArray(changedEntities.ships) && !shouldSkipMultiplayerPredictedCategory("mobile", packetTick, packetServerTime)) {
+    out.ships = changedEntities.ships;
+  }
+  if (Array.isArray(changedEntities.nukeFlights) && !shouldSkipMultiplayerPredictedCategory("mobile", packetTick, packetServerTime)) {
+    out.nukeFlights = changedEntities.nukeFlights;
+  }
+  if (Array.isArray(changedEntities.airborneMissions) && !shouldSkipMultiplayerPredictedCategory("mobile", packetTick, packetServerTime)) {
+    out.airborneMissions = changedEntities.airborneMissions;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw = null) {
   const worldRef = multiplayerWorldSyncWorld;
   if (!worldRef || !packet || typeof packet !== "object") return false;
@@ -3150,6 +3415,7 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
   const hadAuthoritativeSync = multiplayerHasAuthoritativeSync;
   const fullSyncReason = String(packet?.reason || "").trim().toLowerCase();
   const isRegenerateSync = !!(isFullSync && fullSyncReason === "regenerate_match");
+  const packetServerTime = Math.max(0, Number(packet?.serverTime) || 0);
   let ownerApplied = 0;
 
   if (isFullSync) {
@@ -3181,16 +3447,20 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
     ownerApplied = applyOwnerChangesFromList(worldRef, packet.changedTiles);
   }
 
-  if (packet.changedEntities && typeof packet.changedEntities === "object") {
-    applyMultiplayerEntities(worldRef, packet.changedEntities);
+  const filteredEntities = isFullSync
+    ? packet.changedEntities
+    : filterMultiplayerChangedEntitiesForPrediction(packet.changedEntities, tick, packetServerTime);
+  if (filteredEntities && typeof filteredEntities === "object") {
+    applyMultiplayerEntities(worldRef, filteredEntities);
   }
-  if (Array.isArray(packet.humanNationStats)) {
+  const allowStats = isFullSync || !shouldSkipMultiplayerPredictedCategory("stats", tick, packetServerTime);
+  if (allowStats && Array.isArray(packet.humanNationStats)) {
     applyMultiplayerNationStats(worldRef, packet.humanNationStats);
   }
-  if (Array.isArray(packet.nationStats)) {
+  if (allowStats && Array.isArray(packet.nationStats)) {
     applyMultiplayerNationStats(worldRef, packet.nationStats);
   }
-  if (packet.relations && typeof packet.relations === "object") {
+  if ((isFullSync || !shouldSkipMultiplayerPredictedCategory("relations", tick, packetServerTime)) && packet.relations && typeof packet.relations === "object") {
     applyMultiplayerRelations(worldRef, packet.relations);
   }
   if (Array.isArray(packet.events) || Array.isArray(packet.globalEvents)) {
@@ -3209,7 +3479,7 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
     }
   }
 
-  if (Array.isArray(packet.leaderboard)) {
+  if (allowStats && Array.isArray(packet.leaderboard)) {
     applyMultiplayerLeaderboardRows(worldRef, packet.leaderboard);
     worldRef._serverLeaderboard = packet.leaderboard;
   }
@@ -3228,6 +3498,7 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
   multiplayerLastSnapshotAtMs = Date.now();
   multiplayerAwaitingFullSync = false;
   if (isFullSync) {
+    clearMultiplayerPredictionFences();
     multiplayerHasAuthoritativeSync = true;
     multiplayerDroppedDeltaPackets = false;
     multiplayerLastFullSyncReceivedAtMs = multiplayerLastSnapshotAtMs;
@@ -3566,7 +3837,7 @@ function drainMultiplayerSnapshotBuffer(force = false) {
       setMultiplayerHudStatus("Waiting for server... requesting authoritative sync.");
       const ws = multiplayerMatchSocket;
       if (ws && ws.readyState === WebSocket.OPEN) {
-        try { ws.send(JSON.stringify({ type: "lobby_state_request" })); } catch {}
+        sendSocketJsonWithDebug(ws, { type: "lobby_state_request" }, multiplayerMatchDebugPackets);
       }
       requestMultiplayerFullSync("awaiting_initial_full_sync");
     }
@@ -3808,11 +4079,7 @@ function connectMultiplayerMatchSocket() {
     multiplayerSessionProbeInFlight = false;
     multiplayerSessionTerminated = false;
     startMultiplayerMatchPingLoop(ws);
-    try {
-      ws.send(JSON.stringify({ type: "lobby_state_request" }));
-    } catch {
-      // Ignore send errors.
-    }
+    sendSocketJsonWithDebug(ws, { type: "lobby_state_request" }, multiplayerMatchDebugPackets);
     requestMultiplayerFullSync("socket_open");
     multiplayerAwaitingFullSync = true;
     scheduleDeferredMultiplayerCommandFlush(120);
@@ -3822,12 +4089,14 @@ function connectMultiplayerMatchSocket() {
   };
 
   ws.onmessage = (ev) => {
+    const rawText = String(ev?.data || "");
     let msg = null;
     try {
-      msg = JSON.parse(String(ev?.data || ""));
+      msg = JSON.parse(rawText);
     } catch {
       return;
     }
+    noteSocketDebugInbound(multiplayerMatchDebugPackets, msg, rawText);
     const type = String(msg?.type || "");
 
     if (type === "pong") {
@@ -3891,11 +4160,7 @@ function connectMultiplayerMatchSocket() {
         if (nid > 0) activeMultiplayerSession.nationId = nid;
       }
       if (type === "started") {
-        try {
-          ws.send(JSON.stringify({ type: "lobby_state_request" }));
-        } catch {
-          // Ignore send errors; reconnect path handles this.
-        }
+        sendSocketJsonWithDebug(ws, { type: "lobby_state_request" }, multiplayerMatchDebugPackets);
         requestMultiplayerFullSync("started_event");
       }
       scheduleDeferredMultiplayerCommandFlush(80);
@@ -3909,6 +4174,8 @@ function connectMultiplayerMatchSocket() {
 
     if (type === "cmd_reject") {
       const reason = String(msg?.reason || "Command rejected.").trim();
+      multiplayerLastCommandRejectReason = reason;
+      clearMultiplayerPredictionFences();
       const rejectSeq = Math.max(0, Number(msg?.ackSeq) | 0);
       const pendingSpawnReject = !!(
         multiplayerPendingSpawnPick &&
@@ -3919,7 +4186,7 @@ function connectMultiplayerMatchSocket() {
         pendingSpawnReject &&
         spawnRejectLooksLikeIdentityMismatch(reason)
       ) {
-        try { ws.send(JSON.stringify({ type: "lobby_state_request" })); } catch {}
+        sendSocketJsonWithDebug(ws, { type: "lobby_state_request" }, multiplayerMatchDebugPackets);
         requestMultiplayerFullSync("spawn_identity_reject");
         clearPendingSpawnRetry();
         multiplayerPendingSpawnRetryTimer = setTimeout(() => {
@@ -3953,6 +4220,7 @@ function connectMultiplayerMatchSocket() {
 
     if (type === "full_sync") {
       resetMultiplayerSnapshotState();
+      multiplayerLastFullSyncAppliedReason = String(msg?.reason || "").trim();
       applyMultiplayerSnapshotPacket(msg, true);
       maybeReportMultiplayerClientLoaded(Math.max(0, Number(msg?.worldMeta?.startedAt) || 0));
       flushDeferredMultiplayerCommands();
@@ -4848,7 +5116,13 @@ function sanitizeMatchConfig(next) {
     ? difficultyRaw
     : DEFAULT_MATCH_CONFIG.difficulty;
   const gameModeRaw = String(src.gameMode || DEFAULT_MATCH_CONFIG.gameMode).toLowerCase();
-  const gameMode = gameModeRaw === GAME_MODE.DIVISIONS ? GAME_MODE.DIVISIONS : GAME_MODE.CLASSIC;
+  const gameMode = gameModeRaw === GAME_MODE.DIVISIONS
+    ? GAME_MODE.DIVISIONS
+    : (gameModeRaw === GAME_MODE.CONTINENTAL ? GAME_MODE.CONTINENTAL : GAME_MODE.CLASSIC);
+  const continents = sanitizeContinentSelection(
+    src.continents ?? src.selectedContinents ?? DEFAULT_MATCH_CONFIG.continents,
+    DEFAULT_MATCH_CONFIG.continents
+  );
 
   const mapSourceRaw = String(src.mapSource ?? src.mapMode ?? DEFAULT_MATCH_CONFIG.mapSource).toLowerCase();
   const mapSource = mapSourceRaw === MAP_SOURCE.CUSTOM
@@ -4866,7 +5140,7 @@ function sanitizeMatchConfig(next) {
   const customMapId = String(src.customMapId || "").trim();
   const aiCount = aiCountRaw == null
     ? null
-    : clampAiCountForCountryMode(aiCountRaw, { mapSource }, earthData);
+    : clampAiCountForCountryMode(aiCountRaw, { mapSource, gameMode, continents }, earthBaseData || earthData);
 
   const parseBoost = (value, fallback) => {
     const n = Number(value);
@@ -4874,19 +5148,20 @@ function sanitizeMatchConfig(next) {
     return fallback;
   };
 
-  const infiniteResources = Boolean(src.infiniteResources) || Boolean(src.infiniteGold) || Boolean(src.infiniteTroops);
+  const infiniteResources = Boolean(src.infiniteResources);
 
   return {
     sizePreset,
     aiCount,
     difficulty,
     gameMode,
+    continents,
     mapMode,
     mapSource,
     customMapId,
     infiniteResources,
-    infiniteGold: infiniteResources || Boolean(src.infiniteGold),
-    infiniteTroops: infiniteResources || Boolean(src.infiniteTroops),
+    infiniteGold: Boolean(src.infiniteGold),
+    infiniteTroops: Boolean(src.infiniteTroops),
     disableMissileSilo: Boolean(src.disableMissileSilo),
     disableAbmLauncher: Boolean(src.disableAbmLauncher),
     disableAirbase: Boolean(src.disableAirbase),
@@ -5559,24 +5834,62 @@ function isSessionTerminalStateNow() {
 }
 
 const BUILD_HOTKEY_BUTTON_IDS = Object.freeze({
+  Digit1: "btnCity",
+  Numpad1: "btnCity",
   "1": "btnCity",
+  Digit2: "btnFactory",
+  Numpad2: "btnFactory",
   "2": "btnFactory",
+  Digit3: "btnBarracks",
+  Numpad3: "btnBarracks",
   "3": "btnBarracks",
+  Digit4: "btnDefencePost",
+  Numpad4: "btnDefencePost",
   "4": "btnDefencePost",
+  Digit5: "btnPort",
+  Numpad5: "btnPort",
   "5": "btnPort",
+  Digit6: "btnCoastalRig",
+  Numpad6: "btnCoastalRig",
   "6": "btnCoastalRig",
+  Digit7: "btnResearchLab",
+  Numpad7: "btnResearchLab",
   "7": "btnResearchLab",
+  Digit8: "btnMissileSilo",
+  Numpad8: "btnMissileSilo",
   "8": "btnMissileSilo",
+  Digit9: "btnAbmLauncher",
+  Numpad9: "btnAbmLauncher",
   "9": "btnAbmLauncher",
+  Minus: "btnRadarStation",
+  NumpadSubtract: "btnRadarStation",
+  "-": "btnRadarStation",
+  Digit0: "btnAirbase",
+  Numpad0: "btnAirbase",
   "0": "btnAirbase"
 });
 
 const QUICK_LAUNCH_HOTKEY_BUTTON_IDS = Object.freeze({
+  KeyX: "btnQuickAtomic",
   x: "btnQuickAtomic",
+  KeyV: "btnQuickHydrogen",
   v: "btnQuickHydrogen",
+  KeyH: "btnQuickTransportBoat",
   h: "btnQuickTransportBoat",
+  KeyF: "btnQuickPlane",
   f: "btnQuickPlane"
 });
+
+function resolveHotkeyButtonId(mapping, event) {
+  if (!mapping || !event) return "";
+  const code = String(event.code || "").trim();
+  if (code && Object.prototype.hasOwnProperty.call(mapping, code)) return String(mapping[code] || "");
+  const key = String(event.key || "").trim();
+  if (key && Object.prototype.hasOwnProperty.call(mapping, key)) return String(mapping[key] || "");
+  const lowerKey = key.toLowerCase();
+  if (lowerKey && Object.prototype.hasOwnProperty.call(mapping, lowerKey)) return String(mapping[lowerKey] || "");
+  return "";
+}
 
 function isSpawnPhaseActiveNow() {
   const worldRef = world;
@@ -6698,6 +7011,7 @@ async function initAndBoot(matchConfig = null, opts = null) {
   if (onLoading) onLoading(12, "Loading map...");
   if (configuredMode === MAP_MODE.WORLD_MAP) {
     if (customMap) {
+      earthBaseData = null;
       earthData = customMapToEarthData(customMap);
       earthCountryBotCap = 0;
       if (!earthData) {
@@ -6706,18 +7020,22 @@ async function initAndBoot(matchConfig = null, opts = null) {
       console.info(`[Map] Loaded custom map "${earthData.mapName || customMap.name}" (${earthData.gridW}x${earthData.gridH}).`);
     } else {
       try {
-        earthData = await loadEarthData();
-        earthCountryBotCap = getEarthCountryBotCapFromData(earthData);
+        earthBaseData = await loadEarthData();
+        earthData = resolveEarthDataForMatchConfig(earthBaseData, cfg);
+        earthCountryBotCap = getEarthCountryBotCapFromData(earthBaseData);
         console.info("[Earth] Earth assets loaded.");
       } catch (err) {
         if (strictWorldSpec || forcedWorldSpec) {
           throw new Error("World map assets failed to load for this multiplayer match.");
         }
         console.error("[Earth] Failed to load Earth assets, falling back to procedural map.", err);
+        earthData = null;
+        earthBaseData = null;
         earthCountryBotCap = 0;
       }
     }
   } else {
+    earthBaseData = null;
     earthData = null;
     earthCountryBotCap = 0;
   }
@@ -6869,6 +7187,22 @@ function isExpectedStatsAuthMiss(err) {
   return name.includes("authsessionmissingerror") || message.includes("auth session missing");
 }
 
+const ACCOUNT_MATCH_SESSION_PROGRESS_FLUSH_MS = 15000;
+let lastAccountMatchSessionProgressFlushAt = 0;
+
+function syncAccountMatchSessionProgress(force = false) {
+  if (!playerStatsService?.enabled || !playerStatsService.hasActiveSession()) return false;
+  if (typeof playerStatsService.updateSessionProgress !== "function") return false;
+  const nowMs = Date.now();
+  if (!force && (nowMs - lastAccountMatchSessionProgressFlushAt) < ACCOUNT_MATCH_SESSION_PROGRESS_FLUSH_MS) {
+    return false;
+  }
+  const playtimeSeconds = Math.max(0, Math.floor(Number(world?.time) || 0));
+  const synced = playerStatsService.updateSessionProgress(playtimeSeconds);
+  if (synced) lastAccountMatchSessionProgressFlushAt = nowMs;
+  return synced;
+}
+
 async function beginAccountMatchSessionTracking(displayNameRaw = "", modeRaw = "") {
   if (!playerStatsService?.enabled) return false;
   const displayName = resolvePlayerDisplayName(displayNameRaw || world?.nation?.[OWNER.PLAYER]?.name || loadMainMenuPlayerName());
@@ -6876,10 +7210,15 @@ async function beginAccountMatchSessionTracking(displayNameRaw = "", modeRaw = "
     ? "multiplayer"
     : "singleplayer";
   try {
-    return await playerStatsService.startSession({
+    const started = await playerStatsService.startSession({
       displayName,
       matchMode: mode
     });
+    if (started) {
+      lastAccountMatchSessionProgressFlushAt = 0;
+      syncAccountMatchSessionProgress(true);
+    }
+    return started;
   } catch (err) {
     if (isExpectedStatsAuthMiss(err)) return false;
     console.warn("[Stats] Failed to start tracked match session.", err);
@@ -6898,11 +7237,13 @@ async function finalizeAccountMatchSessionTracking(outcomeRaw = "abandon", playt
   const displayName = resolvePlayerDisplayName(displayNameRaw || world?.nation?.[OWNER.PLAYER]?.name || loadMainMenuPlayerName());
 
   try {
-    return await playerStatsService.finalizeSession({
+    const finalized = await playerStatsService.finalizeSession({
       outcome: safeOutcome,
       playtimeSeconds,
       displayName
     });
+    lastAccountMatchSessionProgressFlushAt = 0;
+    return finalized;
   } catch (err) {
     console.warn("[Stats] Failed to finalize tracked match session.", err);
     return false;
@@ -7098,6 +7439,8 @@ function createMainMenuController(options = null) {
   const multiplayerRuntimeBadge = document.getElementById("mmMultiplayerRuntimeBadge");
   const joinStatus = document.getElementById("mmJoinStatus");
   const playLobbyCard = document.getElementById("mmPlayLobbyCard");
+  const playLobbyColumn = document.getElementById("mmPlayLobbyColumn");
+  const playConfigCard = document.getElementById("mmPlayConfigCard");
   const playLobbyCode = document.getElementById("mmPlayLobbyCode");
   const playLobbyPlayers = document.getElementById("mmPlayLobbyPlayers");
   const playLobbyRole = document.getElementById("mmPlayLobbyRole");
@@ -7266,6 +7609,10 @@ function createMainMenuController(options = null) {
     playerGoldBoost: document.getElementById("mmCfgPlayerGoldBoost"),
     playerTroopsBoost: document.getElementById("mmCfgPlayerTroopsBoost")
   };
+  const continentField = document.getElementById("mmCfgContinentField");
+  const continentPicker = document.getElementById("mmCfgContinents");
+  const continentHint = document.getElementById("mmCfgContinentHint");
+  const continentButtons = new Map();
 
   const flagInputs = {
     layout: document.getElementById("mmFlagLayout"),
@@ -7502,6 +7849,78 @@ function createMainMenuController(options = null) {
     mapEditorSummary.textContent = `${selected.name} | ${selected.width}x${selected.height} | Updated ${new Date(selected.updatedAt).toLocaleString()}`;
   };
 
+  const getSelectedContinentsFromPicker = () => {
+    const selected = [];
+    for (const [key, btn] of continentButtons.entries()) {
+      if (btn?.classList.contains("isActive")) selected.push(key);
+    }
+    return sanitizeContinentSelection(selected, DEFAULT_MATCH_CONFIG.continents);
+  };
+
+  const setSelectedContinentsInPicker = (selectionRaw) => {
+    const selection = new Set(sanitizeContinentSelection(selectionRaw, DEFAULT_MATCH_CONFIG.continents));
+    for (const [key, btn] of continentButtons.entries()) {
+      const active = selection.has(key);
+      btn.classList.toggle("isActive", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+  };
+
+  const refreshContinentPickerState = () => {
+    const gameMode = String(matchInputs.gameMode?.value || GAME_MODE.CLASSIC).toLowerCase();
+    const mapSource = String(matchInputs.mapMode?.value || MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
+    const show = gameMode === GAME_MODE.CONTINENTAL;
+    const earthCompatible = mapSource === MAP_SOURCE.POLITICAL_EARTH || mapSource === MAP_SOURCE.EARTH;
+
+    if (continentField) {
+      continentField.hidden = !show;
+      continentField.classList.toggle("isDisabled", show && !earthCompatible);
+    }
+    if (continentHint) {
+      continentHint.textContent = earthCompatible
+        ? "Pick one or more continents. Continental mode crops to that theatre and works best on Earth Map; Political Earth caps bots to the available countries."
+        : "Continental mode uses Earth-based maps. Switch Map Source off custom to enable continent picking.";
+    }
+    for (const btn of continentButtons.values()) {
+      if (!btn) continue;
+      btn.disabled = !earthCompatible;
+      btn.classList.toggle("isDisabled", !earthCompatible);
+    }
+  };
+
+  const populateContinentPicker = () => {
+    if (!continentPicker) return;
+    continentPicker.innerHTML = "";
+    continentButtons.clear();
+
+    for (let i = 0; i < CONTINENT_OPTIONS.length; i++) {
+      const row = CONTINENT_OPTIONS[i];
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mainMenuContinentBtn";
+      btn.dataset.continent = row.key;
+      btn.textContent = row.label;
+      btn.setAttribute("aria-pressed", "false");
+      btn.addEventListener("click", () => {
+        if (btn.disabled) return;
+        const nextActive = !btn.classList.contains("isActive");
+        const selected = new Set(getSelectedContinentsFromPicker());
+        if (nextActive) {
+          selected.add(row.key);
+        } else if (selected.size > 1) {
+          selected.delete(row.key);
+        }
+        setSelectedContinentsInPicker([...selected]);
+        persistMatchConfigFromForm();
+      });
+      continentButtons.set(row.key, btn);
+      continentPicker.appendChild(btn);
+    }
+
+    setSelectedContinentsInPicker(DEFAULT_MATCH_CONFIG.continents);
+    refreshContinentPickerState();
+  };
+
   const refreshMapSourceUi = () => {
     const hasMaps = mapEditorSavedMetas.length > 0;
     if (matchInputs.mapMode) {
@@ -7516,6 +7935,7 @@ function createMainMenuController(options = null) {
       matchInputs.customMapId.disabled = !showCustom || !hasMaps;
       matchInputs.customMapId.parentElement?.classList.toggle("isDisabled", !showCustom || !hasMaps);
     }
+    refreshContinentPickerState();
   };
 
   const fillSelectWithMaps = (el, includeEmptyLabel = "No saved maps") => {
@@ -8879,23 +9299,21 @@ function createMainMenuController(options = null) {
       if (lobbyPingTimer) clearInterval(lobbyPingTimer);
       lobbyPingTimer = setInterval(() => {
         if (!lobbySocket || lobbySocket.readyState !== WebSocket.OPEN) return;
-        try {
-          lobbySocket.send(JSON.stringify({ type: "ping", clientTime: Date.now() }));
-        } catch {
-          // Ignore ping send errors.
-        }
+        sendSocketJsonWithDebug(lobbySocket, { type: "ping", clientTime: Date.now() }, multiplayerLobbyDebugPackets);
       }, 3500);
       setStatus("Realtime lobby connected.");
       refreshMultiplayerUI();
     };
 
     ws.onmessage = (ev) => {
+      const rawText = String(ev?.data || "");
       let msg = null;
       try {
-        msg = JSON.parse(String(ev?.data || ""));
+        msg = JSON.parse(rawText);
       } catch {
         return;
       }
+      noteSocketDebugInbound(multiplayerLobbyDebugPackets, msg, rawText);
       const type = String(msg?.type || "");
       if (type === "pong") {
         const ct = Number(msg?.clientTime) || 0;
@@ -9151,7 +9569,9 @@ function createMainMenuController(options = null) {
       [multiplayerHealthBuild, multiplayerHealthRuntimeSrc].filter(Boolean).join(" | ")
     );
 
+    if (playLobbyColumn) playLobbyColumn.hidden = !inHostMode || !lobby;
     if (playLobbyCard) playLobbyCard.hidden = !inHostMode || !lobby;
+    if (playConfigCard) playConfigCard.classList.toggle("isHostLobby", !!(inHostMode && lobby));
     if (playLobbyCode) playLobbyCode.textContent = lobby?.code || "------";
     renderLobbyPlayers(playLobbyPlayers, lobby?.players || []);
     syncLobbyMeta(lobby, {
@@ -10378,9 +10798,17 @@ function createMainMenuController(options = null) {
     return sanitizeClientSettings(out);
   };
 
+  const buildMatchConfigForMenuLimits = () => ({
+    mapSource: matchInputs.mapMode ? String(matchInputs.mapMode.value || MAP_SOURCE.POLITICAL_EARTH).toLowerCase() : MAP_SOURCE.POLITICAL_EARTH,
+    gameMode: matchInputs.gameMode ? String(matchInputs.gameMode.value || GAME_MODE.CLASSIC).toLowerCase() : GAME_MODE.CLASSIC,
+    continents: getSelectedContinentsFromPicker()
+  });
+
   const resolveEarthBotCap = () => {
-    const cap = getEarthCountryBotCapFromData(earthData);
-    return cap > 0 ? cap : Math.max(0, earthCountryBotCap | 0);
+    const cfg = buildMatchConfigForMenuLimits();
+    const cap = getEarthCountryBotCapForMatchConfig(cfg, earthBaseData || earthData);
+    if (cap > 0) return cap;
+    return Math.max(0, earthCountryBotCap | 0);
   };
 
   const refreshBotInputLimit = () => {
@@ -10403,8 +10831,15 @@ function createMainMenuController(options = null) {
     if (matchInputs.sizePreset) matchInputs.sizePreset.value = cfg.sizePreset;
     if (matchInputs.difficulty) matchInputs.difficulty.value = cfg.difficulty;
     if (matchInputs.gameMode) matchInputs.gameMode.value = String(cfg.gameMode || GAME_MODE.CLASSIC).toLowerCase();
+    setSelectedContinentsInPicker(cfg.continents);
     if (matchInputs.fogOfWar) matchInputs.fogOfWar.value = getFogOfWarMode(cfg);
-    if (matchInputs.mapMode) matchInputs.mapMode.value = String(cfg.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
+    if (matchInputs.mapMode) {
+      let nextMapSource = String(cfg.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
+      if (String(cfg.gameMode || GAME_MODE.CLASSIC).toLowerCase() === GAME_MODE.CONTINENTAL && nextMapSource === MAP_SOURCE.POLITICAL_EARTH) {
+        nextMapSource = MAP_SOURCE.EARTH;
+      }
+      matchInputs.mapMode.value = nextMapSource;
+    }
     if (matchInputs.customMapId) matchInputs.customMapId.value = String(cfg.customMapId || "");
     if (matchInputs.infiniteResources) matchInputs.infiniteResources.checked = !!cfg.infiniteResources;
     if (matchInputs.infiniteGold) matchInputs.infiniteGold.checked = !!cfg.infiniteGold;
@@ -10416,6 +10851,7 @@ function createMainMenuController(options = null) {
     if (matchInputs.playerGoldBoost) matchInputs.playerGoldBoost.value = String(cfg.playerGoldBoost);
     if (matchInputs.playerTroopsBoost) matchInputs.playerTroopsBoost.value = String(cfg.playerTroopsBoost);
     refreshMapSourceUi();
+    refreshContinentPickerState();
     refreshBotInputLimit();
   };
 
@@ -10441,6 +10877,7 @@ function createMainMenuController(options = null) {
       sizePreset: matchInputs.sizePreset ? matchInputs.sizePreset.value : undefined,
       difficulty: matchInputs.difficulty ? matchInputs.difficulty.value : undefined,
       gameMode: matchInputs.gameMode ? matchInputs.gameMode.value : undefined,
+      continents: getSelectedContinentsFromPicker(),
       fogOfWar: matchInputs.fogOfWar ? matchInputs.fogOfWar.value : undefined,
       mapMode: MAP_MODE.WORLD_MAP,
       mapSource,
@@ -10478,9 +10915,12 @@ function createMainMenuController(options = null) {
     const ruleText = rules.length ? rules.join(", ") : "Default rules";
     let modeText = "Political Earth";
     const fogText = getFogOfWarMode(cfg) === FOG_OF_WAR_MODE.ADVANCED ? "Advanced FOW" : "Simple FOW";
-    const gameModeText = String(cfg.gameMode || GAME_MODE.CLASSIC).toLowerCase() === GAME_MODE.DIVISIONS
-      ? "Divisions"
-      : "Classic";
+    let gameModeText = "Classic";
+    if (String(cfg.gameMode || GAME_MODE.CLASSIC).toLowerCase() === GAME_MODE.DIVISIONS) {
+      gameModeText = "Divisions";
+    } else if (isContinentalGameMode(cfg.gameMode)) {
+      gameModeText = `Continental (${formatContinentSelection(cfg.continents, 2)})`;
+    }
     if (String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.EARTH) {
       modeText = "Earth";
     } else if (String(cfg.mapSource || "").toLowerCase() === MAP_SOURCE.CUSTOM) {
@@ -11494,7 +11934,25 @@ function createMainMenuController(options = null) {
   }
   if (matchInputs.mapMode) {
     matchInputs.mapMode.addEventListener("change", () => {
+      if (String(matchInputs.mapMode.value || "").toLowerCase() === MAP_SOURCE.CUSTOM && String(matchInputs.gameMode?.value || "").toLowerCase() === GAME_MODE.CONTINENTAL) {
+        if (matchInputs.gameMode) matchInputs.gameMode.value = GAME_MODE.CLASSIC;
+      }
+      persistMatchConfigFromForm();
       refreshMapSourceUi();
+      refreshBotInputLimit();
+      refreshConfigSummary();
+    });
+  }
+  if (matchInputs.gameMode) {
+    matchInputs.gameMode.addEventListener("change", () => {
+      if (String(matchInputs.gameMode.value || "").toLowerCase() === GAME_MODE.CONTINENTAL) {
+        const currentMapSource = String(matchInputs.mapMode?.value || "").toLowerCase();
+        if (matchInputs.mapMode && (currentMapSource === MAP_SOURCE.CUSTOM || currentMapSource === MAP_SOURCE.POLITICAL_EARTH)) {
+          matchInputs.mapMode.value = MAP_SOURCE.EARTH;
+        }
+      }
+      persistMatchConfigFromForm();
+      refreshContinentPickerState();
       refreshBotInputLimit();
       refreshConfigSummary();
     });
@@ -11744,6 +12202,7 @@ function createMainMenuController(options = null) {
     mapLibraryPublishAuthor.value = safeStorageRead(MAP_LIBRARY_AUTHOR_STORAGE_KEY) || "";
   }
   applySettingsToForm(clientSettings);
+  populateContinentPicker();
   refreshCustomMapPickers();
   syncMapLibraryControls();
   renderMapLibraryList();
@@ -13890,6 +14349,14 @@ function boot() {
     if (isResearchOpen()) requestAnimationFrame(() => renderResearchPanel(researchState.tab, { force: true }));
     if (isTradeOpen()) requestAnimationFrame(() => refreshTradePanel(true));
   });
+  window.addEventListener("pagehide", () => {
+    syncAccountMatchSessionProgress(true);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      syncAccountMatchSessionProgress(true);
+    }
+  });
   for (let i = 0; i < researchTabButtons.length; i += 1) {
     const btn = researchTabButtons[i];
     if (!btn) continue;
@@ -14039,7 +14506,7 @@ function boot() {
     const researchOpen = isResearchOpen();
     const tradeOpenNow = isTradeOpen();
     if (!isTextInput && !settingsOpen && !researchOpen && !tradeOpenNow && !e.repeat && !e.altKey && !e.ctrlKey && !e.metaKey) {
-      const quickLaunchBtnId = QUICK_LAUNCH_HOTKEY_BUTTON_IDS[String(e.key || "").toLowerCase()];
+      const quickLaunchBtnId = resolveHotkeyButtonId(QUICK_LAUNCH_HOTKEY_BUTTON_IDS, e);
       if (quickLaunchBtnId) {
         e.preventDefault();
         const btn = document.getElementById(quickLaunchBtnId);
@@ -14047,7 +14514,7 @@ function boot() {
         return;
       }
 
-      const hotBtnId = BUILD_HOTKEY_BUTTON_IDS[String(e.key || "")];
+      const hotBtnId = resolveHotkeyButtonId(BUILD_HOTKEY_BUTTON_IDS, e);
       if (hotBtnId) {
         e.preventDefault();
         const btn = document.getElementById(hotBtnId);
@@ -14108,7 +14575,7 @@ function boot() {
     if (e.key === "g" || e.key === "G") {
       const on = debugOverlay.toggle();
       debugOverlayForceRefresh = on;
-      hud.setOpMessage(`Debug overlay: ${on ? "ON" : "OFF"} (G).`);
+      hud.setOpMessage(`Debug menu: ${on ? "ON" : "OFF"} (G).`);
     }
 
     if (e.key === "r" || e.key === "R") {
@@ -14270,6 +14737,7 @@ function boot() {
     } else {
       matchProgressAcc = 0;
     }
+    syncAccountMatchSessionProgress(false);
 
     // HUD updates are throttled to avoid forcing layout work every frame.
     hudAcc += frameDt;
@@ -14455,7 +14923,7 @@ function boot() {
     if (debugOverlay.isVisible() && (debugAcc >= (0.20 * overlayCadenceMul) || debugOverlayForceRefresh || resized)) {
       debugAcc = 0;
       debugOverlayForceRefresh = false;
-      debugOverlay.render(buildDebugOverlayText());
+      debugOverlay.render(buildDebugOverlayModel());
     }
 
     frameScheduler.requestNext();
@@ -15005,39 +15473,72 @@ function createDebugOverlay() {
   root.id = "pfDebugOverlay";
   root.hidden = true;
 
-  root.style.position = "absolute";
+  root.style.position = "fixed";
   root.style.left = "12px";
   root.style.top = "12px";
-  root.style.width = "min(600px, calc(100vw - 24px))";
-  root.style.maxHeight = "82vh";
-  root.style.padding = "10px 12px";
+  root.style.width = "min(1120px, calc(100vw - 24px))";
+  root.style.maxHeight = "calc(100vh - 24px)";
+  root.style.padding = "14px";
   root.style.border = "1px solid rgba(255,255,255,0.18)";
-  root.style.borderRadius = "12px";
-  root.style.background = "rgba(8, 11, 18, 0.88)";
+  root.style.borderRadius = "18px";
+  root.style.background = "rgba(8, 11, 18, 0.9)";
   root.style.color = "rgba(228, 235, 248, 0.96)";
-  root.style.boxShadow = "0 20px 50px rgba(0,0,0,0.45)";
-  root.style.backdropFilter = "blur(10px)";
-  root.style.zIndex = "95";
+  root.style.boxShadow = "0 24px 60px rgba(0,0,0,0.48)";
+  root.style.backdropFilter = "blur(16px)";
+  root.style.zIndex = "115";
   root.style.pointerEvents = "none";
+  root.style.overflow = "auto";
+
+  const header = document.createElement("div");
+  header.style.display = "flex";
+  header.style.justifyContent = "space-between";
+  header.style.alignItems = "flex-start";
+  header.style.gap = "12px";
+  header.style.marginBottom = "12px";
+
+  const headingWrap = document.createElement("div");
+  headingWrap.style.display = "flex";
+  headingWrap.style.flexDirection = "column";
+  headingWrap.style.gap = "4px";
 
   const title = document.createElement("div");
-  title.textContent = "PIXELFRONT DEBUG [G]";
+  title.textContent = "PIXELFRONT DEBUG";
   title.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-  title.style.fontSize = "12px";
+  title.style.fontSize = "13px";
   title.style.fontWeight = "700";
-  title.style.letterSpacing = "0.04em";
-  title.style.marginBottom = "6px";
-  root.appendChild(title);
+  title.style.letterSpacing = "0.08em";
 
-  const body = document.createElement("pre");
-  body.textContent = "";
-  body.style.margin = "0";
-  body.style.whiteSpace = "pre-wrap";
-  body.style.wordBreak = "break-word";
-  body.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-  body.style.fontSize = "11px";
-  body.style.lineHeight = "1.32";
-  root.appendChild(body);
+  const subtitle = document.createElement("div");
+  subtitle.textContent = "Press G to close";
+  subtitle.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  subtitle.style.fontSize = "11px";
+  subtitle.style.color = "rgba(185, 196, 214, 0.82)";
+
+  headingWrap.appendChild(title);
+  headingWrap.appendChild(subtitle);
+  header.appendChild(headingWrap);
+
+  const hint = document.createElement("div");
+  hint.textContent = "G";
+  hint.style.minWidth = "30px";
+  hint.style.height = "30px";
+  hint.style.display = "grid";
+  hint.style.placeItems = "center";
+  hint.style.borderRadius = "999px";
+  hint.style.border = "1px solid rgba(120, 194, 255, 0.35)";
+  hint.style.background = "rgba(38, 91, 146, 0.18)";
+  hint.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  hint.style.fontSize = "12px";
+  hint.style.fontWeight = "700";
+  hint.style.color = "rgba(173, 218, 255, 0.95)";
+  header.appendChild(hint);
+  root.appendChild(header);
+
+  const grid = document.createElement("div");
+  grid.style.display = "grid";
+  grid.style.gridTemplateColumns = "repeat(auto-fit, minmax(280px, 1fr))";
+  grid.style.gap = "10px";
+  root.appendChild(grid);
 
   (document.body || document.documentElement).appendChild(root);
 
@@ -15053,21 +15554,121 @@ function createDebugOverlay() {
       return visible;
     },
     isVisible: () => visible,
-    render: (text) => {
-      body.textContent = String(text || "");
+    render: (modelRaw) => {
+      const model = (modelRaw && typeof modelRaw === "object") ? modelRaw : {};
+      title.textContent = String(model.title || "PIXELFRONT DEBUG");
+      subtitle.textContent = String(model.subtitle || "Press G to close");
+
+      const sections = Array.isArray(model.sections) ? model.sections : [];
+      const frag = document.createDocumentFragment();
+
+      for (let i = 0; i < sections.length; i++) {
+        const section = sections[i];
+        if (!section || typeof section !== "object") continue;
+
+        const card = document.createElement("section");
+        card.style.display = "flex";
+        card.style.flexDirection = "column";
+        card.style.gap = "8px";
+        card.style.padding = "11px 12px";
+        card.style.borderRadius = "14px";
+        card.style.border = "1px solid rgba(255,255,255,0.08)";
+        card.style.background = "linear-gradient(180deg, rgba(22, 28, 40, 0.96), rgba(13, 17, 25, 0.92))";
+        card.style.boxShadow = "inset 0 1px 0 rgba(255,255,255,0.04)";
+
+        const heading = document.createElement("div");
+        heading.style.display = "flex";
+        heading.style.justifyContent = "space-between";
+        heading.style.alignItems = "baseline";
+        heading.style.gap = "8px";
+
+        const headingTitle = document.createElement("div");
+        headingTitle.textContent = String(section.title || "Section");
+        headingTitle.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+        headingTitle.style.fontSize = "11px";
+        headingTitle.style.fontWeight = "700";
+        headingTitle.style.letterSpacing = "0.08em";
+        headingTitle.style.textTransform = "uppercase";
+        headingTitle.style.color = "rgba(172, 220, 255, 0.96)";
+        heading.appendChild(headingTitle);
+
+        const headingMetaRaw = String(section.meta || "").trim();
+        if (headingMetaRaw) {
+          const headingMeta = document.createElement("div");
+          headingMeta.textContent = headingMetaRaw;
+          headingMeta.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+          headingMeta.style.fontSize = "10px";
+          headingMeta.style.color = "rgba(185, 196, 214, 0.78)";
+          heading.appendChild(headingMeta);
+        }
+
+        card.appendChild(heading);
+
+        const rows = Array.isArray(section.rows) ? section.rows : [];
+        for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+          const row = rows[rowIndex];
+          if (!row || typeof row !== "object") continue;
+
+          const rowWrap = document.createElement("div");
+          rowWrap.style.display = "grid";
+          rowWrap.style.gridTemplateColumns = "108px minmax(0, 1fr)";
+          rowWrap.style.gap = "10px";
+          rowWrap.style.alignItems = "start";
+          rowWrap.style.paddingTop = rowIndex > 0 ? "7px" : "0";
+          if (rowIndex > 0) rowWrap.style.borderTop = "1px solid rgba(255,255,255,0.05)";
+
+          const label = document.createElement("div");
+          label.textContent = String(row.label || "");
+          label.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+          label.style.fontSize = "10px";
+          label.style.letterSpacing = "0.06em";
+          label.style.textTransform = "uppercase";
+          label.style.color = "rgba(145, 157, 176, 0.86)";
+
+          const value = document.createElement("div");
+          value.textContent = String(row.value || "");
+          value.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+          value.style.fontSize = "11px";
+          value.style.lineHeight = "1.35";
+          value.style.wordBreak = "break-word";
+          value.style.color = "rgba(232, 238, 247, 0.96)";
+
+          rowWrap.appendChild(label);
+          rowWrap.appendChild(value);
+          card.appendChild(rowWrap);
+        }
+
+        frag.appendChild(card);
+      }
+
+      grid.replaceChildren(frag);
     }
   };
 }
 
-function buildDebugOverlayText() {
+function buildDebugOverlayModel() {
   if (!world || !renderer || !input) {
-    return "Waiting for world initialization...";
+    return {
+      title: "PIXELFRONT DEBUG",
+      subtitle: "Waiting for world initialization...",
+      sections: [
+        {
+          title: "Status",
+          rows: [
+            { label: "World", value: "Initializing client world state." },
+            { label: "Renderer", value: renderer ? "ready" : "booting" },
+            { label: "Input", value: input ? "ready" : "booting" }
+          ]
+        }
+      ]
+    };
   }
 
   const vp = renderer.getViewport();
   const vis = typeof renderer._getVisibleWorldRect === "function"
     ? renderer._getVisibleWorldRect(vp, 0)
     : null;
+  const nowMs = Date.now();
   const cellCount = Math.max(1, (world.w | 0) * (world.h | 0));
   const landCells = Math.max(0, world.totalLand | 0);
   const waterCells = Math.max(0, cellCount - landCells);
@@ -15223,8 +15824,10 @@ function buildDebugOverlayText() {
 
   const selected = getSelectedStructure();
   const selectedTxt = selected
-    ? `#${selected.id | 0} ${String(selected.type || "unknown")}${selected.level ? ` L${selected.level | 0}` : ""}`
-    : "none";
+    ? `structure #${selected.id | 0} ${String(selected.type || "unknown")}${selected.level ? ` L${selected.level | 0}` : ""}`
+    : ((selectedShipId | 0) > 0
+        ? `ship #${selectedShipId | 0}`
+        : ((selectedDivisionId | 0) > 0 ? `division #${selectedDivisionId | 0}` : "none"));
   const selectionNeutral = selection?.neutral?.length || 0;
   const selectionWar = selection?.war?.length || 0;
   const selectionOwner = selection?.warOwner || 0;
@@ -15254,41 +15857,180 @@ function buildDebugOverlayText() {
     ? `${dbgBytes(mem.usedJSHeapSize)} / ${dbgBytes(mem.totalJSHeapSize)}`
     : "n/a";
   const simPerf = world._simPerf || null;
+  const multiplayerActive = isMultiplayerMatchEnabled();
+  const pingFresh = (
+    multiplayerActive &&
+    multiplayerMatchConnected &&
+    multiplayerMatchLastPongAtMs > 0 &&
+    (nowMs - multiplayerMatchLastPongAtMs) <= MULTIPLAYER_MATCH_PING_STALE_MS
+  );
+  const lobbyPlayerCount = Array.isArray(activeMultiplayerLobby?.players) ? activeMultiplayerLobby.players.length : 0;
+  const multiplayerGap = Math.max(0, (multiplayerLatestServerTick | 0) - (multiplayerLastAppliedTick | 0));
+  const multiplayerServiceStatus = !MULTIPLAYER_API_BASE
+    ? "api-missing"
+    : multiplayerHealthCheckInFlight
+      ? "checking"
+      : multiplayerHealthOk
+        ? "online"
+        : (multiplayerHealthReason ? "offline" : "unchecked");
 
-  const lines = [];
-  lines.push(`Build ${String(window.__PF_BUILD || "dev")} | frame ${debugPerf.frames} | time ${dbgNum(world.time, 2)}s | simTick ${world._simTick | 0}`);
-  lines.push(`Perf fps ${dbgNum(debugPerf.fps, 1)} avg ${dbgNum(debugPerf.fpsAvg, 1)} | frame ${dbgNum(debugPerf.cpuMs, 2)}ms avg ${dbgNum(debugPerf.cpuMsAvg, 2)}ms peak ${dbgNum(debugPerf.cpuMsPeak, 2)}ms`);
-  lines.push(`     sim ${dbgNum(debugPerf.simMs, 2)}ms avg ${dbgNum(debugPerf.simMsAvg, 2)}ms steps ${debugPerf.simSteps} avg ${dbgNum(debugPerf.simStepsAvg, 2)} | render ${dbgNum(debugPerf.renderMs, 2)}ms avg ${dbgNum(debugPerf.renderMsAvg, 2)}ms`);
-  lines.push(`     ui ${dbgNum(debugPerf.uiMs, 2)}ms avg ${dbgNum(debugPerf.uiMsAvg, 2)}ms | backlog ${dbgNum(debugPerf.backlogTicks, 2)} avg ${dbgNum(debugPerf.backlogTicksAvg, 2)} | slow ${debugPerf.slowFrames} resized ${debugPerf.resizedFrames} paused ${dbgBool(paused)}`);
-  if (simPerf) {
-    lines.push(`Sim tick ${dbgNum(simPerf.tickMs, 2)}ms avg ${dbgNum(simPerf.tickMsAvg, 2)} | dip ${dbgNum(simPerf.diplomacyMsAvg, 2)} reb ${dbgNum(simPerf.rebelsMsAvg, 2)} eco ${dbgNum(simPerf.economyMsAvg, 2)} navy ${dbgNum(simPerf.navyMsAvg, 2)} nukes ${dbgNum(simPerf.nukesMsAvg, 2)}`);
-    lines.push(`         ops ${dbgNum(simPerf.opsMsAvg, 2)} war ${dbgNum(simPerf.warMsAvg, 2)} speckle ${dbgNum(simPerf.speckleMsAvg, 2)} ai ${dbgNum(simPerf.aiMsAvg, 2)} flush ${dbgNum(simPerf.flushMsAvg, 2)} labels ${dbgNum(simPerf.labelsMsAvg, 2)}`);
+  const sections = [
+    {
+      title: "Session",
+      meta: multiplayerActive ? "multiplayer live" : "singleplayer live",
+      rows: [
+        { label: "Build", value: `${String(window.__PF_BUILD || "dev")} | frame ${dbgInt(debugPerf.frames)} | match ${dbgNum(world.time, 2)}s | simTick ${dbgInt(world._simTick | 0)}` },
+        { label: "Mode", value: `${String(world._mapMode || activeMapMode)} | paused ${dbgBool(paused)} | spawn ${dbgBool(isSpawnPhaseActiveNow())} | gameOver ${dbgBool(!!world.gameOver)}` },
+        { label: "Player", value: `alive ${dbgBool(!!world?.nation?.[OWNER.PLAYER]?.alive)} | land ${dbgInt(playerLand)} (${dbgNum(playerLandPct, 1)}%) | top ${ownerDebugName(topOwnerId)} ${dbgInt(Math.max(0, topOwnerLand))}` }
+      ]
+    },
+    {
+      title: "Performance",
+      meta: simPerf ? "live timings" : "frame timings",
+      rows: [
+        { label: "Frame", value: `fps ${dbgNum(debugPerf.fps, 1)} avg ${dbgNum(debugPerf.fpsAvg, 1)} | cpu ${dbgNum(debugPerf.cpuMs, 2)}ms avg ${dbgNum(debugPerf.cpuMsAvg, 2)}ms peak ${dbgNum(debugPerf.cpuMsPeak, 2)}ms` },
+        { label: "Pipeline", value: `sim ${dbgNum(debugPerf.simMs, 2)}ms avg ${dbgNum(debugPerf.simMsAvg, 2)} | render ${dbgNum(debugPerf.renderMs, 2)}ms avg ${dbgNum(debugPerf.renderMsAvg, 2)} | ui ${dbgNum(debugPerf.uiMs, 2)}ms avg ${dbgNum(debugPerf.uiMsAvg, 2)}` },
+        { label: "Backlog", value: `steps ${dbgNum(debugPerf.simSteps, 1)} avg ${dbgNum(debugPerf.simStepsAvg, 2)} | backlog ${dbgNum(debugPerf.backlogTicks, 2)} avg ${dbgNum(debugPerf.backlogTicksAvg, 2)} | slow ${dbgInt(debugPerf.slowFrames)} | resized ${dbgInt(debugPerf.resizedFrames)}` },
+        { label: "Profile", value: `tier ${dbgInt(activePerformanceTier)} | simMul ${dbgNum(activePerformanceProfile?.simCadenceMul, 2)} | uiMul ${dbgNum(activePerformanceProfile?.uiCadenceMul, 2)} | scale ${dbgNum(activePerformanceProfile?.renderScale ?? 1, 2)} | bins ${dbgInt(activePerformanceProfile?.maxPixelUploadBinsPerFrame || 0)}` },
+        { label: "Sim Perf", value: simPerf
+          ? `tick ${dbgNum(simPerf.tickMsAvg, 2)} | ai ${dbgNum(simPerf.aiMsAvg, 2)} | ops ${dbgNum(simPerf.opsMsAvg, 2)} | war ${dbgNum(simPerf.warMsAvg, 2)} | eco ${dbgNum(simPerf.economyMsAvg, 2)} | navy ${dbgNum(simPerf.navyMsAvg, 2)}`
+          : "n/a" },
+        { label: "Memory", value: memText }
+      ]
+    },
+    {
+      title: "World",
+      meta: `${world.w}x${world.h}`,
+      rows: [
+        { label: "Map", value: `seed ${world.seed >>> 0} | cells ${dbgInt(cellCount)} | land ${dbgInt(landCells)} (${dbgNum((landCells / cellCount) * 100, 1)}%) | water ${dbgInt(waterCells)} | sea ${dbgInt(world._seaLevel | 0)}` },
+        { label: "Nations", value: `alive ${dbgInt(aliveNations)}/${dbgInt(Math.max(0, world.nation.length - 1))} | collapsed ${dbgInt(collapsedNations)} | wars ${dbgInt(world._activeWarPairs?.size || 0)} | player wars ${dbgInt(playerWars)} active ${dbgInt(playerWarActive)}` },
+        { label: "Assets", value: `structures ${dbgInt(structCounts.total)} player ${dbgInt(structCounts.player)} | ships ${dbgInt(shipCounts.total)} player ${dbgInt(shipCounts.player)} | focusOp ${dbgInt(world.focusOpId | 0)}` },
+        { label: "Ops", value: `total ${dbgInt(opCounts.total)} | neutral ${dbgInt(opCounts.neutral)} | war ${dbgInt(opCounts.war)} | burst ${dbgInt(opCounts.burst)} | burstWar ${dbgInt(opCounts.burstWar)} | other ${dbgInt(opCounts.other)}` },
+        { label: "Events", value: `total ${dbgInt(events.length)} | unhandled ${dbgInt(unhandledEvents)} | actionable ${dbgInt(actionableEvents)} | allyReq ${dbgBool(debugAllyRequestPending)} | ceasefireReq ${dbgBool(debugCeasefireRequestPending)}` },
+        { label: "Core", value: `ownerVer ${dbgInt(world.ownerVersion | 0)} | dirty ${dbgBool(world.dirty)} | pixelDirty ${dbgBool(world._pixelDirtyPending)} | full ${dbgBool(world._pixelDirtyFull)} | waterComp ${dbgInt(world._waterCompCount | 0)}` }
+      ]
+    },
+    {
+      title: "Player",
+      meta: ownerDebugName(OWNER.PLAYER),
+      rows: [
+        { label: "Economy", value: `gold ${fmtCompactLocal(player.gold || 0)} (${dbgSigned(player.goldPS || 0, 1)}/s) | pop ${fmtCompactLocal(player.population || 0)}/${fmtCompactLocal(player.popCap || 0)} (${dbgSigned(player.popPS || 0, 1)}/s)` },
+        { label: "Military", value: `inf ${fmtCompactLocal(player.infantry || 0)}/${fmtCompactLocal(player.troopsCap || 0)} (${dbgSigned(player.infantryPS || 0, 1)}/s) | atk ${dbgNum((player.attackRatio ?? 0) * 100, 1)}% | mob ${dbgNum((player.mobilization ?? 0) * 100, 1)}%` },
+        { label: "Status", value: `stab ${dbgNum(player.stabilityPct ?? ((player.stabilityFactor ?? 1) * 100), 1)}% | warEx ${dbgNum(player.warExhaustionPct ?? ((player.warExhaustion ?? 0) * 100), 1)}% | allies ${dbgInt(playerAllies)} | ceasefires ${dbgInt(playerCeasefires)} | pending ${dbgInt(playerPendingIn)}/${dbgInt(playerPendingOut)}` },
+        { label: "Ops Pool", value: `player ${fmtCompactLocal(opCounts.playerAttackPool)} | enemy ${fmtCompactLocal(opCounts.enemyAttackPool)} | casualties ${fmtCompactLocal(opCounts.casualties)}` }
+      ]
+    },
+    {
+      title: "Input And View",
+      meta: `${Math.round(vp.canvasW)}x${Math.round(vp.canvasH)}`,
+      rows: [
+        { label: "Pointer", value: `down ${dbgBool(input.isPointerDown())} | painting ${dbgBool(input.isPainting())} | rubber ${dbgBool(!!input.getRubberLine())} | arrows ${dbgInt(arrows)}` },
+        { label: "Hover", value: `cell ${hoverCellTxt} | owner ${ownerName} | rel ${hoverRel}` },
+        { label: "Selection", value: `${selectedTxt} | neutral ${dbgInt(selectionNeutral)} | war ${dbgInt(selectionWar)} | owner ${dbgInt(selectionOwner)}` },
+        { label: "UI", value: `build ${String(buildMode)} | events ${dbgBool(eventsVisible)} | intel ${dbgInt(intelOpen)} | ctx ${dbgBool(ctxOpen)} | rain ${rainState} ${dbgNum(rainIntensity * 100, 1)}% | drops ${dbgInt(rainDrops)}` },
+        { label: "Camera", value: `zoom ${dbgNum(vp.zoom, 3)} -> ${dbgNum(renderer.zoomTarget, 3)} | cam ${dbgNum(cam.x, 2)},${dbgNum(cam.y, 2)} -> ${dbgNum(camTarget.x, 2)},${dbgNum(camTarget.y, 2)} | visible ${visTxt}` }
+      ]
+    }
+  ];
+
+  if (multiplayerActive || multiplayerMatchDebugPackets.sentPackets > 0 || multiplayerMatchDebugPackets.recvPackets > 0) {
+    sections.push({
+      title: "Multiplayer Match",
+      meta: multiplayerActive ? String(activeMultiplayerSession?.code || "active") : "inactive",
+      rows: [
+        { label: "Session", value: multiplayerActive
+          ? `code ${String(activeMultiplayerSession?.code || "-")} | nation ${dbgInt(activeMultiplayerSession?.nationId || 0)} | player ${dbgShortText(activeMultiplayerSession?.playerId || "-", 28)} | host ${dbgBool(!!activeMultiplayerSession?.isHost)}`
+          : "No active authoritative match session." },
+        { label: "Socket", value: `state ${dbgSocketReadyState(multiplayerMatchSocket, multiplayerMatchConnected)} | ping ${pingFresh ? `${dbgInt(Math.max(0, Number(multiplayerMatchRttMs) || 0))}ms` : "stale"} | pong ${dbgAge(multiplayerMatchLastPongAtMs, nowMs)} | offset ${dbgSigned(Math.round(multiplayerServerOffsetMs || 0), 0)}ms` },
+        { label: "Sync", value: `authoritative ${dbgBool(multiplayerHasAuthoritativeSync)} | awaitingFull ${dbgBool(multiplayerAwaitingFullSync)} | serverTick ${dbgInt(multiplayerLatestServerTick)} | appliedTick ${dbgInt(multiplayerLastAppliedTick)} | gap ${dbgInt(multiplayerGap)}` },
+        { label: "Packets", value: `packetSeq ${dbgInt(multiplayerLastAppliedPacketSeq)} | ack ${dbgInt(multiplayerLastAckSeq)} | nextInput ${dbgInt(multiplayerPendingInputSeq)} | buffer ${dbgInt(multiplayerSnapshotBuffer.size)} | queued ${dbgInt(multiplayerDeferredCommandQueue.length)}` },
+        { label: "Traffic", value: `tx ${dbgInt(multiplayerMatchDebugPackets.sentPackets)} (${dbgBytes(multiplayerMatchDebugPackets.sentBytes)}) | rx ${dbgInt(multiplayerMatchDebugPackets.recvPackets)} (${dbgBytes(multiplayerMatchDebugPackets.recvBytes)}) | last tx ${dbgShortText(multiplayerMatchDebugPackets.lastSentType || "none", 18)} ${dbgAge(multiplayerMatchDebugPackets.lastSentAtMs, nowMs)} | last rx ${dbgShortText(multiplayerMatchDebugPackets.lastRecvType || "none", 18)} ${dbgAge(multiplayerMatchDebugPackets.lastRecvAtMs, nowMs)}` },
+        { label: "Types", value: `in ${dbgPacketSummary(multiplayerMatchDebugPackets.recvByType, [["full_sync", "full"], ["snapshot_delta", "delta"], ["territory_delta", "terr"], ["cmd_ack", "ack"], ["cmd_reject", "reject"], ["pong", "pong"], ["hello", "hello"]])} | out ${dbgPacketSummary(multiplayerMatchDebugPackets.sentByType, [["match_input", "input"], ["full_sync_request", "resync"], ["ping", "ping"], ["lobby_state_request", "state"], ["client_loaded", "loaded"]])}` },
+        { label: "Recovery", value: `last req ${dbgShortText(multiplayerLastFullSyncReason || "none", 26)} ${dbgAge(multiplayerLastFullSyncRequestAtMs, nowMs)} | last apply ${dbgShortText(multiplayerLastFullSyncAppliedReason || "none", 26)} ${dbgAge(multiplayerLastFullSyncReceivedAtMs, nowMs)} | snapshot ${dbgAge(multiplayerLastSnapshotAtMs, nowMs)}` },
+        { label: "State", value: `backoff ${dbgInt(multiplayerFullSyncRequestBackoffLevel)} | failures ${dbgInt(multiplayerConnectFailureStreak)} | droppedDelta ${dbgBool(multiplayerDroppedDeltaPackets)} | probe ${dbgBool(multiplayerSessionProbeInFlight)} | terminated ${dbgBool(multiplayerSessionTerminated)} | reject ${dbgShortText(multiplayerLastCommandRejectReason || "none", 40)}` }
+      ]
+    });
   }
-  lines.push(`Profile tier ${dbgInt(activePerformanceTier)} simMul ${dbgNum(activePerformanceProfile?.simCadenceMul, 2)} uiMul ${dbgNum(activePerformanceProfile?.uiCadenceMul, 2)} scale ${dbgNum(activePerformanceProfile?.renderScale ?? 1, 2)} uploadBins ${dbgInt(activePerformanceProfile?.maxPixelUploadBinsPerFrame || 0)} lowPower ${dbgBool(activePerformanceProfile?.lowPowerOverlays === true)}`);
-  lines.push(`World mode ${String(world._mapMode || activeMapMode)} seed ${world.seed >>> 0} size ${world.w}x${world.h} cells ${dbgInt(cellCount)} land ${dbgInt(landCells)} (${dbgNum((landCells / cellCount) * 100, 1)}%) water ${dbgInt(waterCells)} seaLevel ${world._seaLevel | 0}`);
-  lines.push(`      nations alive ${aliveNations}/${Math.max(0, world.nation.length - 1)} collapsed ${collapsedNations} | top ${ownerDebugName(topOwnerId)} ${dbgInt(Math.max(0, topOwnerLand))} | player land ${dbgInt(playerLand)} (${dbgNum(playerLandPct, 1)}%)`);
-  lines.push(`Player gold ${fmtCompactLocal(player.gold || 0)} (${dbgSigned(player.goldPS || 0, 1)}/s) pop ${fmtCompactLocal(player.population || 0)}/${fmtCompactLocal(player.popCap || 0)} (${dbgSigned(player.popPS || 0, 1)}/s)`);
-  lines.push(`       inf ${fmtCompactLocal(player.infantry || 0)}/${fmtCompactLocal(player.troopsCap || 0)} (${dbgSigned(player.infantryPS || 0, 1)}/s) atk ${dbgNum((player.attackRatio ?? 0) * 100, 1)}% mob ${dbgNum((player.mobilization ?? 0) * 100, 1)}% stab ${dbgNum(player.stabilityPct ?? ((player.stabilityFactor ?? 1) * 100), 1)}% we ${dbgNum(player.warExhaustionPct ?? ((player.warExhaustion ?? 0) * 100), 1)}%`);
-  lines.push(`Assets structures ${dbgInt(structCounts.total)} [cap ${structCounts.capital} city ${structCounts.city} fac ${structCounts.factory} bar ${structCounts.barracks} def ${structCounts.defence_post} port ${structCounts.port} silo ${structCounts.missile_silo} abm ${structCounts.abm_launcher} radar ${structCounts.radar_station} air ${structCounts.airbase}] player ${dbgInt(structCounts.player)}`);
-  lines.push(`       ships ${shipCounts.total} [trade ${shipCounts.trade} war ${shipCounts.war} transport ${shipCounts.transport}] player ${shipCounts.player} [t ${shipCounts.playerTrade} w ${shipCounts.playerWar} tr ${shipCounts.playerTransport}]`);
-  lines.push(`Ops total ${opCounts.total} player ${opCounts.player} focus ${world.focusOpId | 0} [neutral ${opCounts.neutral} war ${opCounts.war} burst ${opCounts.burst} burstWar ${opCounts.burstWar} other ${opCounts.other}]`);
-  lines.push(`    attackPool player ${fmtCompactLocal(opCounts.playerAttackPool)} enemy ${fmtCompactLocal(opCounts.enemyAttackPool)} casualties ${fmtCompactLocal(opCounts.casualties)}`);
-  lines.push(`Dip wars global ${world._activeWarPairs?.size || 0} player ${playerWars} active ${playerWarActive} allies ${playerAllies} ceasefires ${playerCeasefires} pending in/out ${playerPendingIn}/${playerPendingOut}`);
-  lines.push(`Input down ${dbgBool(input.isPointerDown())} painting ${dbgBool(input.isPainting())} rubber ${dbgBool(!!input.getRubberLine())}`);
-  lines.push(`      hover cell ${hoverCellTxt} owner ${ownerName} rel ${hoverRel} | selection neutral ${selectionNeutral} war ${selectionWar} owner ${selectionOwner} arrows ${arrows}`);
-  lines.push(`UI buildMode ${String(buildMode)} eventsDock ${dbgBool(eventsVisible)} intelOpen ${intelOpen} ctxMenu ${dbgBool(ctxOpen)} selected ${selectedTxt}`);
-  lines.push(`View canvas ${Math.round(vp.canvasW)}x${Math.round(vp.canvasH)} dpr ${dbgNum(vp.dpr, 2)} zoom ${dbgNum(vp.zoom, 3)} target ${dbgNum(renderer.zoomTarget, 3)}`);
-  lines.push(`     cam ${dbgNum(cam.x, 2)},${dbgNum(cam.y, 2)} -> ${dbgNum(camTarget.x, 2)},${dbgNum(camTarget.y, 2)} | visible ${visTxt}`);
-  lines.push(`Core ownerVer ${world.ownerVersion | 0} dirty ${dbgBool(world.dirty)} pixelDirty ${dbgBool(world._pixelDirtyPending)} full ${dbgBool(world._pixelDirtyFull)} waterComp ${world._waterCompCount | 0}`);
-  lines.push(`     rain ${rainState} ${dbgNum(rainIntensity * 100, 1)}% drops ${rainDrops} checker ${dbgBool(renderer.debugChecker)} expCollision ${dbgBool(world.getExperimentalAttackCollision())}`);
-  lines.push(`Events total ${events.length} unhandled ${unhandledEvents} actionable ${actionableEvents} | forcedRequests ally=${dbgBool(debugAllyRequestPending)} ceasefire=${dbgBool(debugCeasefireRequestPending)}`);
+
+  if (MULTIPLAYER_API_BASE || activeMultiplayerLobby || multiplayerLobbyDebugPackets.sentPackets > 0 || multiplayerLobbyDebugPackets.recvPackets > 0) {
+    sections.push({
+      title: "Backend And Lobby",
+      meta: multiplayerServiceStatus,
+      rows: [
+        { label: "Service", value: `status ${multiplayerServiceStatus} | build ${dbgShortText(multiplayerHealthBuild || "n/a", 26)} | runtime ${dbgShortText(multiplayerHealthRuntimeSrc || "n/a", 40)}` },
+        { label: "API", value: dbgShortText(MULTIPLAYER_API_BASE || "VITE_MULTIPLAYER_API_URL missing", 72) },
+        { label: "Lobby", value: activeMultiplayerLobby
+          ? `code ${String(activeMultiplayerLobby.code || "-")} | players ${dbgInt(lobbyPlayerCount)} | started ${dbgBool(!!activeMultiplayerLobby.started)} | host ${dbgBool(!!activeMultiplayerLobby.host)} | viewerNation ${dbgInt(multiplayerViewerNationId || 0)}`
+          : "No active menu lobby socket." },
+        { label: "Lobby WS", value: `state ${dbgSocketReadyState(lobbySocket, lobbySocketConnected)} | ping ${lobbyRttMs > 0 ? `${dbgInt(lobbyRttMs)}ms` : "n/a"} | tx ${dbgInt(multiplayerLobbyDebugPackets.sentPackets)} (${dbgBytes(multiplayerLobbyDebugPackets.sentBytes)}) | rx ${dbgInt(multiplayerLobbyDebugPackets.recvPackets)} (${dbgBytes(multiplayerLobbyDebugPackets.recvBytes)})` },
+        { label: "Lobby Types", value: `in ${dbgPacketSummary(multiplayerLobbyDebugPackets.recvByType, [["hello", "hello"], ["lobby_update", "update"], ["started", "started"], ["pong", "pong"]])} | out ${dbgPacketSummary(multiplayerLobbyDebugPackets.sentByType, [["ping", "ping"]])}` },
+        { label: "Health", value: dbgShortText(multiplayerHealthReason || "No multiplayer health error.", 72) }
+      ]
+    });
+  }
+
   if (DEBUG_ABM_TEST_DEFAULT.enabled) {
     const nextIn = Math.max(0, Number(debugAbmNextSpawnAt) - Number(world.time || 0));
-    lines.push(`Debug ABM test ON (${DEBUG_ABM_TEST_DEFAULT.warheadType}) next ${dbgNum(nextIn, 1)}s interval ${dbgNum(DEBUG_ABM_TEST_DEFAULT.intervalS, 1)}s attackerPref ${DEBUG_ABM_TEST_DEFAULT.attackerNationId | 0}`);
+    sections.push({
+      title: "Debug Toggles",
+      meta: "test hooks",
+      rows: [
+        { label: "ABM Test", value: `on ${dbgBool(DEBUG_ABM_TEST_DEFAULT.enabled)} | type ${DEBUG_ABM_TEST_DEFAULT.warheadType} | next ${dbgNum(nextIn, 1)}s | interval ${dbgNum(DEBUG_ABM_TEST_DEFAULT.intervalS, 1)}s | attacker ${dbgInt(DEBUG_ABM_TEST_DEFAULT.attackerNationId | 0)}` },
+        { label: "Flags", value: `checker ${dbgBool(renderer.debugChecker)} | expCollision ${dbgBool(world.getExperimentalAttackCollision())}` }
+      ]
+    });
   }
-  lines.push(`Memory heap ${memText}`);
 
-  return lines.join("\n");
+  return {
+    title: "PIXELFRONT DEBUG",
+    subtitle: "Press G to close. Live client, world, and multiplayer telemetry.",
+    sections
+  };
+}
+
+function dbgAge(timestampMs, nowMs = Date.now()) {
+  const ts = Math.max(0, Number(timestampMs) || 0);
+  if (ts <= 0) return "never";
+  const delta = Math.max(0, nowMs - ts);
+  if (delta < 1000) return `${delta | 0}ms ago`;
+  if (delta < 10_000) return `${(delta / 1000).toFixed(1)}s ago`;
+  if (delta < 60_000) return `${Math.round(delta / 1000)}s ago`;
+  if (delta < 3_600_000) return `${Math.round(delta / 60_000)}m ago`;
+  return `${Math.round(delta / 3_600_000)}h ago`;
+}
+
+function dbgSocketReadyState(socket, connected = false) {
+  if (!socket) return connected ? "open" : "closed";
+  switch (socket.readyState) {
+    case WebSocket.CONNECTING: return "connecting";
+    case WebSocket.OPEN: return "open";
+    case WebSocket.CLOSING: return "closing";
+    case WebSocket.CLOSED: return "closed";
+    default: return connected ? "open" : "unknown";
+  }
+}
+
+function dbgShortText(textRaw, maxLen = 48) {
+  const text = String(textRaw || "").trim();
+  const limit = Math.max(8, Number(maxLen) | 0);
+  if (!text) return "n/a";
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3))}...`;
+}
+
+function dbgPacketSummary(mapRaw, entries) {
+  const map = (mapRaw && typeof mapRaw === "object") ? mapRaw : null;
+  const list = Array.isArray(entries) ? entries : [];
+  const parts = [];
+  for (let i = 0; i < list.length; i++) {
+    const entry = list[i];
+    const key = Array.isArray(entry) ? String(entry[0] || "") : "";
+    const label = Array.isArray(entry) ? String(entry[1] || key) : key;
+    if (!key || !label) continue;
+    const count = Math.max(0, Number(map?.[key]) | 0);
+    parts.push(`${label} ${dbgInt(count)}`);
+  }
+  return parts.length > 0 ? parts.join(" | ") : "none";
 }
 
 function ownerDebugName(ownerId) {
@@ -15307,10 +16049,11 @@ function dbgNum(v, digits = 2) {
 function dbgSigned(v, digits = 1) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "n/a";
-  const abs = Math.abs(n).toFixed(Math.max(0, digits | 0));
+  const precision = Math.max(0, digits | 0);
+  const abs = Math.abs(n).toFixed(precision);
   if (n > 0) return `+${abs}`;
   if (n < 0) return `-${abs}`;
-  return `0.${"0".repeat(Math.max(0, digits | 0))}`;
+  return precision > 0 ? `0.${"0".repeat(precision)}` : "0";
 }
 
 function dbgInt(v) {

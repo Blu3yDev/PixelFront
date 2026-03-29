@@ -63,7 +63,9 @@ function divisionName(ownerSerialRaw, spec) {
 export function installDivisions(World) {
   World.prototype._normalizeGameMode = function(rawMode) {
     const mode = String(rawMode || GAME_MODE.CLASSIC).trim().toLowerCase();
-    return mode === GAME_MODE.DIVISIONS ? GAME_MODE.DIVISIONS : GAME_MODE.CLASSIC;
+    if (mode === GAME_MODE.DIVISIONS) return GAME_MODE.DIVISIONS;
+    if (mode === GAME_MODE.CONTINENTAL) return GAME_MODE.CONTINENTAL;
+    return GAME_MODE.CLASSIC;
   };
 
   World.prototype._isDivisionsMode = function() {

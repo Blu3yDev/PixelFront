@@ -517,9 +517,12 @@ export class World {
     this._mapMode = (mode === MAP_MODE.WORLD_MAP) ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
     this._earthData = opts?.earthData || null;
     this._countryClaimEnabled = opts?.countryClaimEnabled !== false;
-    this._gameMode = String(opts?.gameMode || GAME_MODE.CLASSIC).trim().toLowerCase() === GAME_MODE.DIVISIONS
-      ? GAME_MODE.DIVISIONS
-      : GAME_MODE.CLASSIC;
+    {
+      const gameModeRaw = String(opts?.gameMode || GAME_MODE.CLASSIC).trim().toLowerCase();
+      this._gameMode = gameModeRaw === GAME_MODE.DIVISIONS
+        ? GAME_MODE.DIVISIONS
+        : (gameModeRaw === GAME_MODE.CONTINENTAL ? GAME_MODE.CONTINENTAL : GAME_MODE.CLASSIC);
+    }
     if (typeof this._resetDivisionState === "function") this._resetDivisionState();
 
     this._markAllNationsActive(18);
@@ -862,9 +865,10 @@ export class World {
         this._countryClaimEnabled = opts.countryClaimEnabled !== false;
       }
       if (Object.prototype.hasOwnProperty.call(opts, "gameMode")) {
-        this._gameMode = String(opts.gameMode || GAME_MODE.CLASSIC).trim().toLowerCase() === GAME_MODE.DIVISIONS
+        const gameModeRaw = String(opts.gameMode || GAME_MODE.CLASSIC).trim().toLowerCase();
+        this._gameMode = gameModeRaw === GAME_MODE.DIVISIONS
           ? GAME_MODE.DIVISIONS
-          : GAME_MODE.CLASSIC;
+          : (gameModeRaw === GAME_MODE.CONTINENTAL ? GAME_MODE.CONTINENTAL : GAME_MODE.CLASSIC);
       }
     }
 

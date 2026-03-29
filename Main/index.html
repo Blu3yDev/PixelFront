@@ -67,126 +67,142 @@
               </section>
 
               <section class="mainMenuPanel mainMenuPanelPlay" aria-label="Main menu match config">
-                <div class="mainMenuCard">
+                <div id="mmPlayConfigCard" class="mainMenuCard mainMenuPlayCard">
                   <header class="mainMenuCardHeader">
                     <h2 class="mainMenuCardTitle">Match Configuration</h2>
                     <button id="mmConfigBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
                   </header>
 
-                  <div class="mainMenuFieldGrid">
-                    <label class="mainMenuField" for="mmCfgAiCount">
-                      <span>Bots (blank = preset)</span>
-                      <input id="mmCfgAiCount" type="number" min="1" max="400" step="1" />
-                    </label>
-                    <label class="mainMenuField" for="mmCfgSizePreset">
-                      <span>Map Size Preset</span>
-                      <select id="mmCfgSizePreset">
-                        <option value="Small">Small</option>
-                        <option value="Large">Large</option>
-                        <option value="Super Large">Super Large</option>
-                        <option value="Extremely Large">Extremely Large</option>
-                      </select>
-                    </label>
-                    <label class="mainMenuField" for="mmCfgGameMode">
-                      <span>Gamemode</span>
-                      <select id="mmCfgGameMode">
-                        <option value="classic">Classic</option>
-                        <option value="divisions" disabled>Divisions (Temporarily Disabled)</option>
-                      </select>
-                    </label>
-                    <label class="mainMenuField" for="mmCfgMapMode">
-                      <span>Map Source</span>
-                      <select id="mmCfgMapMode">
-                        <option value="political_earth">Political Earth Map</option>
-                        <option value="earth">Earth Map</option>
-                        <option value="custom">Saved Custom Map</option>
-                      </select>
-                    </label>
-                    <label class="mainMenuField" for="mmCfgCustomMap">
-                      <span>Custom Map</span>
-                      <select id="mmCfgCustomMap">
-                        <option value="">No saved maps</option>
-                      </select>
-                    </label>
-                    <label class="mainMenuField" for="mmCfgDifficulty">
-                      <span>Difficulty</span>
-                      <select id="mmCfgDifficulty">
-                        <option value="easy">Easy</option>
-                        <option value="normal">Normal</option>
-                        <option value="hard">Hard</option>
-                        <option value="brutal">Brutal</option>
-                      </select>
-                    </label>
-                    <label class="mainMenuField" for="mmCfgFogOfWar">
-                      <span>Fog of War</span>
-                      <select id="mmCfgFogOfWar">
-                        <option value="simple">Simple FOW</option>
-                        <option value="advanced">Advanced FOW</option>
-                      </select>
-                    </label>
-                    <label class="mainMenuField" for="mmCfgPlayerGoldBoost">
-                      <span>Player Gold Boost</span>
-                      <select id="mmCfgPlayerGoldBoost">
-                        <option value="1">1x</option>
-                        <option value="2">2x</option>
-                        <option value="5">5x</option>
-                        <option value="10">10x</option>
-                      </select>
-                    </label>
-                    <label class="mainMenuField" for="mmCfgPlayerTroopsBoost">
-                      <span>Player Troop Boost</span>
-                      <select id="mmCfgPlayerTroopsBoost">
-                        <option value="1">1x</option>
-                        <option value="2">2x</option>
-                        <option value="5">5x</option>
-                        <option value="10">10x</option>
-                      </select>
-                    </label>
-                  </div>
+                  <div class="mainMenuPlayLayout">
+                    <div class="mainMenuPlayConfigColumn">
+                      <section class="mainMenuPlaySection" aria-label="Match setup">
+                        <div class="mainMenuFieldGrid">
+                          <label class="mainMenuField" for="mmCfgAiCount">
+                            <span>Bots (blank = preset)</span>
+                            <input id="mmCfgAiCount" type="number" min="1" max="400" step="1" />
+                          </label>
+                          <label class="mainMenuField" for="mmCfgSizePreset">
+                            <span>Map Size Preset</span>
+                            <select id="mmCfgSizePreset">
+                              <option value="Small">Small</option>
+                              <option value="Large">Large</option>
+                              <option value="Super Large">Super Large</option>
+                              <option value="Extremely Large">Extremely Large</option>
+                            </select>
+                          </label>
+                          <label class="mainMenuField" for="mmCfgGameMode">
+                            <span>Gamemode</span>
+                            <select id="mmCfgGameMode">
+                              <option value="classic">Classic</option>
+                              <option value="continental">Continental</option>
+                              <option value="divisions" disabled>Divisions (Temporarily Disabled)</option>
+                            </select>
+                          </label>
+                          <div class="mainMenuField isWide" id="mmCfgContinentField" hidden>
+                            <span>Continents</span>
+                            <div class="mainMenuContinentPicker" id="mmCfgContinents" aria-label="Continent selection"></div>
+                            <div class="mainMenuFieldHint" id="mmCfgContinentHint">Pick one or more continents for the theatre.</div>
+                          </div>
+                          <label class="mainMenuField" for="mmCfgMapMode">
+                            <span>Map Source</span>
+                            <select id="mmCfgMapMode">
+                              <option value="political_earth">Political Earth Map</option>
+                              <option value="earth">Earth Map</option>
+                              <option value="custom">Saved Custom Map</option>
+                            </select>
+                          </label>
+                          <label class="mainMenuField" for="mmCfgCustomMap">
+                            <span>Custom Map</span>
+                            <select id="mmCfgCustomMap">
+                              <option value="">No saved maps</option>
+                            </select>
+                          </label>
+                          <label class="mainMenuField" for="mmCfgDifficulty">
+                            <span>Difficulty</span>
+                            <select id="mmCfgDifficulty">
+                              <option value="easy">Easy</option>
+                              <option value="normal">Normal</option>
+                              <option value="hard">Hard</option>
+                              <option value="brutal">Brutal</option>
+                            </select>
+                          </label>
+                          <label class="mainMenuField" for="mmCfgFogOfWar">
+                            <span>Fog of War</span>
+                            <select id="mmCfgFogOfWar">
+                              <option value="simple">Simple FOW</option>
+                              <option value="advanced">Advanced FOW</option>
+                            </select>
+                          </label>
+                          <label class="mainMenuField" for="mmCfgPlayerGoldBoost">
+                            <span>Player Gold Boost</span>
+                            <select id="mmCfgPlayerGoldBoost">
+                              <option value="1">1x</option>
+                              <option value="2">2x</option>
+                              <option value="5">5x</option>
+                              <option value="10">10x</option>
+                            </select>
+                          </label>
+                          <label class="mainMenuField" for="mmCfgPlayerTroopsBoost">
+                            <span>Player Troop Boost</span>
+                            <select id="mmCfgPlayerTroopsBoost">
+                              <option value="1">1x</option>
+                              <option value="2">2x</option>
+                              <option value="5">5x</option>
+                              <option value="10">10x</option>
+                            </select>
+                          </label>
+                        </div>
+                      </section>
 
-                  <div class="mainMenuToggleGrid isCompact">
-                    <label class="mainMenuToggleRow" for="mmCfgInfiniteResources"><span>Infinite Resources</span><input id="mmCfgInfiniteResources" type="checkbox" /></label>
-                    <label class="mainMenuToggleRow" for="mmCfgInfiniteGold"><span>Infinite Gold</span><input id="mmCfgInfiniteGold" type="checkbox" /></label>
-                    <label class="mainMenuToggleRow" for="mmCfgInfiniteTroops"><span>Infinite Troops</span><input id="mmCfgInfiniteTroops" type="checkbox" /></label>
-                    <label class="mainMenuToggleRow" for="mmCfgDisableMissileSilo"><span>Disable Missile Silos</span><input id="mmCfgDisableMissileSilo" type="checkbox" /></label>
-                    <label class="mainMenuToggleRow" for="mmCfgDisableAbmLauncher"><span>Disable ABM Launchers</span><input id="mmCfgDisableAbmLauncher" type="checkbox" /></label>
-                    <label class="mainMenuToggleRow" for="mmCfgDisableDefencePost"><span>Disable Defence Posts</span><input id="mmCfgDisableDefencePost" type="checkbox" /></label>
-                    <label class="mainMenuToggleRow" for="mmCfgDisableAirbase"><span>Remove Airbase</span><input id="mmCfgDisableAirbase" type="checkbox" /></label>
-                  </div>
+                      <section class="mainMenuPlaySection" aria-label="Match modifiers">
+                        <div class="mainMenuToggleGrid isCompact">
+                          <label class="mainMenuToggleRow" for="mmCfgInfiniteResources"><span>Infinite Resources</span><input id="mmCfgInfiniteResources" type="checkbox" /></label>
+                          <label class="mainMenuToggleRow" for="mmCfgInfiniteGold"><span>Infinite Gold</span><input id="mmCfgInfiniteGold" type="checkbox" /></label>
+                          <label class="mainMenuToggleRow" for="mmCfgInfiniteTroops"><span>Infinite Troops</span><input id="mmCfgInfiniteTroops" type="checkbox" /></label>
+                          <label class="mainMenuToggleRow" for="mmCfgDisableMissileSilo"><span>Disable Missile Silos</span><input id="mmCfgDisableMissileSilo" type="checkbox" /></label>
+                          <label class="mainMenuToggleRow" for="mmCfgDisableAbmLauncher"><span>Disable ABM Launchers</span><input id="mmCfgDisableAbmLauncher" type="checkbox" /></label>
+                          <label class="mainMenuToggleRow" for="mmCfgDisableDefencePost"><span>Disable Defence Posts</span><input id="mmCfgDisableDefencePost" type="checkbox" /></label>
+                          <label class="mainMenuToggleRow" for="mmCfgDisableAirbase"><span>Remove Airbase</span><input id="mmCfgDisableAirbase" type="checkbox" /></label>
+                        </div>
+                      </section>
 
-                  <p id="mmConfigSummary" class="mainMenuConfigSummary"></p>
+                      <p id="mmConfigSummary" class="mainMenuConfigSummary"></p>
 
-                  <section id="mmPlayLobbyCard" class="mainMenuCard mainMenuLobbyCard" hidden aria-label="Multiplayer lobby">
-                    <header class="mainMenuCardHeader">
-                      <h3 class="mainMenuCardTitle">Lobby</h3>
-                    </header>
-                    <p class="mainMenuLobbyCode">Code: <strong id="mmPlayLobbyCode">------</strong></p>
-                    <div class="mainMenuLobbyPlayersWrap">
-                      <div class="mainMenuLobbyPlayersTitle">Players</div>
-                      <ul id="mmPlayLobbyPlayers" class="mainMenuLobbyPlayers"></ul>
-                    </div>
-                    <div class="mainMenuLobbyMeta" aria-label="Lobby details">
-                      <div class="mainMenuLobbyMetaItem">
-                        <span>Role</span>
-                        <strong id="mmPlayLobbyRole">Host</strong>
-                      </div>
-                      <div class="mainMenuLobbyMetaItem">
-                        <span>Network</span>
-                        <strong id="mmPlayLobbyNetwork">Realtime reconnecting</strong>
-                      </div>
-                      <div class="mainMenuLobbyMetaItem">
-                        <span>World</span>
-                        <strong id="mmPlayLobbyWorld">Waiting for lobby spec</strong>
-                      </div>
-                      <div class="mainMenuLobbyMetaItem">
-                        <span>Players</span>
-                        <strong id="mmPlayLobbyCount">0 joined</strong>
+                      <div class="mainMenuCardActions mainMenuPlayActions">
+                        <button id="mmStartBtn" class="mainMenuBtn isPrimary" type="button">Start</button>
                       </div>
                     </div>
-                  </section>
 
-                  <div class="mainMenuCardActions">
-                    <button id="mmStartBtn" class="mainMenuBtn isPrimary" type="button">Start</button>
+                    <aside id="mmPlayLobbyColumn" class="mainMenuPlayLobbyColumn" hidden aria-label="Lobby overview">
+                      <section id="mmPlayLobbyCard" class="mainMenuCard mainMenuLobbyCard" hidden aria-label="Multiplayer lobby">
+                        <header class="mainMenuCardHeader">
+                          <h3 class="mainMenuCardTitle">Lobby</h3>
+                        </header>
+                        <p class="mainMenuLobbyCode">Code: <strong id="mmPlayLobbyCode">------</strong></p>
+                        <div class="mainMenuLobbyPlayersWrap">
+                          <div class="mainMenuLobbyPlayersTitle">Players</div>
+                          <ul id="mmPlayLobbyPlayers" class="mainMenuLobbyPlayers"></ul>
+                        </div>
+                        <div class="mainMenuLobbyMeta" aria-label="Lobby details">
+                          <div class="mainMenuLobbyMetaItem">
+                            <span>Role</span>
+                            <strong id="mmPlayLobbyRole">Host</strong>
+                          </div>
+                          <div class="mainMenuLobbyMetaItem">
+                            <span>Network</span>
+                            <strong id="mmPlayLobbyNetwork">Realtime reconnecting</strong>
+                          </div>
+                          <div class="mainMenuLobbyMetaItem">
+                            <span>World</span>
+                            <strong id="mmPlayLobbyWorld">Waiting for lobby spec</strong>
+                          </div>
+                          <div class="mainMenuLobbyMetaItem">
+                            <span>Players</span>
+                            <strong id="mmPlayLobbyCount">0 joined</strong>
+                          </div>
+                        </div>
+                      </section>
+                    </aside>
                   </div>
                 </div>
               </section>
@@ -242,18 +258,24 @@
                       <span id="mmMultiplayerRuntimeBadge" class="mainMenuMpBadge isSecondary" data-state="idle">Authoritative Runtime</span>
                     </div>
                     <p class="mainMenuMpLead">
-                      Private code lobbies backed by authoritative sync so diplomacy, structures, fleets, nukes, and trade stay aligned with solo.
+                      Create a private lobby or join one with a code.
                     </p>
-                    <div class="mainMenuMpFeatureGrid" aria-label="Multiplayer features">
-                      <div class="mainMenuMpFeature">Authoritative world state</div>
-                      <div class="mainMenuMpFeature">Private lobby codes</div>
-                      <div class="mainMenuMpFeature">Solo ruleset parity</div>
-                      <div class="mainMenuMpFeature">Reconnect-aware lobby sync</div>
+                    <div class="mainMenuMpModeGrid" aria-label="Multiplayer actions">
+                      <article class="mainMenuMpModeCard isCreate">
+                        <h3 class="mainMenuMpModeTitle">Create Lobby</h3>
+                        <p class="mainMenuMpModeCopy">
+                          Start a room and share the code with your friends.
+                        </p>
+                        <button id="mmCreateLobbyBtn" class="mainMenuBtn mainMenuMpActionBtn isPrimary" type="button">Create Lobby</button>
+                      </article>
+                      <article class="mainMenuMpModeCard isJoin">
+                        <h3 class="mainMenuMpModeTitle">Join Lobby</h3>
+                        <p class="mainMenuMpModeCopy">
+                          Enter a code from the host to join their room.
+                        </p>
+                        <button id="mmJoinLobbyBtn" class="mainMenuBtn mainMenuMpActionBtn" type="button">Join With Code</button>
+                      </article>
                     </div>
-                  </div>
-                  <div class="mainMenuButtons">
-                    <button id="mmCreateLobbyBtn" class="mainMenuBtn" type="button">Create</button>
-                    <button id="mmJoinLobbyBtn" class="mainMenuBtn" type="button">Join</button>
                   </div>
                   <p id="mmMultiplayerStatus" class="mainMenuConfigSummary">Create or join a private lobby.</p>
                 </div>
@@ -265,16 +287,27 @@
                     <h2 class="mainMenuCardTitle">Join Lobby</h2>
                     <button id="mmJoinBackBtn" class="mainMenuMiniBtn" type="button">Back</button>
                   </header>
-                  <div class="mainMenuFieldGrid">
-                    <label class="mainMenuField" for="mmJoinCodeInput">
-                      <span>Lobby Code</span>
-                      <input id="mmJoinCodeInput" type="text" maxlength="8" spellcheck="false" placeholder="Enter code" />
-                    </label>
+                  <div class="mainMenuMpJoinShell">
+                    <div class="mainMenuMpJoinIntro">
+                      <p class="mainMenuMpJoinLead">
+                        Enter the lobby code from the host.
+                      </p>
+                    </div>
+                    <div class="mainMenuMpJoinEntry">
+                      <div class="mainMenuFieldGrid">
+                        <label class="mainMenuField mainMenuMpJoinField" for="mmJoinCodeInput">
+                          <span>Lobby Code</span>
+                          <input id="mmJoinCodeInput" type="text" maxlength="8" spellcheck="false" placeholder="ABCD1234" />
+                        </label>
+                      </div>
+                      <div class="mainMenuCardActions">
+                        <button id="mmJoinCodeBtn" class="mainMenuBtn isPrimary mainMenuMpActionBtn" type="button">Join Lobby</button>
+                      </div>
+                    </div>
+                    <div class="mainMenuMpJoinAssist" aria-label="Join help">
+                      <div class="mainMenuMpJoinHint">Codes are 4-8 letters or numbers.</div>
+                    </div>
                   </div>
-                  <div class="mainMenuCardActions">
-                    <button id="mmJoinCodeBtn" class="mainMenuBtn isPrimary" type="button">Join Lobby</button>
-                  </div>
-                  <div class="mainMenuMpJoinHint">Use the private code from your host. Codes are 4-8 letters or numbers.</div>
                   <p id="mmJoinStatus" class="mainMenuConfigSummary">Enter a code to join your friend lobby.</p>
                 </div>
               </section>

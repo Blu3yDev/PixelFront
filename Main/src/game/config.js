@@ -7,6 +7,7 @@ export const OWNER = Object.freeze({
 
 export const GAME_MODE = Object.freeze({
   CLASSIC: "classic",
+  CONTINENTAL: "continental",
   DIVISIONS: "divisions"
 });
 
@@ -33,10 +34,10 @@ export const BUILD_COST = Object.freeze({
   coastal_rig: 220000,
   defence_post: 90000,
   research_lab: 680000,
-  missile_silo: 1200000,
+  missile_silo: 950000,
   abm_launcher: 750000,
   radar_station: 1350000,
-  airbase: 1500000
+  airbase: 1200000
 });
 
 export const STRUCT_BUILD_TIME_S = Object.freeze({
@@ -78,7 +79,7 @@ export const STRUCT_STACK_MAX = 10;
 // ===== Defence Post =====
 // Provides a defensive bonus to tiles within its radius (stacks with diminishing returns).
 export const DEFENCE_POST_RADIUS_TILES = 6;
-export const DEFENCE_POST_MAX_BONUS = 0.42; // up to 42% capture resistance
+export const DEFENCE_POST_MAX_BONUS = 0.48; // up to 48% capture resistance
 export const DEFENCE_POST_STACK_K = 0.55;   // stacking curve (higher = faster ramp)
 
 // Capital defensive aura: larger radius than a defence post, but weaker bonus.
@@ -177,10 +178,10 @@ export const RESOURCE_COST_BY_STRUCTURE = Object.freeze({
   coastal_rig: Object.freeze({ food: 0, steel: 90, oil: 0 }),
   defence_post: Object.freeze({ food: 0, steel: 35, oil: 0 }),
   research_lab: Object.freeze({ food: 0, steel: 350, oil: 0 }),
-  missile_silo: Object.freeze({ food: 0, steel: 240, oil: 0 }),
+  missile_silo: Object.freeze({ food: 0, steel: 200, oil: 0 }),
   abm_launcher: Object.freeze({ food: 0, steel: 180, oil: 0 }),
   radar_station: Object.freeze({ food: 0, steel: 500, oil: 0 }),
-  airbase: Object.freeze({ food: 0, steel: 340, oil: 0 })
+  airbase: Object.freeze({ food: 0, steel: 280, oil: 0 })
 });
 
 export const RESOURCE_STEEL_COST_BY_STRUCTURE = Object.freeze({
@@ -232,7 +233,8 @@ export const CEASEFIRE_DURATION_S = 60.0;
 export const CEASEFIRE_DECISION_S = 15.0;
 export const CEASEFIRE_AI_COOLDOWN_S = 90.0;
 // Delay before AI starts active offensives after a fresh war declaration.
-export const AI_WAR_DECLARED_ATTACK_DELAY_S = 18.0;
+// Kept short so the player gets a brief reaction window without pausing wars for long.
+export const AI_WAR_DECLARED_ATTACK_DELAY_S = 0.5;
 
 // ===== NAVY (Section 2: Sea Economy - Trade Ships) =====
 export const TRADE_SHIP_MAX_OUTGOING = 7;
@@ -698,7 +700,7 @@ export const TROOP_REGEN_BONUS_PER_BARRACK = 0.0010; // additive per barracks
 export const GOLD_BASE_S = 120.0;
 export const GOLD_PER_LAND_S = 0.010;
 export const GOLD_PER_CITY_S = 150.0;
-export const GOLD_PER_FACTORY_S = 360.0;
+export const GOLD_PER_FACTORY_S = 390.0;
 export const GOLD_FACTORY_DIM_EXP = 0.78; // diminishing returns exponent for factory income (0..1]
 
 // OpenFront-inspired baseline: gold primarily scales with workers (population not drafted).
@@ -729,19 +731,19 @@ export const WAR_MIN_INF_TO_ADVANCE = 150;
 // Adds a small baseline attack pressure so low-strength wars still progress.
 export const WAR_CAPTURE_ATTACK_FLOOR = 190;
 // How strongly attacker-vs-defender committed troop ratio changes capture speed.
-export const WAR_SUPERIORITY_EXP = 0.62;
-export const WAR_SUPERIORITY_MUL_MIN = 0.60;
-export const WAR_SUPERIORITY_MUL_MAX = 2.40;
+export const WAR_SUPERIORITY_EXP = 0.78;
+export const WAR_SUPERIORITY_MUL_MIN = 0.46;
+export const WAR_SUPERIORITY_MUL_MAX = 3.10;
 // Lower values make frontline pressure convert into flips more aggressively.
 export const WAR_POWER_SATURATION = 0.58;
 // Player still gets a tiny passive defence edge in auto-war, but not enough to stall large mismatches.
-export const WAR_PASSIVE_PLAYER_DEFENCE_MUL = 1.05;
-export const WAR_PASSIVE_PLAYER_FLIP_DAMP = 1.03;
+export const WAR_PASSIVE_PLAYER_DEFENCE_MUL = 1.14;
+export const WAR_PASSIVE_PLAYER_FLIP_DAMP = 1.14;
 export const WAR_MIN_STABILITY = 0.26;
-export const WAR_STABILITY_BASE_WAR_PENALTY = 0.11;
-export const STABILITY_LAND_SAFE_TILES = 1800;
-export const STABILITY_LAND_PENALTY_MAX = 0.24;
-export const STABILITY_LAND_PENALTY_K = 1 / 5200;
+export const WAR_STABILITY_BASE_WAR_PENALTY = 0.07;
+export const STABILITY_LAND_SAFE_TILES = 3000;
+export const STABILITY_LAND_PENALTY_MAX = 0.10;
+export const STABILITY_LAND_PENALTY_K = 1 / 9000;
 export const STABILITY_ECON_MUL_MIN = 0.38;
 export const STABILITY_GROWTH_MUL_MIN = 0.44;
 export const STABILITY_REINFORCE_MUL_MIN = 0.30;
@@ -749,14 +751,14 @@ export const STABILITY_REINFORCE_MUL_MIN = 0.30;
 // War exhaustion: prolonged active wars slowly reduce stability.
 // Tuning goals: little to no pain for short wars, meaningful pressure for drawn-out multi-front wars,
 // and quick relief if players pause with ceasefires or make peace.
-export const WAR_EXHAUSTION_GRACE_S = 78.0;
+export const WAR_EXHAUSTION_GRACE_S = 110.0;
 export const WAR_EXHAUSTION_RAMP_S = 300.0;
-export const WAR_EXHAUSTION_GAIN_PER_S = 1 / 560;
+export const WAR_EXHAUSTION_GAIN_PER_S = 1 / 820;
 export const WAR_EXHAUSTION_MULTI_WAR_GAIN_BONUS = 0.12;
-export const WAR_EXHAUSTION_PAUSE_RECOVER_PER_S = 1 / 110;
-export const WAR_EXHAUSTION_PEACE_RECOVER_PER_S = 1 / 80;
+export const WAR_EXHAUSTION_PAUSE_RECOVER_PER_S = 1 / 72;
+export const WAR_EXHAUSTION_PEACE_RECOVER_PER_S = 1 / 50;
 export const WAR_EXHAUSTION_WARTIME_DECAY_PER_S = 2.2;
-export const WAR_EXHAUSTION_STABILITY_MAX_PENALTY = 0.18;
+export const WAR_EXHAUSTION_STABILITY_MAX_PENALTY = 0.12;
 
 // OpenFront-style: attack ratio directly represents committed attack troops.
 export const ATTACK_COMMIT_MIN = 0.00;
@@ -771,18 +773,18 @@ export function attackCommitFromRatio(ratio01) {
 }
 
 // Casualties & war cost (kept moderate so attacks do not instantly drain infantry)
-export const WAR_ENGAGE_TROOPS_PER_CONTACT = 305;  // troops that can meaningfully engage per sampled contact
+export const WAR_ENGAGE_TROOPS_PER_CONTACT = 340;  // troops that can meaningfully engage per sampled contact
 export const WAR_FIRE_K = 0.0033;                  // kill rate per engaged troop (scaled by stability)
 export const WAR_ATTACK_EXPOSE_MUL_MIN = 1.00;     // legacy, unused by simplified attack-ratio model
 export const WAR_ATTACK_EXPOSE_MUL_MAX = 1.00;     // legacy, unused by simplified attack-ratio model
 export const WAR_STABILITY_LOSS_MUL_MIN = 0.90;       // loss multiplier when stable
-export const WAR_STABILITY_LOSS_MUL_MAX = 2.85;       // loss multiplier when unstable
+export const WAR_STABILITY_LOSS_MUL_MAX = 2.55;       // loss multiplier when unstable
 
 export const WAR_GOLD_PER_CONTACT_S = 1.80;         // ongoing logistics cost per contact per second
 export const WAR_GOLD_PER_CAPTURE_TILE = 32.0;      // extra cost to take/hold ground
 
-export const WAR_CAPTURE_CASUALTIES_ATTACKER = 1.75; // extra losses per captured tile (attacker)
-export const WAR_CAPTURE_CASUALTIES_DEFENDER = 1.12; // extra losses per captured tile (defender)
+export const WAR_CAPTURE_CASUALTIES_ATTACKER = 1.30; // extra losses per captured tile (attacker)
+export const WAR_CAPTURE_CASUALTIES_DEFENDER = 1.26; // extra losses per captured tile (defender)
 
 // Experimental: when enabled, opposing attack stacks (A->B and B->A) collide and cancel out troops.
 export const EXPERIMENTAL_ATTACK_COLLISION = false;

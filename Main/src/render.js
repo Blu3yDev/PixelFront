@@ -5303,7 +5303,9 @@ export class Renderer {
           op.defender | 0,
           String(op.kind || ""),
           Math.round(this._resolveFrontlineOperationTroops(op)),
-          frontierSize | 0
+          frontierSize | 0,
+          Math.round(Number(op?.centroid?.x) || 0),
+          Math.round(Number(op?.centroid?.y) || 0)
         ].join(":");
       })
       .join("|");
@@ -5318,7 +5320,6 @@ export class Renderer {
 
     const pairToMarkers = new Map();
     const pairCoverage = new Set();
-    const mergeThresholdSq = Number.POSITIVE_INFINITY;
 
     const mergeMarker = (pairKey, aId, bId, geometry, attackCounts) => {
       let arr = pairToMarkers.get(pairKey);
@@ -5335,7 +5336,14 @@ export class Renderer {
         const dx = Number(cand.midX) - Number(geometry.midX);
         const dy = Number(cand.midY) - Number(geometry.midY);
         const d2 = dx * dx + dy * dy;
-        if (d2 <= mergeThresholdSq && d2 < bestD2) {
+        const candWeight = Math.max(1, Number(cand.weight) || 1);
+        const nextWeight = Math.max(1, Number(geometry.weight) || 1);
+        const mergeRadius = clamp(
+          18 + ((Math.sqrt(candWeight) + Math.sqrt(nextWeight)) * 1.45),
+          22,
+          54
+        );
+        if (d2 <= (mergeRadius * mergeRadius) && d2 < bestD2) {
           bestD2 = d2;
           marker = cand;
           markerIdx = i;
@@ -5463,9 +5471,37 @@ export class Renderer {
 
     const out = [];
     const nextAnchorKeys = new Set();
-    const pairEntries = Array.from(pairToMarkers.values());
+    const pairEntries = Array.from(pairToMarkers.entries());
+    const findCachedAnchor = (markerKey, pairKey, midX, midY) => {
+      const direct = this._frontlineOverlayAnchorCache.get(markerKey) || null;
+      if (direct && (direct.ownerVersion | 0) === (ownerVersion | 0)) return direct;
+      let best = null;
+      let bestD2 = Infinity;
+      const cachedEntries = Array.from(this._frontlineOverlayAnchorCache.entries());
+      for (let i = 0; i < cachedEntries.length; i++) {
+        const [, cand] = cachedEntries[i];
+        if (!cand || String(cand.pairKey || "") !== pairKey) continue;
+        if ((cand.ownerVersion | 0) !== (ownerVersion | 0)) continue;
+        const dx = (Number(cand.midX) || 0) - midX;
+        const dy = (Number(cand.midY) || 0) - midY;
+        const d2 = dx * dx + dy * dy;
+        if (d2 <= (36 * 36) && d2 < bestD2) {
+          bestD2 = d2;
+          best = cand;
+        }
+      }
+      return best;
+    };
     for (let i = 0; i < pairEntries.length; i++) {
-      const markers = pairEntries[i];
+      const [pairKey, rawMarkers] = pairEntries[i];
+      const markers = Array.isArray(rawMarkers)
+        ? rawMarkers.slice().sort((a, b) => {
+          const ax = Number(a?.midX) || 0;
+          const bx = Number(b?.midX) || 0;
+          if (Math.abs(ax - bx) > 0.001) return ax - bx;
+          return (Number(a?.midY) || 0) - (Number(b?.midY) || 0);
+        })
+        : [];
       for (let m = 0; m < markers.length; m++) {
         const marker = markers[m];
         const a = marker.a | 0;
@@ -5510,9 +5546,9 @@ export class Renderer {
         if (aSpan.spanX < 4 || aSpan.spanY < 2) continue;
         if (bSpan.spanX < 4 || bSpan.spanY < 2) continue;
 
-        const markerKey = String(marker.pairKey || `${a}:${b}`);
+        const markerKey = `${pairKey}:${m}`;
         nextAnchorKeys.add(markerKey);
-        const cachedAnchor = this._frontlineOverlayAnchorCache.get(markerKey) || null;
+        const cachedAnchor = findCachedAnchor(markerKey, pairKey, Number(marker.midX) || 0, Number(marker.midY) || 0);
         let stableMidX = Number(marker.midX) || 0;
         let stableMidY = Number(marker.midY) || 0;
         let stableAPoint = { x: aPoint.x, y: aPoint.y };
@@ -5539,6 +5575,7 @@ export class Renderer {
 
         this._frontlineOverlayAnchorCache.set(markerKey, {
           ownerVersion,
+          pairKey,
           midX: stableMidX,
           midY: stableMidY,
           sides: {
@@ -5604,7 +5641,7 @@ export class Renderer {
     const territoryScale = clamp((Math.sqrt(Math.max(1, land)) - 3) / 14, 0, 1);
     const spanScale = clamp(Math.min(spanX / 16, spanY / 7), 0, 1);
     const sizeScale = Math.max(0, Math.min(territoryScale, spanScale));
-    if (sizeScale < 0.18) return;
+    if (sizeScale < 0.12) return;
 
     let fontPx = clamp((12 + (zoom * 1.05)) * lerp(0.72, 1.0, sizeScale), 11, 22);
 
@@ -5614,11 +5651,11 @@ export class Renderer {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.font = `900 italic ${fontPx}px "Arial Black", "Segoe UI", sans-serif`;
-    const maxWidth = Math.max(18, spanX * zoom * 0.82);
-    const maxHeight = Math.max(12, spanY * zoom * 0.88);
+    const maxWidth = Math.max(18, spanX * zoom * 0.94);
+    const maxHeight = Math.max(12, spanY * zoom * 1.04);
     const measured = Math.max(1, ctx.measureText(text).width);
     const shrink = Math.min(1, maxWidth / measured, maxHeight / Math.max(1, fontPx * 1.1));
-    if (shrink < 0.62) {
+    if (shrink < 0.48) {
       ctx.restore();
       return;
     }

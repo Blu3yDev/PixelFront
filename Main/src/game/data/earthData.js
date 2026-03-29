@@ -2,6 +2,7 @@ import { fromArrayBuffer } from "geotiff";
 import koppenRaw from "../../EarthMap/Koeppen-Geiger-ASCII.txt?raw";
 import countriesGeoJsonUrl from "../../EarthMap/world-map-countries.geojson?url";
 import basemapTiffUrlLocal from "../../EarthMap/basemap-1.tif?url";
+import { CONTINENT_LABEL_BY_KEY, normalizeContinentKey } from "./earthContinents.js";
 
 const GRID_W = 720;
 const GRID_H = 360;
@@ -232,6 +233,14 @@ function countryColorFromProperties(props, countryKey) {
   return hashCountryColor(countryKey);
 }
 
+function countryContinentFromProperties(props) {
+  const p = props && typeof props === "object" ? props : {};
+  const raw = asNonEmptyString(p.CONTINENT || p.REGION_UN || "");
+  const key = normalizeContinentKey(raw);
+  if (!key) return { key: "", label: "" };
+  return { key, label: CONTINENT_LABEL_BY_KEY[key] || raw || key };
+}
+
 function projectRingToGrid(ring) {
   if (!Array.isArray(ring) || ring.length < 3) return null;
 
@@ -315,6 +324,8 @@ async function rasterizeCountriesToGrid(geojson) {
   const countryCodes = [""];
   const countryIso3 = [""];
   const countryNames = [""];
+  const countryContinentKeyById = [""];
+  const countryContinentLabelById = [""];
   const countryRgbRows = [[0, 0, 0]];
 
   const canvas = createRasterCanvas(GRID_W, GRID_H);
@@ -325,6 +336,8 @@ async function rasterizeCountriesToGrid(geojson) {
       countryCodes,
       countryIso3,
       countryNames,
+      countryContinentKeyById,
+      countryContinentLabelById,
       countryColorById: new Uint8Array(3),
       usedCanvas: false,
       featureCount: 0
@@ -339,6 +352,8 @@ async function rasterizeCountriesToGrid(geojson) {
       countryCodes,
       countryIso3,
       countryNames,
+      countryContinentKeyById,
+      countryContinentLabelById,
       countryColorById: new Uint8Array(3),
       usedCanvas: false,
       featureCount: 0
@@ -378,6 +393,7 @@ async function rasterizeCountriesToGrid(geojson) {
     const countryKey = countryKeyFromProperties(feature.properties);
     const countryIso = countryIso3FromProperties(feature.properties) || countryKey;
     const countryName = countryNameFromProperties(feature.properties) || countryKey;
+    const continent = countryContinentFromProperties(feature.properties);
     let countryId = countryIdByKey.get(countryKey);
     if (countryId == null) {
       countryId = countryCodes.length;
@@ -386,6 +402,8 @@ async function rasterizeCountriesToGrid(geojson) {
       countryCodes.push(countryKey);
       countryIso3.push(countryIso);
       countryNames.push(countryName);
+      countryContinentKeyById.push(continent.key);
+      countryContinentLabelById.push(continent.label);
       countryRgbRows.push(countryColorFromProperties(feature.properties, countryKey));
     }
 
@@ -443,6 +461,8 @@ async function rasterizeCountriesToGrid(geojson) {
     countryCodes,
     countryIso3,
     countryNames,
+    countryContinentKeyById,
+    countryContinentLabelById,
     countryColorById,
     usedCanvas: true,
     featureCount: drawnFeatures
@@ -627,6 +647,8 @@ export async function loadEarthData() {
       countryCodes: [""],
       countryIso3: [""],
       countryNames: [""],
+      countryContinentKeyById: [""],
+      countryContinentLabelById: [""],
       countryColorById: new Uint8Array(3),
       usedCanvas: false,
       featureCount: 0
@@ -681,6 +703,8 @@ export async function loadEarthData() {
       countryCodes: raster.countryCodes,
       countryIso3: raster.countryIso3,
       countryNames: raster.countryNames,
+      countryContinentKeyById: raster.countryContinentKeyById,
+      countryContinentLabelById: raster.countryContinentLabelById,
       countryColorById: raster.countryColorById,
       countryFeatureCount: raster.featureCount,
       countryRasterUsedCanvas: !!raster.usedCanvas,

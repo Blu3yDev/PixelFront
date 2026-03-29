@@ -150,6 +150,12 @@ const ridgeFbm01WrapX = (seed, u, v, octaves, freqBase = 1) => {
 };
 
 const EARTH_SEA_LEVEL = 400;
+const EARTH_TINY_ISLAND_AREA_FRAC = 0.000022;
+const EARTH_TINY_ISLAND_MIN_TILES = 10;
+const EARTH_TINY_ISLAND_MAX_TILES = 64;
+const EARTH_MIN_SPAWN_COUNTRY_AREA_FRAC = 0.00004;
+const EARTH_MIN_SPAWN_COUNTRY_TILES = 18;
+const EARTH_MAX_SPAWN_COUNTRY_TILES = 96;
 
 const earthBiomeFromKoppen = (code, latAbs) => {
   switch (code) {
@@ -1156,6 +1162,13 @@ export function installMap(World) {
           }
         }
       }
+
+      const tinyIslandMin = clampInt(
+        Math.round(n * EARTH_TINY_ISLAND_AREA_FRAC),
+        EARTH_TINY_ISLAND_MIN_TILES,
+        EARTH_TINY_ISLAND_MAX_TILES
+      );
+      if (tinyIslandMin > 0) this._cullTinyIslands(sea, tinyIslandMin);
 
       // Recount land after topology cleanup.
       this.totalLand = 0;
@@ -2905,6 +2918,9 @@ World.prototype._applyRiverWetlands = function(sea) {
           id,
           name,
           gold: id === OWNER.PLAYER ? 60000 : 55000,
+          food: id === OWNER.PLAYER ? 12000 : undefined,
+          steel: id === OWNER.PLAYER ? 900 : undefined,
+          oil: id === OWNER.PLAYER ? 700 : undefined,
           population: id === OWNER.PLAYER ? 18500 : 17500,
           infantry: id === OWNER.PLAYER ? 240 : 220,
           attackRatio: baseRatio,
@@ -3010,11 +3026,25 @@ World.prototype._applyRiverWetlands = function(sea) {
       return null;
     }
 
+  World.prototype._minSpawnCountryTiles = function() {
+      const n = Math.max(1, (this.w | 0) * (this.h | 0));
+      return clampInt(
+        Math.round(n * EARTH_MIN_SPAWN_COUNTRY_AREA_FRAC),
+        EARTH_MIN_SPAWN_COUNTRY_TILES,
+        EARTH_MAX_SPAWN_COUNTRY_TILES
+      );
+    }
+
   World.prototype._listSpawnableCountries = function(minTiles = 1) {
       const out = [];
       const counts = this._countryTileCountById;
       if (!counts || counts.length <= 1) return out;
-      const threshold = Math.max(1, minTiles | 0);
+      const threshold = Math.max(
+        1,
+        this._isCountryClaimMode()
+          ? Math.max(minTiles | 0, this._minSpawnCountryTiles())
+          : (minTiles | 0)
+      );
       for (let cid = 1; cid < counts.length; cid++) {
         if ((counts[cid] | 0) < threshold) continue;
         const anchor = this._countryAnchorCell(cid);

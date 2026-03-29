@@ -25,6 +25,19 @@ create index if not exists idx_player_game_sessions_user_id
 create index if not exists idx_player_game_sessions_played_at
   on public.player_game_sessions(played_at desc);
 
+-- Clamp legacy outliers caused by stale local sessions being recovered with wall-clock time.
+update public.player_game_sessions
+set playtime_seconds = least(greatest(playtime_seconds, 0), 43200)
+where playtime_seconds < 0
+   or playtime_seconds > 43200;
+
+alter table public.player_game_sessions
+  drop constraint if exists player_game_sessions_playtime_seconds_reasonable;
+
+alter table public.player_game_sessions
+  add constraint player_game_sessions_playtime_seconds_reasonable
+  check (playtime_seconds >= 0 and playtime_seconds <= 43200);
+
 alter table public.player_profiles enable row level security;
 alter table public.player_game_sessions enable row level security;
 
@@ -71,7 +84,7 @@ with session_totals as (
     s.user_id,
     count(*)::integer as games_played,
     count(*) filter (where s.did_win)::integer as wins,
-    coalesce(sum(greatest(s.playtime_seconds, 0)), 0)::integer as playtime_seconds
+    coalesce(sum(least(greatest(s.playtime_seconds, 0), 43200)), 0)::integer as playtime_seconds
   from public.player_game_sessions s
   group by s.user_id
 )

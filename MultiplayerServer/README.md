@@ -94,6 +94,8 @@ If you deploy only the server subtree, you must still make `Main/src` available 
 Set these Railway env vars when needed:
 - `PIXELFRONT_MAIN_SRC_DIR=/app/Main/src`
 - `PIXELFRONT_EARTHMAP_DIR=/app/Main/src/EarthMap`
+- Match tuning preset file: [`.env.railway`](/c:/Users/total/Downloads/PixelFrontline-Dev-5/MultiplayerServer/.env.railway)
+  - This file contains only the Railway match vars you asked for, with no extra AI/world-size nerf values added on top.
 
 If your deploy does not include `/app/Main`, deploy from the repository root (so both `Main` and `MultiplayerServer` are present) and run:
 - Build command: `npm install --prefix MultiplayerServer`

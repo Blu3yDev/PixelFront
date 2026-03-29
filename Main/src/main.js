@@ -1646,10 +1646,12 @@ function sendSocketJsonWithDebug(ws, payload, stats = null) {
 }
 
 const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
+  // Keep multiplayer authoritative wherever possible so the client behaves like
+  // a synced solo world instead of running a divergent local prediction layer.
   setAttackRatio: Object.freeze({ cmd: "set_attack_ratio" }),
   setMobilization: Object.freeze({ cmd: "set_mobilization" }),
-  startNeutral: Object.freeze({ cmd: "start_neutral", predictLocal: true }),
-  startWarFocus: Object.freeze({ cmd: "start_war_focus", predictLocal: true }),
+  startNeutral: Object.freeze({ cmd: "start_neutral" }),
+  startWarFocus: Object.freeze({ cmd: "start_war_focus" }),
   regenerate: Object.freeze({ cmd: "regenerate_match", serializeArgs: serializeMultiplayerRegenerateArgs }),
   cancelAllOperations: Object.freeze({ cmd: "cancel_all_operations" }),
   cancelOperation: Object.freeze({ cmd: "cancel_operation" }),
@@ -1659,8 +1661,8 @@ const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   cancelTradeRequest: Object.freeze({ cmd: "cancel_trade_request" }),
   cancelTradeDeal: Object.freeze({ cmd: "cancel_trade_deal" }),
   donate: Object.freeze({ cmd: "donate" }),
-  declareWar: Object.freeze({ cmd: "declare_war", predictLocal: true }),
-  betrayAlliance: Object.freeze({ cmd: "betray_alliance", predictLocal: true }),
+  declareWar: Object.freeze({ cmd: "declare_war" }),
+  betrayAlliance: Object.freeze({ cmd: "betray_alliance" }),
   sendWarship: Object.freeze({ cmd: "send_warship" }),
   requestCeasefire: Object.freeze({ cmd: "request_ceasefire" }),
   requestAlliance: Object.freeze({ cmd: "request_alliance" }),
@@ -1670,16 +1672,16 @@ const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
   issueDivisionOrder: Object.freeze({ cmd: "issue_division_order" }),
   clearDivisionOrder: Object.freeze({ cmd: "clear_division_order" }),
   cancelShip: Object.freeze({ cmd: "cancel_ship" }),
-  startPortTrade: Object.freeze({ cmd: "start_port_trade", predictLocal: true }),
-  startMissileSiloBuild: Object.freeze({ cmd: "start_missile_silo_build", predictLocal: true }),
-  startAirbaseTransportBuild: Object.freeze({ cmd: "start_airbase_transport_build", predictLocal: true }),
-  startBurstExpand: Object.freeze({ cmd: "start_burst_expand", predictLocal: true }),
-  startBurstAttack: Object.freeze({ cmd: "start_burst_attack", predictLocal: true }),
+  startPortTrade: Object.freeze({ cmd: "start_port_trade" }),
+  startMissileSiloBuild: Object.freeze({ cmd: "start_missile_silo_build" }),
+  startAirbaseTransportBuild: Object.freeze({ cmd: "start_airbase_transport_build" }),
+  startBurstExpand: Object.freeze({ cmd: "start_burst_expand" }),
+  startBurstAttack: Object.freeze({ cmd: "start_burst_attack" }),
   pickSpawn: Object.freeze({ cmd: "pick_spawn" }),
   startResearch: Object.freeze({ cmd: "start_research" }),
   launchMissileWarhead: Object.freeze({ cmd: "launch_missile_warhead" }),
   launchAirbaseTransport: Object.freeze({ cmd: "launch_airbase_transport" }),
-  placeStructure: Object.freeze({ cmd: "place_structure", predictLocal: true })
+  placeStructure: Object.freeze({ cmd: "place_structure" })
 });
 
 function normalizeMultiplayerSession(raw) {

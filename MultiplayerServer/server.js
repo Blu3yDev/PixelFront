@@ -1785,6 +1785,14 @@ async function startLobbyMatch(lobby, body) {
   );
   touchLobby(lobby);
   broadcastLobby(lobby, "started");
+  const runtime = lobby.runtime;
+  if (runtime && lobby.sockets) {
+    for (const [sessionId, ws] of lobby.sockets.entries()) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) continue;
+      const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, "match_start");
+      ws.initialSyncPending = !fullSync?.sent;
+    }
+  }
 }
 
 function getLobbyByCodeOrThrow(codeRaw) {

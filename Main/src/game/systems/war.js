@@ -687,22 +687,27 @@ export function installWar(World) {
     const defCommitted = Math.max(0, defInf * defCommit);
     const capBroken = !nDef.capital || nDef.collapsed;
     const defenderStillAttacking = this._hasAnyActiveAttackOperation(D);
+    const defenderIsHuman = !!(D === OWNER.PLAYER || nDef.isHuman);
+    const remnantLandGate = defenderIsHuman ? 96 : 160;
+    const tinyRemnantGate = defenderIsHuman ? 56 : 96;
 
     // Hard gate: only fire for truly broken nations.
     const capitalLostAndSpent =
       capBroken &&
+      land <= remnantLandGate &&
       !defenderStillAttacking &&
-      pressure >= 0.72 &&
-      defInf <= 4 &&
-      defCommitted <= 1.25;
+      pressure >= 0.82 &&
+      defInf <= 3 &&
+      defCommitted <= 1.10;
     const trulyCollapsed =
       capitalLostAndSpent ||
       (
         capBroken &&
-        pressure >= 0.88 &&
-        defInf <= 2 &&
-        defCommitted <= 1 &&
-        (defPop <= 2500 || nDef.collapsed)
+        land <= tinyRemnantGate &&
+        pressure >= 0.94 &&
+        defInf <= 1 &&
+        defCommitted <= 0.55 &&
+        (defPop <= (defenderIsHuman ? 900 : 1400) || nDef.collapsed)
       );
     if (!trulyCollapsed) return { captured: 0, effort: 0, annexed: false };
 

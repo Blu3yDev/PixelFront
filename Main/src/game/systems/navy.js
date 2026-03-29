@@ -645,7 +645,9 @@ export function installNavy(World) {
         let bestScore = -9e9;
         for (let p = 0; p < ports.length; p++) {
           const st = ports[p];
-          const spawn = this._navyPickAdjacentWater(st.x | 0, st.y | 0);
+          const spawn = (typeof this._findPortWaterAccess === "function")
+            ? this._findPortWaterAccess(st.x | 0, st.y | 0)
+            : this._navyPickAdjacentWater(st.x | 0, st.y | 0);
           if (!spawn) continue;
           const compId = this._navyWaterCompAt(spawn.x | 0, spawn.y | 0) | 0;
           if (!compId) continue;
@@ -1031,7 +1033,9 @@ export function installNavy(World) {
       const pick = ports[(this._navyRng() * ports.length) | 0];
       if (!pick) return false;
 
-      const spawn = this._navyPickAdjacentWater((pick.x | 0), (pick.y | 0));
+      const spawn = (typeof this._findPortWaterAccess === "function")
+        ? this._findPortWaterAccess((pick.x | 0), (pick.y | 0))
+        : this._navyPickAdjacentWater((pick.x | 0), (pick.y | 0));
       if (!spawn) return false;
 
       const compId = this._navyWaterCompAt(spawn.x | 0, spawn.y | 0) | 0;
@@ -1094,7 +1098,9 @@ export function installNavy(World) {
       const A = ownerId | 0;
       if (!st) return { ok: false, reason: "No port." };
 
-      const spawn = this._navyPickAdjacentWater((st.x | 0), (st.y | 0));
+      const spawn = (typeof this._findPortWaterAccess === "function")
+        ? this._findPortWaterAccess((st.x | 0), (st.y | 0))
+        : this._navyPickAdjacentWater((st.x | 0), (st.y | 0));
       if (!spawn) return { ok: false, reason: "Port is not coastal." };
 
       const ship = {
@@ -1646,7 +1652,9 @@ export function installNavy(World) {
       if (!this._waterComp || (this._waterComp.length !== (this.w * this.h)) || !((this._waterCompCount | 0) > 0)) {
         this._recomputeWaterComponents();
       }
-      const sourceSpawn = this._navyPickAdjacentWater((st.x | 0), (st.y | 0));
+      const sourceSpawn = (typeof this._findPortWaterAccess === "function")
+        ? this._findPortWaterAccess((st.x | 0), (st.y | 0))
+        : this._navyPickAdjacentWater((st.x | 0), (st.y | 0));
       if (!sourceSpawn) return null;
       const compId = this._navyWaterCompAt(sourceSpawn.x | 0, sourceSpawn.y | 0) | 0;
       if (!compId) return null;
@@ -1659,7 +1667,9 @@ export function installNavy(World) {
         if (!p || String(p.type || "") !== "port") continue;
         if ((p.owner | 0) !== B) continue;
         if (typeof this._isStructureOperational === "function" && !this._isStructureOperational(p)) continue;
-        const targetWater = this._navyPickAdjacentWater((p.x | 0), (p.y | 0), compId);
+        const targetWater = (typeof this._findPortWaterAccess === "function")
+          ? this._findPortWaterAccess((p.x | 0), (p.y | 0), compId)
+          : this._navyPickAdjacentWater((p.x | 0), (p.y | 0), compId);
         if (!targetWater) continue;
         const dx = (p.x | 0) - (st.x | 0);
         const dy = (p.y | 0) - (st.y | 0);
@@ -1764,7 +1774,9 @@ export function installNavy(World) {
       out.cooldownUntil = Math.max(0, Number(d?.cooldownUntil) || 0);
       out.cooldownRemainingS = Math.max(0, out.cooldownUntil - (Number(this.time) || 0));
 
-      const sourceSpawn = this._navyPickAdjacentWater((st.x | 0), (st.y | 0));
+      const sourceSpawn = (typeof this._findPortWaterAccess === "function")
+        ? this._findPortWaterAccess((st.x | 0), (st.y | 0))
+        : this._navyPickAdjacentWater((st.x | 0), (st.y | 0));
       if (!sourceSpawn) {
         out.available = false;
         out.reason = "Port is not coastal.";

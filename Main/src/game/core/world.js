@@ -3830,7 +3830,10 @@ placeStructure(type, ownerId, x, y) {
   } else {
     if (!this.land[idx]) return { ok: false, reason: "Must place on land." };
     if ((this.owner[idx] | 0) !== oid) return { ok: false, reason: "Must place inside your territory." };
-    if (t === "port" && !this._touchesWater4(idx)) {
+    const hasPortWaterAccess = (typeof this._hasPortWaterAccess === "function")
+      ? this._hasPortWaterAccess(ix, iy)
+      : this._touchesWater4(idx);
+    if (t === "port" && !hasPortWaterAccess) {
       return { ok: false, reason: "Ports must be built on the coast (adjacent to water)." };
     }
   }
@@ -4281,12 +4284,16 @@ placeStructure(type, ownerId, x, y) {
     for (let i = 0; i < ports.length; i++) {
       const p = ports[i];
       if (!p) continue;
-      const adjAny = this._navyPickAdjacentWater(p.x | 0, p.y | 0);
+      const adjAny = (typeof this._findPortWaterAccess === "function")
+        ? this._findPortWaterAccess(p.x | 0, p.y | 0)
+        : this._navyPickAdjacentWater(p.x | 0, p.y | 0);
       if (!adjAny) continue;
       const cAny = this._navyWaterCompAt(adjAny.x | 0, adjAny.y | 0) | 0;
       if (cAny) reachableComps.add(cAny);
 
-      const adj = this._navyPickAdjacentWater(p.x | 0, p.y | 0, compId);
+      const adj = (typeof this._findPortWaterAccess === "function")
+        ? this._findPortWaterAccess(p.x | 0, p.y | 0, compId)
+        : this._navyPickAdjacentWater(p.x | 0, p.y | 0, compId);
       if (adj) return { ok: true, reason: "", compId, targetX: x, targetY: y };
     }
 
@@ -4574,7 +4581,9 @@ placeStructure(type, ownerId, x, y) {
       const p = ports[i];
       if (!p) continue;
 
-      const spawn = this._navyPickAdjacentWater((p.x | 0), (p.y | 0));
+      const spawn = (typeof this._findPortWaterAccess === "function")
+        ? this._findPortWaterAccess((p.x | 0), (p.y | 0))
+        : this._navyPickAdjacentWater((p.x | 0), (p.y | 0));
       if (!spawn) continue;
 
       const compId = this._navyWaterCompAt((spawn.x | 0), (spawn.y | 0)) | 0;

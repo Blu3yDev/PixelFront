@@ -2976,6 +2976,16 @@ function computeStructureSnapshotSignature(listRaw) {
   return sig;
 }
 
+function computeNationStateSnapshotSignature(world) {
+  const nationCount = Math.max(1, Number(world?._nationCount) | 0);
+  let sig = `${nationCount}`;
+  for (let id = 1; id <= nationCount; id++) {
+    const n = world?.nation?.[id] || null;
+    sig += `|${id}:${n?.alive ? 1 : 0}:${n?.collapsed ? 1 : 0}:${Math.max(0, Number(world?.landOwnedCount?.[id]) | 0)}:${Math.max(0, Number(n?.capital) | 0)}`;
+  }
+  return sig;
+}
+
 function serializeEntitiesDelta(world, runtime, forceFull = false, optionsRaw = null) {
   const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : {};
   const now = nowMs();
@@ -3537,7 +3547,10 @@ function buildSnapshotPacket(
   const eventsTargetMs = territoryPriority
     ? Math.round(eventsIntervalMs * Math.max(2.6, territoryMetaScale * 1.10))
     : (loadShedding ? Math.round(eventsIntervalMs * 2.1) : eventsIntervalMs);
-  const includeStats = fullSync || forceStats || (
+  const currentNationStateSig = computeNationStateSnapshotSignature(world);
+  const previousNationStateSig = String(runtime?.lastNationStateSig || "");
+  const nationStateChanged = currentNationStateSig !== previousNationStateSig;
+  const includeStats = fullSync || forceStats || nationStateChanged || (
     statsDueMs >= statsTargetMs
   );
   const includeRelations = fullSync || forceRelations || (!spawnActive && (
@@ -3576,6 +3589,9 @@ function buildSnapshotPacket(
   };
 
   if (includeStats) runtime.lastStatsSnapshotAtMs = now;
+  if (includeStats && runtime && typeof runtime === "object") {
+    runtime.lastNationStateSig = currentNationStateSig;
+  }
   if (includeRelations) runtime.lastRelationsSnapshotAtMs = now;
   if (includeEvents) runtime.lastEventsSnapshotAtMs = now;
 

@@ -2637,6 +2637,265 @@ function rebuildMultiplayerBuildQueues(worldRef) {
   }
 }
 
+function estimateMultiplayerAuthoritativeServerTimeMs(serverTimeRaw = 0) {
+  const serverTime = Math.max(0, Number(serverTimeRaw) || 0);
+  if (serverTime > 0) return serverTime;
+  return Math.max(0, Date.now() + (Number(multiplayerServerOffsetMs) || 0));
+}
+
+function resolveQueuedBuildCountdown(basePendingRaw, baseRemainingRaw, baseTotalRaw, elapsedRaw = 0) {
+  const basePending = Math.max(0, Number(basePendingRaw) | 0);
+  const baseRemainingS = Math.max(0, Number(baseRemainingRaw) || 0);
+  const baseTotalS = Math.max(0, Number(baseTotalRaw) || 0);
+  const elapsedS = Math.max(0, Number(elapsedRaw) || 0);
+  if (!(basePending > 0) || !(baseRemainingS > 0.00001) || !(baseTotalS > 0.00001)) {
+    return {
+      pendingCount: basePending,
+      buildRemainingS: baseRemainingS,
+      buildTotalS: baseTotalS,
+      completedCount: 0
+    };
+  }
+  if (elapsedS < baseRemainingS) {
+    return {
+      pendingCount: basePending,
+      buildRemainingS: Math.max(0, baseRemainingS - elapsedS),
+      buildTotalS: baseTotalS,
+      completedCount: 0
+    };
+  }
+
+  let completedCount = 1;
+  let remainingElapsedS = Math.max(0, elapsedS - baseRemainingS);
+  if (basePending <= 1) {
+    return {
+      pendingCount: 0,
+      buildRemainingS: 0,
+      buildTotalS: 0,
+      completedCount
+    };
+  }
+
+  completedCount += Math.floor(remainingElapsedS / Math.max(0.1, baseTotalS));
+  if (completedCount >= basePending) {
+    return {
+      pendingCount: 0,
+      buildRemainingS: 0,
+      buildTotalS: 0,
+      completedCount: basePending
+    };
+  }
+
+  const cycleElapsedS = remainingElapsedS % Math.max(0.1, baseTotalS);
+  return {
+    pendingCount: Math.max(0, basePending - completedCount),
+    buildRemainingS: Math.max(0, baseTotalS - cycleElapsedS),
+    buildTotalS: baseTotalS,
+    completedCount
+  };
+}
+
+function stampMultiplayerAuthoritativeBuildState(worldRef, serverTimeRaw = 0) {
+  if (!worldRef) return;
+  const serverTimeMs = estimateMultiplayerAuthoritativeServerTimeMs(serverTimeRaw);
+  const structures = Array.isArray(worldRef.structures) ? worldRef.structures : [];
+  for (let i = 0; i < structures.length; i++) {
+    const st = structures[i];
+    if (!st || typeof st !== "object") continue;
+
+    const c = st?.data?.construction;
+    if (c && typeof c === "object") {
+      st._mpConstructionBasePendingCount = Math.max(0, Number(c.pendingCount) | 0);
+      st._mpConstructionBaseRemainingS = Math.max(0, Number(c.buildRemainingS) || 0);
+      st._mpConstructionBaseTotalS = Math.max(0, Number(c.buildTotalS) || 0);
+      st._mpConstructionSyncServerTimeMs = serverTimeMs;
+    }
+
+    const silo = st?.data?.missileSilo;
+    if (silo && typeof silo === "object") {
+      st._mpSiloBaseBuildType = String(silo.buildType || "");
+      st._mpSiloBaseReadyType = String(silo.readyType || "");
+      st._mpSiloBaseRemainingS = Math.max(0, Number(silo.buildRemainingS) || 0);
+      st._mpSiloBaseTotalS = Math.max(0, Number(silo.buildTotalS) || 0);
+      st._mpSiloSyncServerTimeMs = serverTimeMs;
+    }
+
+    const airbase = st?.data?.airbase;
+    if (airbase && typeof airbase === "object") {
+      st._mpAirbaseBaseReadyTransports = Math.max(0, Number(airbase.readyTransports) | 0);
+      st._mpAirbaseBaseRemainingS = Math.max(0, Number(airbase.buildRemainingS) || 0);
+      st._mpAirbaseBaseTotalS = Math.max(0, Number(airbase.buildTotalS) || 0);
+      st._mpAirbaseSyncServerTimeMs = serverTimeMs;
+    }
+  }
+}
+
+function ensureStampedMultiplayerBuildState(st, serverTimeMs) {
+  if (!st || typeof st !== "object") return;
+  const syncServerTimeMs = Math.max(0, Number(serverTimeMs) || 0);
+
+  const c = st?.data?.construction;
+  if (c && typeof c === "object" && !(Number(st._mpConstructionSyncServerTimeMs) > 0)) {
+    st._mpConstructionBasePendingCount = Math.max(0, Number(c.pendingCount) | 0);
+    st._mpConstructionBaseRemainingS = Math.max(0, Number(c.buildRemainingS) || 0);
+    st._mpConstructionBaseTotalS = Math.max(0, Number(c.buildTotalS) || 0);
+    st._mpConstructionSyncServerTimeMs = syncServerTimeMs;
+  }
+
+  const silo = st?.data?.missileSilo;
+  if (silo && typeof silo === "object" && !(Number(st._mpSiloSyncServerTimeMs) > 0)) {
+    st._mpSiloBaseBuildType = String(silo.buildType || "");
+    st._mpSiloBaseReadyType = String(silo.readyType || "");
+    st._mpSiloBaseRemainingS = Math.max(0, Number(silo.buildRemainingS) || 0);
+    st._mpSiloBaseTotalS = Math.max(0, Number(silo.buildTotalS) || 0);
+    st._mpSiloSyncServerTimeMs = syncServerTimeMs;
+  }
+
+  const airbase = st?.data?.airbase;
+  if (airbase && typeof airbase === "object" && !(Number(st._mpAirbaseSyncServerTimeMs) > 0)) {
+    st._mpAirbaseBaseReadyTransports = Math.max(0, Number(airbase.readyTransports) | 0);
+    st._mpAirbaseBaseRemainingS = Math.max(0, Number(airbase.buildRemainingS) || 0);
+    st._mpAirbaseBaseTotalS = Math.max(0, Number(airbase.buildTotalS) || 0);
+    st._mpAirbaseSyncServerTimeMs = syncServerTimeMs;
+  }
+}
+
+function advanceMultiplayerAuthoritativeBuildStates(worldRef) {
+  if (!worldRef || !isMultiplayerMatchEnabled()) return;
+  const estimatedServerTimeMs = estimateMultiplayerAuthoritativeServerTimeMs();
+  let structureCachesDirty = false;
+  let buildQueuesDirty = false;
+
+  if (worldRef._activeStructureBuildIds && typeof worldRef._activeStructureBuildIds[Symbol.iterator] === "function") {
+    const doneStructureIds = [];
+    for (const sid0 of worldRef._activeStructureBuildIds) {
+      const sid = sid0 | 0;
+      const st = worldRef._structureById?.get ? worldRef._structureById.get(sid) : null;
+      if (!st) {
+        doneStructureIds.push(sid);
+        continue;
+      }
+      ensureStampedMultiplayerBuildState(st, estimatedServerTimeMs);
+      const c = st?.data?.construction;
+      if (!c || typeof c !== "object") {
+        doneStructureIds.push(sid);
+        continue;
+      }
+      const elapsedS = Math.max(0, (estimatedServerTimeMs - (Number(st._mpConstructionSyncServerTimeMs) || estimatedServerTimeMs)) / 1000);
+      const next = resolveQueuedBuildCountdown(
+        st._mpConstructionBasePendingCount,
+        st._mpConstructionBaseRemainingS,
+        st._mpConstructionBaseTotalS,
+        elapsedS
+      );
+      const prevPending = Math.max(0, Number(c.pendingCount) | 0);
+      c.pendingCount = Math.max(0, next.pendingCount | 0);
+      c.buildRemainingS = Math.max(0, Number(next.buildRemainingS) || 0);
+      c.buildTotalS = Math.max(0, Number(next.buildTotalS) || 0);
+      if (prevPending !== c.pendingCount) {
+        structureCachesDirty = true;
+        buildQueuesDirty = true;
+      }
+      if ((c.pendingCount | 0) <= 0) doneStructureIds.push(sid);
+    }
+    for (let i = 0; i < doneStructureIds.length; i++) {
+      worldRef._activeStructureBuildIds.delete(doneStructureIds[i] | 0);
+    }
+  }
+
+  if (worldRef._activeSiloBuildIds && typeof worldRef._activeSiloBuildIds[Symbol.iterator] === "function") {
+    const doneSiloIds = [];
+    for (const sid0 of worldRef._activeSiloBuildIds) {
+      const sid = sid0 | 0;
+      const st = worldRef._structureById?.get ? worldRef._structureById.get(sid) : null;
+      if (!st) {
+        doneSiloIds.push(sid);
+        continue;
+      }
+      ensureStampedMultiplayerBuildState(st, estimatedServerTimeMs);
+      const d = st?.data?.missileSilo;
+      if (!d || typeof d !== "object") {
+        doneSiloIds.push(sid);
+        continue;
+      }
+      const baseBuildType = String(st._mpSiloBaseBuildType || "");
+      const baseReadyType = String(st._mpSiloBaseReadyType || "");
+      const baseRemainingS = Math.max(0, Number(st._mpSiloBaseRemainingS) || 0);
+      const baseTotalS = Math.max(0, Number(st._mpSiloBaseTotalS) || 0);
+      const elapsedS = Math.max(0, (estimatedServerTimeMs - (Number(st._mpSiloSyncServerTimeMs) || estimatedServerTimeMs)) / 1000);
+      const wasBuilding = !!(String(d.buildType || "").trim() && (Number(d.buildRemainingS) || 0) > 0.00001);
+
+      if (baseBuildType && baseRemainingS > 0.00001 && baseTotalS > 0.00001 && elapsedS >= baseRemainingS) {
+        d.buildType = "";
+        d.buildRemainingS = 0;
+        d.buildTotalS = 0;
+        d.readyType = baseReadyType || baseBuildType;
+        doneSiloIds.push(sid);
+      } else {
+        d.buildType = baseBuildType;
+        d.buildRemainingS = (baseBuildType && baseRemainingS > 0.00001)
+          ? Math.max(0, baseRemainingS - elapsedS)
+          : 0;
+        d.buildTotalS = baseBuildType ? baseTotalS : 0;
+        d.readyType = baseReadyType;
+      }
+
+      const isBuildingNow = !!(String(d.buildType || "").trim() && (Number(d.buildRemainingS) || 0) > 0.00001);
+      if (wasBuilding !== isBuildingNow) buildQueuesDirty = true;
+      if (!isBuildingNow) doneSiloIds.push(sid);
+    }
+    for (let i = 0; i < doneSiloIds.length; i++) {
+      worldRef._activeSiloBuildIds.delete(doneSiloIds[i] | 0);
+    }
+  }
+
+  if (worldRef._activeAirbaseBuildIds && typeof worldRef._activeAirbaseBuildIds[Symbol.iterator] === "function") {
+    const doneAirbaseIds = [];
+    for (const sid0 of worldRef._activeAirbaseBuildIds) {
+      const sid = sid0 | 0;
+      const st = worldRef._structureById?.get ? worldRef._structureById.get(sid) : null;
+      if (!st) {
+        doneAirbaseIds.push(sid);
+        continue;
+      }
+      ensureStampedMultiplayerBuildState(st, estimatedServerTimeMs);
+      const d = st?.data?.airbase;
+      if (!d || typeof d !== "object") {
+        doneAirbaseIds.push(sid);
+        continue;
+      }
+      const baseReadyTransports = Math.max(0, Number(st._mpAirbaseBaseReadyTransports) | 0);
+      const baseRemainingS = Math.max(0, Number(st._mpAirbaseBaseRemainingS) || 0);
+      const baseTotalS = Math.max(0, Number(st._mpAirbaseBaseTotalS) || 0);
+      const elapsedS = Math.max(0, (estimatedServerTimeMs - (Number(st._mpAirbaseSyncServerTimeMs) || estimatedServerTimeMs)) / 1000);
+      const wasBuilding = (Number(d.buildRemainingS) || 0) > 0.00001;
+
+      if (baseRemainingS > 0.00001 && baseTotalS > 0.00001 && elapsedS >= baseRemainingS) {
+        d.buildRemainingS = 0;
+        d.buildTotalS = 0;
+        d.readyTransports = Math.max(0, baseReadyTransports + 1);
+        doneAirbaseIds.push(sid);
+      } else {
+        d.buildRemainingS = (baseRemainingS > 0.00001)
+          ? Math.max(0, baseRemainingS - elapsedS)
+          : 0;
+        d.buildTotalS = (baseRemainingS > 0.00001) ? baseTotalS : 0;
+        d.readyTransports = baseReadyTransports;
+      }
+
+      const isBuildingNow = (Number(d.buildRemainingS) || 0) > 0.00001;
+      if (wasBuilding !== isBuildingNow) buildQueuesDirty = true;
+      if (!isBuildingNow) doneAirbaseIds.push(sid);
+    }
+    for (let i = 0; i < doneAirbaseIds.length; i++) {
+      worldRef._activeAirbaseBuildIds.delete(doneAirbaseIds[i] | 0);
+    }
+  }
+
+  if (structureCachesDirty) rebuildMultiplayerStructureCaches(worldRef);
+  if (buildQueuesDirty) rebuildMultiplayerBuildQueues(worldRef);
+}
+
 function maxEntityId(list, fallback = 1) {
   if (!Array.isArray(list) || list.length <= 0) return Math.max(1, fallback | 0);
   let max = Math.max(0, fallback | 0);
@@ -2761,7 +3020,21 @@ function applyMultiplayerNationStats(worldRef, nationStats) {
     const cur = (worldRef.nation[id] && typeof worldRef.nation[id] === "object")
       ? worldRef.nation[id]
       : { id };
-    worldRef.nation[id] = { ...cur, ...row, id };
+    const next = { ...cur, ...row, id };
+    if (Object.prototype.hasOwnProperty.call(next, "capital")) {
+      const capId = Math.max(0, Number(next.capital) | 0);
+      if (capId > 0) {
+        const capStruct = worldRef._structureById?.get
+          ? worldRef._structureById.get(capId)
+          : null;
+        next.capital = (capStruct && String(capStruct.type || "") === "capital" && (capStruct.owner | 0) === id)
+          ? capId
+          : null;
+      } else {
+        next.capital = null;
+      }
+    }
+    worldRef.nation[id] = next;
     if (worldRef.landOwnedCount && id < worldRef.landOwnedCount.length && Object.prototype.hasOwnProperty.call(row, "landOwnedCount")) {
       worldRef.landOwnedCount[id] = Math.max(0, Number(row.landOwnedCount) | 0);
     }
@@ -3463,6 +3736,9 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
     : filterMultiplayerChangedEntitiesForPrediction(packet.changedEntities, tick, packetServerTime);
   if (filteredEntities && typeof filteredEntities === "object") {
     applyMultiplayerEntities(worldRef, filteredEntities);
+    if (Array.isArray(filteredEntities.structures)) {
+      stampMultiplayerAuthoritativeBuildState(worldRef, packetServerTime);
+    }
   }
   const allowStats = isFullSync || !shouldSkipMultiplayerPredictedCategory("stats", tick, packetServerTime);
   if (allowStats && Array.isArray(packet.humanNationStats)) {
@@ -3478,7 +3754,7 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
     applyMultiplayerEvents(worldRef, packet.events, packet.globalEvents);
   }
   applyMultiplayerWorldMeta(worldRef, packet);
-  maybeRefreshMultiplayerDerivedState(worldRef, isFullSync);
+  maybeRefreshMultiplayerDerivedState(worldRef, isFullSync || ownerApplied > 0);
 
   // Full-map pixel rebuild is expensive; do it only on initial authoritative attach.
   if (isFullSync && ownerApplied > 0 && !hadAuthoritativeSync && typeof worldRef._rebuildAllPixels === "function") {
@@ -3569,6 +3845,9 @@ function applyAuthoritativePacketToWorld(worldRef, packet, optionsRaw = null) {
 
   if (packet.changedEntities && typeof packet.changedEntities === "object") {
     applyMultiplayerEntities(worldRef, packet.changedEntities);
+    if (Array.isArray(packet.changedEntities.structures)) {
+      stampMultiplayerAuthoritativeBuildState(worldRef, packet?.serverTime);
+    }
   }
   if (Array.isArray(packet.humanNationStats)) {
     applyMultiplayerNationStats(worldRef, packet.humanNationStats);
@@ -3583,7 +3862,7 @@ function applyAuthoritativePacketToWorld(worldRef, packet, optionsRaw = null) {
     applyMultiplayerEvents(worldRef, packet.events, packet.globalEvents);
   }
   applyMultiplayerWorldMeta(worldRef, packet);
-  maybeRefreshMultiplayerDerivedState(worldRef, isFullSync);
+  maybeRefreshMultiplayerDerivedState(worldRef, isFullSync || ownerApplied > 0);
 
   if (isFullSync && ownerApplied > 0 && typeof worldRef._rebuildAllPixels === "function") {
     try {
@@ -14672,6 +14951,9 @@ function boot() {
     if (multiplayerClockActive && soloSimulationWorker) {
       stopSoloSimulationWorker();
     }
+    if (multiplayerClockActive && world) {
+      advanceMultiplayerAuthoritativeBuildStates(world);
+    }
     if (multiplayerClockActive && Array.isArray(world?._pixelWriteList) && world._pixelWriteList.length > 0) {
       flushMultiplayerPixelWrites(world, 0);
       if (world._pixelWriteList.length > 0) world.dirty = true;
@@ -16837,6 +17119,10 @@ function isGameplayLandTile(worldRef, idxRaw) {
   const idx = idxRaw | 0;
   const total = Math.max(0, (w.w | 0) * (w.h | 0));
   if (idx < 0 || idx >= total) return false;
+
+  if (typeof w._isGameplayLand === "function") {
+    return !!w._isGameplayLand(idx);
+  }
 
   const land = w.land;
   if (land && idx < land.length && !!land[idx]) return true;

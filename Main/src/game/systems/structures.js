@@ -64,6 +64,58 @@ export function installStructures(World) {
     return true;
   }
 
+  World.prototype._findPortWaterAccess = function(cx, cy, compId = 0) {
+    const x0 = cx | 0;
+    const y0 = cy | 0;
+    const w = this.w | 0;
+    const h = this.h | 0;
+    const wantComp = compId | 0;
+    const seen = new Set();
+    let best = null;
+    let bestD2 = Number.POSITIVE_INFINITY;
+
+    const consider = (x, y) => {
+      if (x < 0 || y < 0 || x >= w || y >= h) return;
+      const idx = (y * w + x) | 0;
+      if (this.land[idx]) return;
+      if (wantComp && this._waterComp && ((this._waterComp[idx] | 0) !== wantComp)) return;
+      if (seen.has(idx)) return;
+      seen.add(idx);
+
+      const dx = x - x0;
+      const dy = y - y0;
+      const d2 = (dx * dx) + (dy * dy);
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        best = { x: x | 0, y: y | 0 };
+      }
+    };
+
+    for (let dy = -STRUCT_FOOTPRINT_R; dy <= STRUCT_FOOTPRINT_R; dy++) {
+      for (let dx = -STRUCT_FOOTPRINT_R; dx <= STRUCT_FOOTPRINT_R; dx++) {
+        const x = x0 + dx;
+        const y = y0 + dy;
+        if (x < 0 || y < 0 || x >= w || y >= h) continue;
+
+        const idx = (y * w + x) | 0;
+        if (!this.land[idx]) {
+          consider(x, y);
+          continue;
+        }
+
+        consider(x - 1, y);
+        consider(x + 1, y);
+        consider(x, y - 1);
+        consider(x, y + 1);
+      }
+    }
+    return best;
+  }
+
+  World.prototype._hasPortWaterAccess = function(cx, cy) {
+    return !!this._findPortWaterAccess(cx, cy);
+  }
+
   World.prototype._canPlaceCoastalRigFootprint = function(ownerId, cx, cy) {
     const oid = ownerId | 0;
     const x0 = cx | 0, y0 = cy | 0;

@@ -3957,8 +3957,7 @@ World.prototype._applyRiverWetlands = function(sea) {
               const idx = y * this.w + x;
               if (!this.land[idx]) continue;
               if ((this.owner[idx] | 0) !== ownerIdInt) continue;
-              const sid = this._structAt[idx] | 0;
-              if (sid > 0) continue;
+              if (!this._canPlaceStructureFootprint(ownerIdInt, x, y)) continue;
               const dx = x - cx;
               const dy = y - cy;
               const d2 = dx * dx + dy * dy;
@@ -3978,8 +3977,7 @@ World.prototype._applyRiverWetlands = function(sea) {
             if (idx < 0 || idx >= (this.w * this.h)) continue;
             if (!this.land[idx]) continue;
             if ((this.owner[idx] | 0) !== ownerIdInt) continue;
-            const sid = this._structAt[idx] | 0;
-            if (sid > 0) continue;
+            if (!this._canPlaceStructureFootprint(ownerIdInt, idx % this.w, (idx / this.w) | 0)) continue;
             return { x: idx % this.w, y: (idx / this.w) | 0 };
           }
         }

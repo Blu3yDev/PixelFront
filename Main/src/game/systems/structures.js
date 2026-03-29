@@ -11,21 +11,22 @@ export function installStructures(World) {
     const x0 = cx | 0, y0 = cy | 0;
     const w = this.w, h = this.h;
 
-    // Footprint bounds: keep it simple and deterministic.
+    // Land structures must keep their full 3x3 footprint on owned land.
+    // Only validating the center tile lets buildings visually spill into
+    // ocean/enemy territory, which shows up most clearly in multiplayer.
     for (let dy = -STRUCT_FOOTPRINT_R; dy <= STRUCT_FOOTPRINT_R; dy++) {
       for (let dx = -STRUCT_FOOTPRINT_R; dx <= STRUCT_FOOTPRINT_R; dx++) {
         const x = x0 + dx, y = y0 + dy;
         if (x < 0 || y < 0 || x >= w || y >= h) return false;
         const idx = y * w + x;
-
-        // Collision only matters on tiles you actually own (prevents "border griefing").
-        if ((this.owner[idx] | 0) !== oid) continue;
+        if (!this.land[idx]) return false;
+        if ((this.owner[idx] | 0) !== oid) return false;
 
         const sid = this._structAt[idx] | 0;
         if (!sid) continue;
 
         const st = this._structureById.get(sid);
-        if (st && ((st.owner | 0) === oid)) return false;
+        if (st) return false;
 
         // Stale footprint from a removed structure.
         if (!st) this._structAt[idx] = 0;

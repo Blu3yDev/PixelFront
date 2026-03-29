@@ -5973,19 +5973,41 @@ export class Renderer {
       const n = nations[id];
       if (!n || !n.alive) continue;
 
-      const pos = world.getNationLabelPos ? world.getNationLabelPos(id) : null;
-      if (!pos) continue;
-
-      const posX = pos.x | 0;
-      const posY = pos.y | 0;
       let snappedLabel = this._labelSnapCache.get(id | 0) || null;
-      if (!snappedLabel || (snappedLabel.srcX | 0) !== posX || (snappedLabel.srcY | 0) !== posY) {
+      const pos = world.getNationLabelPos ? world.getNationLabelPos(id) : null;
+      const cachedTileStillOwned = !!(snappedLabel && tileOwnedBy(snappedLabel.x | 0, snappedLabel.y | 0, id));
+      if (!pos && !cachedTileStillOwned) {
+        this._labelSnapCache.delete(id | 0);
+        continue;
+      }
+
+      const posX = pos
+        ? (pos.x | 0)
+        : ((Number.isFinite(snappedLabel?.srcX) ? snappedLabel.srcX : snappedLabel?.x) | 0);
+      const posY = pos
+        ? (pos.y | 0)
+        : ((Number.isFinite(snappedLabel?.srcY) ? snappedLabel.srcY : snappedLabel?.y) | 0);
+      const needsResnap = !snappedLabel
+        || (snappedLabel.srcX | 0) !== posX
+        || (snappedLabel.srcY | 0) !== posY
+        || (snappedLabel.ownerVersion | 0) !== ownerVersion
+        || !cachedTileStillOwned;
+      if (needsResnap) {
         const snap = snapLabelToOwnerTile(posX, posY, id, 28);
         if (!snap) {
-          this._labelSnapCache.delete(id | 0);
-          continue;
+          if (!cachedTileStillOwned || !snappedLabel) {
+            this._labelSnapCache.delete(id | 0);
+            continue;
+          }
+          snappedLabel = {
+            ...snappedLabel,
+            srcX: posX,
+            srcY: posY,
+            ownerVersion
+          };
+        } else {
+          snappedLabel = { srcX: posX, srcY: posY, x: snap.x | 0, y: snap.y | 0, ownerVersion };
         }
-        snappedLabel = { srcX: posX, srcY: posY, x: snap.x | 0, y: snap.y | 0 };
         this._labelSnapCache.set(id | 0, snappedLabel);
       }
       if (!snappedLabel) continue;

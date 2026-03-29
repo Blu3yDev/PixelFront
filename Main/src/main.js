@@ -251,7 +251,7 @@ const PERFORMANCE_PROFILE_TIERS = Object.freeze([
   Object.freeze({ qualityTier: 0, workerEnabled: false, maxPixelUploadBinsPerFrame: 0, showLabels: true, showShips: true, showAtmosphere: true, renderScale: 1.00, lowPowerOverlays: false, overlayCadenceMul: 1.00, simCadenceMul: 1.00, uiCadenceMul: 1.00 }),
   Object.freeze({ qualityTier: 1, workerEnabled: false, maxPixelUploadBinsPerFrame: 220, showLabels: true, showShips: true, showAtmosphere: true, renderScale: 1.00, lowPowerOverlays: false, overlayCadenceMul: 1.08, simCadenceMul: 1.10, uiCadenceMul: 1.10 }),
   Object.freeze({ qualityTier: 2, workerEnabled: false, maxPixelUploadBinsPerFrame: 160, showLabels: true, showShips: true, showAtmosphere: false, renderScale: 0.90, lowPowerOverlays: true, overlayCadenceMul: 1.16, simCadenceMul: 1.24, uiCadenceMul: 1.22 }),
-  Object.freeze({ qualityTier: 3, workerEnabled: false, maxPixelUploadBinsPerFrame: 112, showLabels: false, showShips: true, showAtmosphere: false, renderScale: 0.78, lowPowerOverlays: true, overlayCadenceMul: 1.26, simCadenceMul: 1.42, uiCadenceMul: 1.34 })
+  Object.freeze({ qualityTier: 3, workerEnabled: false, maxPixelUploadBinsPerFrame: 112, showLabels: true, showShips: true, showAtmosphere: false, renderScale: 0.78, lowPowerOverlays: true, overlayCadenceMul: 1.26, simCadenceMul: 1.42, uiCadenceMul: 1.34 })
 ]);
 const SOLO_WORKER_COMMAND_STRATEGY = Object.freeze({
   setAttackRatio: "always",
@@ -6123,40 +6123,40 @@ function isSessionTerminalStateNow() {
   return !!(world.gameOver && !playerAliveNow());
 }
 
-const BUILD_HOTKEY_BUTTON_IDS = Object.freeze({
-  Digit1: "btnCity",
-  Numpad1: "btnCity",
-  "1": "btnCity",
-  Digit2: "btnFactory",
-  Numpad2: "btnFactory",
-  "2": "btnFactory",
-  Digit3: "btnBarracks",
-  Numpad3: "btnBarracks",
-  "3": "btnBarracks",
-  Digit4: "btnDefencePost",
-  Numpad4: "btnDefencePost",
-  "4": "btnDefencePost",
-  Digit5: "btnPort",
-  Numpad5: "btnPort",
-  "5": "btnPort",
-  Digit6: "btnCoastalRig",
-  Numpad6: "btnCoastalRig",
-  "6": "btnCoastalRig",
-  Digit7: "btnResearchLab",
-  Numpad7: "btnResearchLab",
-  "7": "btnResearchLab",
-  Digit8: "btnMissileSilo",
-  Numpad8: "btnMissileSilo",
-  "8": "btnMissileSilo",
-  Digit9: "btnAbmLauncher",
-  Numpad9: "btnAbmLauncher",
-  "9": "btnAbmLauncher",
-  Minus: "btnRadarStation",
-  NumpadSubtract: "btnRadarStation",
-  "-": "btnRadarStation",
-  Digit0: "btnAirbase",
-  Numpad0: "btnAirbase",
-  "0": "btnAirbase"
+const BUILD_HOTKEY_MODES = Object.freeze({
+  Digit1: "city",
+  Numpad1: "city",
+  "1": "city",
+  Digit2: "factory",
+  Numpad2: "factory",
+  "2": "factory",
+  Digit3: "barracks",
+  Numpad3: "barracks",
+  "3": "barracks",
+  Digit4: "defence_post",
+  Numpad4: "defence_post",
+  "4": "defence_post",
+  Digit5: "port",
+  Numpad5: "port",
+  "5": "port",
+  Digit6: "coastal_rig",
+  Numpad6: "coastal_rig",
+  "6": "coastal_rig",
+  Digit7: "research_lab",
+  Numpad7: "research_lab",
+  "7": "research_lab",
+  Digit8: "missile_silo",
+  Numpad8: "missile_silo",
+  "8": "missile_silo",
+  Digit9: "abm_launcher",
+  Numpad9: "abm_launcher",
+  "9": "abm_launcher",
+  Minus: "radar_station",
+  NumpadSubtract: "radar_station",
+  "-": "radar_station",
+  Digit0: "airbase",
+  Numpad0: "airbase",
+  "0": "airbase"
 });
 
 const QUICK_LAUNCH_HOTKEY_BUTTON_IDS = Object.freeze({
@@ -14804,11 +14804,10 @@ function boot() {
         return;
       }
 
-      const hotBtnId = resolveHotkeyButtonId(BUILD_HOTKEY_BUTTON_IDS, e);
-      if (hotBtnId) {
+      const hotBuildType = resolveHotkeyButtonId(BUILD_HOTKEY_MODES, e);
+      if (hotBuildType) {
         e.preventDefault();
-        const btn = document.getElementById(hotBtnId);
-        if (btn) btn.click();
+        if (hud.toggleBuildMode) hud.toggleBuildMode(hotBuildType);
         return;
       }
     }

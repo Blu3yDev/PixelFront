@@ -1000,16 +1000,24 @@ export function createHUD() {
     { el: btnAirbase, type: "airbase" }
   ];
 
-  for (const b of buildBtns) {
-    b.el.addEventListener("click", () => {
-      const lockState = buildLockState[b.type] || { locked: false, reason: "" };
-      if (lockState.locked) {
-        showActionWarning(lockState.reason || `${title(b.type)} is locked.`);
-        return;
+  function tryToggleBuildMode(typeRaw, options = null) {
+    const type = String(typeRaw || "");
+    if (!type || !buildBtnMeta[type]) return false;
+    const showWarning = options?.showWarning !== false;
+    const lockState = buildLockState[type] || { locked: false, reason: "" };
+    if (lockState.locked) {
+      if (showWarning) {
+        showActionWarning(lockState.reason || `${title(type)} is locked.`);
       }
-      setBuildMode(buildMode === b.type ? null : b.type);
-      if (cbBuildMode) cbBuildMode(buildMode);
-    });
+      return false;
+    }
+    setBuildMode(buildMode === type ? null : type);
+    if (cbBuildMode) cbBuildMode(buildMode);
+    return true;
+  }
+
+  for (const b of buildBtns) {
+    b.el.addEventListener("click", () => tryToggleBuildMode(b.type));
     b.el.addEventListener("mouseenter", () => {
       if (shouldSuppressBuildHover()) return;
       showBuildTooltip(b.type);
@@ -2226,6 +2234,7 @@ export function createHUD() {
 
     onBuildMode: (cb) => (cbBuildMode = cb),
     getBuildMode: () => buildMode,
+    toggleBuildMode: (type, options = null) => tryToggleBuildMode(type, options || undefined),
     clearBuildMode: () => setBuildMode(null),
 
     // Update build costs displayed on the build buttons and in the build-mode label.

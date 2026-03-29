@@ -1469,32 +1469,13 @@ export function installBorders(World) {
           bl = lerp(bl, 182, 0.14 * sediment);
         }
 
-        // Blend nearby land colors with 8-neighbor sampling for smoother coast transitions.
+        // Keep shallow shelf water clearly readable as water instead of tinting it toward land colors.
         if (coastDist <= 2.5 || depth < 0.24) {
-          let lr = 0, lg = 0, lb = 0, count = 0;
-          for (let oy = -1; oy <= 1; oy++) {
-            const yy = y + oy;
-            if (yy < 0 || yy >= this.h) continue;
-            for (let ox = -1; ox <= 1; ox++) {
-              if (ox === 0 && oy === 0) continue;
-              const xx = x + ox;
-              if (xx < 0 || xx >= this.w) continue;
-              const ni = yy * this.w + xx;
-              if (!this.land[ni]) continue;
-              const bc = BIOME_COLORS[this.biome[ni] | 0] || { r: 90, g: 120, b: 90 };
-              lr += bc.r;
-              lg += bc.g;
-              lb += bc.b;
-              count++;
-            }
-          }
-
-          if (count > 0) {
-            const inv = 1 / count;
-            const blendAmt = clamp01((0.26 - depth) / 0.26) * 0.16 + clamp01((2.6 - coastDist) / 2.6) * 0.08;
-            r = lerp(r, lr * inv, blendAmt);
-            g = lerp(g, lg * inv, blendAmt);
-            bl = lerp(bl, lb * inv, blendAmt * 0.9);
+          const shelfLift = clamp01((0.24 - depth) / 0.24) * 0.12 + clamp01((2.5 - coastDist) / 2.5) * 0.06;
+          if (shelfLift > 0.001) {
+            r = lerp(r, 78, shelfLift);
+            g = lerp(g, 138, shelfLift);
+            bl = lerp(bl, 198, shelfLift);
           }
         }
 

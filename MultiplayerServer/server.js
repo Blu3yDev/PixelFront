@@ -4110,6 +4110,7 @@ function flushRuntimeTick(lobby, runtime, now) {
   }
   runtime.backpressuredSockets = bufferedSockets;
   runtime.mediumBackpressuredSockets = mediumBufferedSockets;
+  const tileBacklogSize = Math.max(0, Number(runtime?.tileDeltaBacklog?.size) | 0);
 
   const memoryScale = updateRuntimeMemoryPressure(lobby, runtime, now);
   let snapshotIntervalMs = MATCH_SNAPSHOT_INTERVAL_MS;
@@ -4144,6 +4145,16 @@ function flushRuntimeTick(lobby, runtime, now) {
         ? Math.max(MATCH_SNAPSHOT_INTERVAL_MIN_MS, 42)
         : MATCH_SNAPSHOT_INTERVAL_MIN_MS;
   snapshotIntervalMs = Math.max(playerMinSnapshotIntervalMs, Math.min(MATCH_SNAPSHOT_INTERVAL_MAX_MS, snapshotIntervalMs));
+  if ((runtime.backpressuredSockets | 0) <= 0 && tileBacklogSize > MATCH_TILE_DELTA_DRAIN_MIN) {
+    const territoryCatchupMul = tileBacklogSize > (MATCH_TILE_DELTA_CAP * 4)
+      ? 0.58
+      : tileBacklogSize > (MATCH_TILE_DELTA_CAP * 2)
+        ? 0.70
+        : tileBacklogSize > MATCH_TILE_DELTA_CAP
+          ? 0.82
+          : 0.92;
+    snapshotIntervalMs = Math.max(playerMinSnapshotIntervalMs, Math.round(snapshotIntervalMs * territoryCatchupMul));
+  }
 
   let territoryPulseIntervalMs = MATCH_TERRITORY_PULSE_INTERVAL_MS;
   if (loadScale > 1) territoryPulseIntervalMs = Math.round(territoryPulseIntervalMs * (1 + ((loadScale - 1) * 0.22)));
@@ -4151,8 +4162,18 @@ function flushRuntimeTick(lobby, runtime, now) {
   if (runtime.simAccMs > (stepMs * 1.25)) territoryPulseIntervalMs = Math.round(territoryPulseIntervalMs * 1.08);
   if ((runtime.backpressuredSockets | 0) > 0) territoryPulseIntervalMs = Math.round(territoryPulseIntervalMs * 1.20);
   else if ((runtime.mediumBackpressuredSockets | 0) > 0) territoryPulseIntervalMs = Math.round(territoryPulseIntervalMs * 1.10);
+  if ((runtime.backpressuredSockets | 0) <= 0 && tileBacklogSize > MATCH_TILE_DELTA_DRAIN_MIN) {
+    const territoryCatchupMul = tileBacklogSize > (MATCH_TILE_DELTA_CAP * 4)
+      ? 0.46
+      : tileBacklogSize > (MATCH_TILE_DELTA_CAP * 2)
+        ? 0.58
+        : tileBacklogSize > MATCH_TILE_DELTA_CAP
+          ? 0.72
+          : 0.88;
+    territoryPulseIntervalMs = Math.round(territoryPulseIntervalMs * territoryCatchupMul);
+  }
   territoryPulseIntervalMs = Math.max(
-    MATCH_TERRITORY_PULSE_INTERVAL_MS,
+    Math.min(MATCH_TERRITORY_PULSE_INTERVAL_MS, 12),
     Math.min(MATCH_TERRITORY_PULSE_INTERVAL_MAX_MS, territoryPulseIntervalMs)
   );
 
@@ -4206,7 +4227,6 @@ function flushRuntimeTick(lobby, runtime, now) {
     && (runtime.mediumBackpressuredSockets | 0) <= 0
     && runtime.simAccMs <= (stepMs * 1.1)
     && (now - lastSnapshotAtMs) >= accelIntervalMs;
-  const tileBacklogSize = Math.max(0, Number(runtime?.tileDeltaBacklog?.size) | 0);
   const territoryPulseDue = tileBacklogSize > 0
     && !due
     && !forceDue

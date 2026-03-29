@@ -2952,6 +2952,44 @@ function applyMultiplayerEntities(worldRef, changedEntities) {
   }
 }
 
+function reconcileMultiplayerStructuresToTerritory(worldRef) {
+  if (!worldRef || !Array.isArray(worldRef.structures)) return false;
+  const ownerArr = worldRef.owner;
+  const landArr = worldRef.land;
+  const worldW = worldRef.w | 0;
+  const worldH = worldRef.h | 0;
+  if (!ownerArr || !landArr || !(worldW > 0) || !(worldH > 0)) return false;
+
+  let changed = false;
+  for (let i = 0; i < worldRef.structures.length; i++) {
+    const st = worldRef.structures[i];
+    if (!st || typeof st !== "object") continue;
+    const x = Number(st.x) | 0;
+    const y = Number(st.y) | 0;
+    if (x < 0 || y < 0 || x >= worldW || y >= worldH) continue;
+    const idx = y * worldW + x;
+    if (!landArr[idx]) continue;
+
+    const tileOwner = Math.max(0, Number(ownerArr[idx]) | 0);
+    const structOwner = Math.max(0, Number(st.owner) | 0);
+    if (tileOwner <= OWNER.NONE || tileOwner === structOwner) continue;
+
+    const type = String(st.type || "");
+    if (type === "capital") {
+      st.type = "city";
+      st.owner = tileOwner;
+      changed = true;
+      continue;
+    }
+
+    st.owner = tileOwner;
+    changed = true;
+  }
+
+  if (changed) rebuildMultiplayerStructureCaches(worldRef);
+  return changed;
+}
+
 function syncNationFlagsFromAuthoritative(worldRef) {
   if (!worldRef || !Array.isArray(worldRef.nation)) return;
   let flagsChanged = false;
@@ -3385,6 +3423,24 @@ function flushMultiplayerPixelWrites(worldRef, ownerAppliedHint = 0) {
   const ownerApplied = Math.max(0, Number(ownerAppliedHint) | 0);
   const rawGap = Math.max(0, (multiplayerLatestServerTick | 0) - (multiplayerLastAppliedTick | 0));
   const gapTicks = Math.max(0, rawGap - MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS);
+  const needsHardVisualCatchup = (
+    pendingWrites >= 140000 ||
+    ownerApplied >= 90000 ||
+    (gapTicks >= MULTIPLAYER_CATCHUP_HARD_GAP_TICKS && pendingWrites >= 60000)
+  );
+  if (needsHardVisualCatchup && typeof worldRef._rebuildAllPixels === "function") {
+    try {
+      worldRef._rebuildAllPixels();
+      if (typeof worldRef._rebuildAllBorders === "function") worldRef._rebuildAllBorders();
+      if (Array.isArray(worldRef._pixelWriteList)) worldRef._pixelWriteList.length = 0;
+      if (Array.isArray(worldRef._pixelDeferredList)) worldRef._pixelDeferredList.length = 0;
+      worldRef.dirty = true;
+      return;
+    } catch {
+      // Fall through to incremental flushing if full rebuild fails.
+    }
+  }
+
   let maxPasses = 4;
   let frameBudgetMs = 2.8;
   if (pendingWrites >= 24000 || gapTicks >= MULTIPLAYER_CATCHUP_SOFT_GAP_TICKS) {
@@ -3402,6 +3458,10 @@ function flushMultiplayerPixelWrites(worldRef, ownerAppliedHint = 0) {
   if (ownerApplied >= 50000) {
     maxPasses = Math.max(maxPasses, 20);
     frameBudgetMs = Math.max(frameBudgetMs, 15.2);
+  }
+  if (pendingWrites >= 90000 || ownerApplied >= 70000) {
+    maxPasses = Math.max(maxPasses, 24);
+    frameBudgetMs = Math.max(frameBudgetMs, 18.5);
   }
   const hasPerfNow = (typeof performance !== "undefined" && performance && typeof performance.now === "function");
   const startMs = hasPerfNow ? performance.now() : 0;
@@ -3734,11 +3794,15 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
   const filteredEntities = isFullSync
     ? packet.changedEntities
     : filterMultiplayerChangedEntitiesForPrediction(packet.changedEntities, tick, packetServerTime);
+  const structureSnapshotApplied = !!(filteredEntities && Array.isArray(filteredEntities.structures));
   if (filteredEntities && typeof filteredEntities === "object") {
     applyMultiplayerEntities(worldRef, filteredEntities);
-    if (Array.isArray(filteredEntities.structures)) {
+    if (structureSnapshotApplied) {
       stampMultiplayerAuthoritativeBuildState(worldRef, packetServerTime);
     }
+  }
+  if (ownerApplied > 0 && !structureSnapshotApplied) {
+    reconcileMultiplayerStructuresToTerritory(worldRef);
   }
   const allowStats = isFullSync || !shouldSkipMultiplayerPredictedCategory("stats", tick, packetServerTime);
   if (allowStats && Array.isArray(packet.humanNationStats)) {
@@ -3848,6 +3912,9 @@ function applyAuthoritativePacketToWorld(worldRef, packet, optionsRaw = null) {
     if (Array.isArray(packet.changedEntities.structures)) {
       stampMultiplayerAuthoritativeBuildState(worldRef, packet?.serverTime);
     }
+  }
+  if (ownerApplied > 0 && !Array.isArray(packet?.changedEntities?.structures)) {
+    reconcileMultiplayerStructuresToTerritory(worldRef);
   }
   if (Array.isArray(packet.humanNationStats)) {
     applyMultiplayerNationStats(worldRef, packet.humanNationStats);

@@ -1174,6 +1174,21 @@ export function installMap(World) {
       this.totalLand = 0;
       for (let i = 0; i < n; i++) if (land[i]) this.totalLand++;
 
+      // Topology cleanup can flip tiny coastal/island pixels back to water after the
+      // neutral Earth colors have already been baked. Sync those caches back to the
+      // authoritative land mask so we do not render non-existent coast pixels as land.
+      if (earthNeutralRgb) {
+        for (let i = 0; i < n; i++) {
+          if (land[i]) continue;
+          const dst = i * 3;
+          earthNeutralRgb[dst] = 52;
+          earthNeutralRgb[dst + 1] = 96;
+          earthNeutralRgb[dst + 2] = 156;
+          if (earthCountryId) earthCountryId[i] = 0;
+          if (earthCountryBorder) earthCountryBorder[i] = 0;
+        }
+      }
+
       let countryCoverage = null;
       if (earthCountryId) {
         for (let i = 0; i < n; i++) {

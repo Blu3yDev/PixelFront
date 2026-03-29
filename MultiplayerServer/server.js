@@ -2963,6 +2963,19 @@ function appendAllClaimedOwnerTiles(world, changedTilesRaw, maxAdditionalRaw) {
   return changedTiles;
 }
 
+function computeStructureSnapshotSignature(listRaw) {
+  const rows = Array.isArray(listRaw) ? listRaw : [];
+  let sig = `${rows.length}`;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] || {};
+    const construction = (row.data && typeof row.data === "object" && row.data.construction && typeof row.data.construction === "object")
+      ? row.data.construction
+      : null;
+    sig += `|${Number(row.id) | 0}:${String(row.type || "")}:${Number(row.owner) | 0}:${Number(row.x) | 0}:${Number(row.y) | 0}:${Number(row.count) | 0}:${Math.round((Number(construction?.pendingCount) || 0) * 10)}:${Math.round((Number(construction?.buildRemainingS) || 0) * 10)}:${Math.round((Number(construction?.buildTotalS) || 0) * 10)}`;
+  }
+  return sig;
+}
+
 function serializeEntitiesDelta(world, runtime, forceFull = false, optionsRaw = null) {
   const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : {};
   const now = nowMs();
@@ -3011,15 +3024,21 @@ function serializeEntitiesDelta(world, runtime, forceFull = false, optionsRaw = 
   const out = {};
   let included = false;
 
-  const includeStructures = forceStructures || forceFull || ((now - (Number(runtime?.lastStructuresSnapshotAtMs) || 0)) >= structureIntervalMs);
+  const currentStructureSig = computeStructureSnapshotSignature(world?.structures);
+  const previousStructureSig = String(runtime?.lastStructuresEntitySig || "");
+  const structuresChanged = currentStructureSig !== previousStructureSig;
+  const includeStructures = structuresChanged || forceStructures || forceFull || ((now - (Number(runtime?.lastStructuresSnapshotAtMs) || 0)) >= structureIntervalMs);
   const structuresOverdueMs = now - (Number(runtime?.lastStructuresSnapshotAtMs) || 0);
-  const allowStructures = forceStructures || !prioritizeTerritory || structuresOverdueMs >= Math.max(
+  const allowStructures = structuresChanged || forceStructures || !prioritizeTerritory || structuresOverdueMs >= Math.max(
     structureIntervalMs * (severeTerritoryPressure ? 3.8 : 2.6),
     900
   );
   if (includeStructures && allowStructures) {
     out.structures = cloneWire(Array.isArray(world?.structures) ? world.structures : []) || [];
-    if (runtime && typeof runtime === "object") runtime.lastStructuresSnapshotAtMs = now;
+    if (runtime && typeof runtime === "object") {
+      runtime.lastStructuresSnapshotAtMs = now;
+      runtime.lastStructuresEntitySig = currentStructureSig;
+    }
     included = true;
   }
 

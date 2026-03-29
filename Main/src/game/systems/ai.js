@@ -1482,10 +1482,11 @@ export function installAI(World) {
       return false;
     }
 
-  World.prototype._aiFindOwnedEmptyWithPref = function(ownerId, cx, cy, radius, pref) {
+  World.prototype._aiFindOwnedEmptyWithPref = function(ownerId, cx, cy, radius, pref, buildType = "") {
       const A = ownerId | 0;
       const r = Math.max(4, radius | 0);
       const prefMode = String(pref || "any");
+      const type = String(buildType || "");
       const w = this.w | 0;
       const h = this.h | 0;
       const twoPi = Math.PI * 2;
@@ -1495,7 +1496,7 @@ export function installAI(World) {
         const idx = y * w + x;
         if (!this.land[idx]) return null;
         if ((this.owner[idx] | 0) !== A) return null;
-        if (!this._canPlaceStructureFootprint(A, x, y)) return null;
+        if (!this._canPlaceTypedStructureFootprint(type, A, x, y)) return null;
 
         if (prefMode === "coast" && !this._touchesWater4(idx)) return null;
 
@@ -1717,8 +1718,8 @@ export function installAI(World) {
         return !!res.ok;
       }
 
-      let pos = this._aiFindOwnedEmptyWithPref(A, cx, cy, radius, pref);
-      if (!pos && pref !== "coast") pos = this._aiFindOwnedEmptyWithPref(A, cx, cy, radius, "any");
+      let pos = this._aiFindOwnedEmptyWithPref(A, cx, cy, radius, pref, type);
+      if (!pos && pref !== "coast") pos = this._aiFindOwnedEmptyWithPref(A, cx, cy, radius, "any", type);
       if (!pos) return false;
 
       const res = this.placeStructure(type, A, pos.x, pos.y);
@@ -1782,7 +1783,7 @@ export function installAI(World) {
         const idx = y * this.w + x;
         if (!this.land[idx]) continue;
         if ((this.owner[idx] | 0) !== A) continue;
-        if (!this._canPlaceStructureFootprint(A, x, y)) continue;
+        if (!this._canPlaceTypedStructureFootprint(type, A, x, y)) continue;
         if (pref === "coast" && !this._touchesWater4(idx)) continue;
         if (pref === "interior" && this._aiIsBorderOwnedTile(A, idx)) continue;
         if (pref === "border" && !this._aiIsBorderOwnedTile(A, idx)) continue;

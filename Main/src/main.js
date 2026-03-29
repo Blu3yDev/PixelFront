@@ -2553,6 +2553,13 @@ function rebuildMultiplayerStructureCaches(worldRef) {
   if (worldRef._factoryCount && typeof worldRef._factoryCount.fill === "function") worldRef._factoryCount.fill(0);
   if (worldRef._barracksCount && typeof worldRef._barracksCount.fill === "function") worldRef._barracksCount.fill(0);
   if (worldRef._portCount && typeof worldRef._portCount.fill === "function") worldRef._portCount.fill(0);
+  if (Array.isArray(worldRef.nation)) {
+    for (let i = 1; i < worldRef.nation.length; i++) {
+      const nation = worldRef.nation[i];
+      if (!nation || typeof nation !== "object") continue;
+      nation.capital = null;
+    }
+  }
 
   const totalOwners = Math.max(0, Number(worldRef._nationCount) | 0);
   if (Array.isArray(worldRef._portsByOwner)) {
@@ -2576,7 +2583,11 @@ function rebuildMultiplayerStructureCaches(worldRef) {
     const pendingCount = Math.max(0, Number(st?.data?.construction?.pendingCount) | 0);
     const count = Math.max(0, totalCount - pendingCount);
     const type = String(st.type || "");
-    if (type === "city" && worldRef._cityCount) worldRef._cityCount[ownerId] += count;
+    if (type === "capital") {
+      if (worldRef.nation?.[ownerId] && typeof worldRef.nation[ownerId] === "object") {
+        worldRef.nation[ownerId].capital = st.id | 0;
+      }
+    } else if (type === "city" && worldRef._cityCount) worldRef._cityCount[ownerId] += count;
     else if (type === "factory" && worldRef._factoryCount) worldRef._factoryCount[ownerId] += count;
     else if (type === "barracks" && worldRef._barracksCount) worldRef._barracksCount[ownerId] += count;
     else if (type === "port" && count > 0) {

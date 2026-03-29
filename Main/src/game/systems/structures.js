@@ -35,6 +35,35 @@ export function installStructures(World) {
     return true;
   }
 
+  World.prototype._canPlacePortFootprint = function(ownerId, cx, cy) {
+    const oid = ownerId | 0;
+    const x0 = cx | 0, y0 = cy | 0;
+    const w = this.w | 0;
+    const h = this.h | 0;
+
+    // Ports are coastal structures, so their 3x3 footprint may extend over
+    // ocean tiles, but never over foreign land or occupied tiles.
+    for (let dy = -STRUCT_FOOTPRINT_R; dy <= STRUCT_FOOTPRINT_R; dy++) {
+      for (let dx = -STRUCT_FOOTPRINT_R; dx <= STRUCT_FOOTPRINT_R; dx++) {
+        const x = x0 + dx;
+        const y = y0 + dy;
+        if (x < 0 || y < 0 || x >= w || y >= h) return false;
+        const idx = y * w + x;
+
+        if (this.land[idx] && ((this.owner[idx] | 0) !== oid)) return false;
+
+        const sid = this._structAt[idx] | 0;
+        if (!sid) continue;
+
+        const st = this._structureById.get(sid);
+        if (st) return false;
+
+        if (!st) this._structAt[idx] = 0;
+      }
+    }
+    return true;
+  }
+
   World.prototype._canPlaceCoastalRigFootprint = function(ownerId, cx, cy) {
     const oid = ownerId | 0;
     const x0 = cx | 0, y0 = cy | 0;
@@ -62,6 +91,13 @@ export function installStructures(World) {
       }
     }
     return true;
+  }
+
+  World.prototype._canPlaceTypedStructureFootprint = function(type, ownerId, cx, cy) {
+    const t = String(type || "");
+    if (t === "coastal_rig") return this._canPlaceCoastalRigFootprint(ownerId, cx, cy);
+    if (t === "port") return this._canPlacePortFootprint(ownerId, cx, cy);
+    return this._canPlaceStructureFootprint(ownerId, cx, cy);
   }
 
   World.prototype._markStructureFootprint = function(structId, cx, cy) {

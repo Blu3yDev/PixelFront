@@ -3904,13 +3904,22 @@ placeStructure(type, ownerId, x, y) {
     }
   }
 
-  const canPlace = (t === "coastal_rig")
-    ? (typeof this._canPlaceCoastalRigFootprint === "function"
-      ? this._canPlaceCoastalRigFootprint(oid, ix, iy)
-      : false)
-    : this._canPlaceStructureFootprint(oid, ix, iy);
+  const canPlace = (typeof this._canPlaceTypedStructureFootprint === "function")
+    ? this._canPlaceTypedStructureFootprint(t, oid, ix, iy)
+    : (
+      (t === "coastal_rig")
+        ? (typeof this._canPlaceCoastalRigFootprint === "function"
+          ? this._canPlaceCoastalRigFootprint(oid, ix, iy)
+          : false)
+        : this._canPlaceStructureFootprint(oid, ix, iy)
+    );
   if (!canPlace) {
-    return { ok: false, reason: t === "coastal_rig" ? "Need a clear 3x3 ocean space." : "Need a clear 3x3 space." };
+    return {
+      ok: false,
+      reason: t === "coastal_rig"
+        ? "Need a clear 3x3 ocean space."
+        : (t === "port" ? "Need a clear coastal 3x3 space." : "Need a clear 3x3 space.")
+    };
   }
 
   const cost = this.getBuildCost(t, oid) | 0;

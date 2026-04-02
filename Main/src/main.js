@@ -2315,6 +2315,76 @@ function decodeOwnerPackedBase64(base64Raw, formatRaw = "u16") {
   return out;
 }
 
+function decodeLandPackedBase64(base64Raw, formatRaw = "bitset_u8", expectedLenRaw = 0) {
+  const format = String(formatRaw || "bitset_u8").trim().toLowerCase();
+  if (format !== "bitset_u8") return null;
+  const bytes = decodeBytesBase64(base64Raw);
+  if (!(bytes instanceof Uint8Array) || bytes.length <= 0) return null;
+  const expectedLen = Math.max(0, Number(expectedLenRaw) | 0);
+  const outLen = expectedLen > 0 ? expectedLen : (bytes.length * 8);
+  const out = new Uint8Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    out[i] = (bytes[i >> 3] & (1 << (i & 7))) ? 1 : 0;
+  }
+  return out;
+}
+
+function applyPackedLandMaskSnapshot(worldRef, landPackedRaw, formatRaw = "bitset_u8") {
+  if (!worldRef) return 0;
+  const landArr = worldRef.land;
+  const ownerArr = worldRef.owner;
+  if (!(landArr instanceof Uint8Array) || !(ownerArr instanceof Uint16Array) || landArr.length !== ownerArr.length) {
+    return 0;
+  }
+  const incoming = decodeLandPackedBase64(landPackedRaw, formatRaw, landArr.length);
+  if (!(incoming instanceof Uint8Array) || incoming.length !== landArr.length) return 0;
+
+  let changed = 0;
+  let totalLand = 0;
+  worldRef._authoritativeSyncApplying = true;
+  if (typeof worldRef._beginOwnerBatch === "function") worldRef._beginOwnerBatch();
+  try {
+    for (let idx = 0; idx < landArr.length; idx++) {
+      const nextLand = (incoming[idx] | 0) ? 1 : 0;
+      totalLand += nextLand;
+      if ((landArr[idx] | 0) === nextLand) continue;
+      landArr[idx] = nextLand;
+      if (!nextLand) {
+        if ((ownerArr[idx] | 0) !== OWNER.NONE) {
+          if (typeof worldRef._setOwner === "function") worldRef._setOwner(idx, OWNER.NONE);
+          else ownerArr[idx] = OWNER.NONE;
+        }
+        if (worldRef.biome && idx < worldRef.biome.length) worldRef.biome[idx] = BIOME.OCEAN_SHALLOW;
+        if (worldRef.height && idx < worldRef.height.length) {
+          const seaLevel = Math.max(1, Number(worldRef._seaLevel) | 0);
+          worldRef.height[idx] = Math.max(0, seaLevel - 1);
+        }
+        if (worldRef._earthCountryId && idx < worldRef._earthCountryId.length) worldRef._earthCountryId[idx] = 0;
+        if (worldRef._earthCountryBorder && idx < worldRef._earthCountryBorder.length) worldRef._earthCountryBorder[idx] = 0;
+        if (worldRef._earthNeutralRgb && ((idx * 3) + 2) < worldRef._earthNeutralRgb.length) {
+          const dst = idx * 3;
+          worldRef._earthNeutralRgb[dst] = 52;
+          worldRef._earthNeutralRgb[dst + 1] = 96;
+          worldRef._earthNeutralRgb[dst + 2] = 156;
+        }
+      }
+      changed++;
+    }
+  } finally {
+    if (typeof worldRef._endOwnerBatch === "function") worldRef._endOwnerBatch();
+    worldRef._authoritativeSyncApplying = false;
+  }
+  worldRef.totalLand = Math.max(0, totalLand | 0);
+  if (changed > 0 && typeof worldRef._recomputeWaterComponents === "function") {
+    try {
+      worldRef._recomputeWaterComponents();
+    } catch {
+      // Keep initial authoritative land repair resilient; navy pathing will lazily rebuild if needed.
+    }
+  }
+  return changed;
+}
+
 function resetAuthoritativeOwnershipToNeutral(worldRef) {
   if (!worldRef) return 0;
   const ownerArr = worldRef.owner;
@@ -3697,6 +3767,9 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
   const fullSyncReason = String(packet?.reason || "").trim().toLowerCase();
   const isRegenerateSync = !!(isFullSync && fullSyncReason === "regenerate_match");
   const packetServerTime = Math.max(0, Number(packet?.serverTime) || 0);
+  const landApplied = isFullSync && packet.landPacked
+    ? applyPackedLandMaskSnapshot(worldRef, packet.landPacked, String(packet?.landPackedFormat || "bitset_u8"))
+    : 0;
   let ownerApplied = 0;
 
   if (isFullSync) {
@@ -3755,10 +3828,10 @@ function applyMultiplayerSnapshotPacket(packet, isFullSync = false, optionsRaw =
     applyMultiplayerEvents(worldRef, packet.events, packet.globalEvents);
   }
   applyMultiplayerWorldMeta(worldRef, packet);
-  maybeRefreshMultiplayerDerivedState(worldRef, isFullSync || ownerApplied > 0);
+  maybeRefreshMultiplayerDerivedState(worldRef, isFullSync || landApplied > 0 || ownerApplied > 0);
 
   // Full-map pixel rebuild is expensive; do it only on initial authoritative attach.
-  if (isFullSync && ownerApplied > 0 && !hadAuthoritativeSync && typeof worldRef._rebuildAllPixels === "function") {
+  if (isFullSync && (landApplied > 0 || ownerApplied > 0) && !hadAuthoritativeSync && typeof worldRef._rebuildAllPixels === "function") {
     try {
       worldRef._rebuildAllPixels();
       if (typeof worldRef._rebuildAllBorders === "function") worldRef._rebuildAllBorders();
@@ -3813,6 +3886,9 @@ function applyAuthoritativePacketToWorld(worldRef, packet, optionsRaw = null) {
   const options = (optionsRaw && typeof optionsRaw === "object") ? optionsRaw : null;
   const isFullSync = !!options?.isFullSync;
   const deferVisualSync = !!options?.deferVisualSync;
+  const landApplied = isFullSync && packet.landPacked
+    ? applyPackedLandMaskSnapshot(worldRef, packet.landPacked, String(packet?.landPackedFormat || "bitset_u8"))
+    : 0;
   let ownerApplied = 0;
 
   if (isFullSync) {
@@ -3866,9 +3942,9 @@ function applyAuthoritativePacketToWorld(worldRef, packet, optionsRaw = null) {
     applyMultiplayerEvents(worldRef, packet.events, packet.globalEvents);
   }
   applyMultiplayerWorldMeta(worldRef, packet);
-  maybeRefreshMultiplayerDerivedState(worldRef, isFullSync || ownerApplied > 0);
+  maybeRefreshMultiplayerDerivedState(worldRef, isFullSync || landApplied > 0 || ownerApplied > 0);
 
-  if (isFullSync && ownerApplied > 0 && typeof worldRef._rebuildAllPixels === "function") {
+  if (isFullSync && (landApplied > 0 || ownerApplied > 0) && typeof worldRef._rebuildAllPixels === "function") {
     try {
       worldRef._rebuildAllPixels();
       if (typeof worldRef._rebuildAllBorders === "function") worldRef._rebuildAllBorders();

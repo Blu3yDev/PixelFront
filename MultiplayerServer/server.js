@@ -107,6 +107,10 @@ const MATCH_FULL_SYNC_OWNER_PACKED_SAFE_TILES = Math.max(
   120000,
   Number(process.env.MATCH_FULL_SYNC_OWNER_PACKED_SAFE_TILES || 3200000)
 );
+const MATCH_FULL_SYNC_LAND_PACKED_MAX_TILES = Math.max(
+  120000,
+  Number(process.env.MATCH_FULL_SYNC_LAND_PACKED_MAX_TILES || 1500000)
+);
 const MATCH_NET_STATS_LOG_INTERVAL_MS = Math.max(1000, Number(process.env.MATCH_NET_STATS_LOG_INTERVAL_MS || 10000));
 const MATCH_SNAPSHOT_TARGET_BYTES = Math.max(24000, Number(process.env.MATCH_SNAPSHOT_TARGET_BYTES || (HIGH_CAPACITY_MULTIPLAYER_HOST ? 92000 : 72000)));
 const MATCH_SNAPSHOT_TARGET_BYTES_HARD = Math.max(MATCH_SNAPSHOT_TARGET_BYTES, Number(process.env.MATCH_SNAPSHOT_TARGET_BYTES_HARD || (HIGH_CAPACITY_MULTIPLAYER_HOST ? 176000 : 140000)));
@@ -1388,6 +1392,19 @@ function encodeChangedTilesPackedBase64(changedTiles) {
     buf[bi++] = (idx >>> 24) & 0xFF;
     buf[bi++] = owner & 0xFF;
     buf[bi++] = (owner >>> 8) & 0xFF;
+  }
+  return buf.toString("base64");
+}
+
+function encodeLandPackedBase64Bitset(landRaw) {
+  const land = landRaw instanceof Uint8Array ? landRaw : null;
+  if (!land || land.length <= 0) return "";
+  const byteLen = Math.ceil(land.length / 8);
+  const buf = Buffer.allocUnsafe(byteLen);
+  buf.fill(0);
+  for (let i = 0; i < land.length; i++) {
+    if (!(land[i] | 0)) continue;
+    buf[i >> 3] |= (1 << (i & 7));
   }
   return buf.toString("base64");
 }
@@ -2905,6 +2922,18 @@ function appendAllClaimedOwnerTiles(world, changedTilesRaw, maxAdditionalRaw) {
   return changedTiles;
 }
 
+function countClaimedOwnerTiles(world) {
+  const ownerArr = world?.owner;
+  const landArr = world?.land;
+  if (!ownerArr || !landArr || ownerArr.length !== landArr.length) return 0;
+  let claimed = 0;
+  for (let idx = 0; idx < ownerArr.length; idx++) {
+    if (!landArr[idx]) continue;
+    if ((Number(ownerArr[idx]) | 0) > 0) claimed++;
+  }
+  return claimed;
+}
+
 function computeStructureSnapshotSignature(listRaw) {
   const rows = Array.isArray(listRaw) ? listRaw : [];
   let sig = `${rows.length}`;
@@ -3538,16 +3567,24 @@ function buildSnapshotPacket(
   if (includeEvents) runtime.lastEventsSnapshotAtMs = now;
 
   if (fullSync) {
-    let claimedTiles = 0;
     const nationCount = Math.max(1, Number(world?._nationCount) | 0);
-    for (let id = 1; id <= nationCount; id++) {
-      claimedTiles += Math.max(0, Number(world?.landOwnedCount?.[id]) | 0);
-    }
+    const claimedTiles = countClaimedOwnerTiles(world);
     const ownerTileCount = Math.max(0, Number(world?.owner?.length) | 0);
     const safeOwnerPackedTiles = Math.min(
       MATCH_FULL_SYNC_OWNER_PACKED_MAX_TILES,
       Math.max(120000, Number(MATCH_FULL_SYNC_OWNER_PACKED_SAFE_TILES) | 0)
     );
+    if (
+      resolveMatchMapMode(lobby?.matchWorldSpec, lobby?.matchConfig) === MAP_MODE_WORLD &&
+      ownerTileCount > 0 &&
+      ownerTileCount <= MATCH_FULL_SYNC_LAND_PACKED_MAX_TILES
+    ) {
+      const landPacked = encodeLandPackedBase64Bitset(world?.land);
+      if (landPacked) {
+        packet.landPacked = landPacked;
+        packet.landPackedFormat = "bitset_u8";
+      }
+    }
     const allowOwnerPacked = ownerTileCount > 0 && ownerTileCount <= safeOwnerPackedTiles;
     const canUseClaimedResetSync = claimedTiles > 0 && claimedTiles <= MATCH_FULL_SYNC_CLAIMED_RESET_MAX_TILES;
     // Early-match territory is sparse enough that a neutral reset + claimed-territory snapshot

@@ -12,6 +12,15 @@ import {
   deriveEarthDataForContinents,
   sanitizeContinentSelection
 } from "../Main/src/game/data/earthContinents.js";
+import {
+  buildCommandActorArgMap,
+  buildCommandMethodMap,
+  buildCommandNationArgsMap,
+  normalizeSharedMatchMapConfig,
+  resolveCommandSnapshotPolicyFromSchema,
+  resolveSharedMatchMapMode,
+  shouldPushPostCommandFullSyncFromSchema
+} from "../Main/src/game/multiplayerSchema.js";
 
 const PORT = Number(process.env.PORT || 8080);
 const CORS_ORIGIN = String(process.env.CORS_ORIGIN || "*").trim() || "*";
@@ -264,113 +273,9 @@ const lobbiesByCode = new Map(); // code -> lobby
 const playerIndex = new Map(); // sessionId -> code
 const playerTokenIndex = new Map(); // sessionToken -> code
 
-const COMMAND_METHOD = Object.freeze({
-  set_attack_ratio: "setAttackRatio",
-  set_mobilization: "setMobilization",
-  start_neutral: "startNeutral",
-  start_war_focus: "startWarFocus",
-  cancel_all_operations: "cancelAllOperations",
-  cancel_operation: "cancelOperation",
-  create_trade_deal: "requestTradeDeal",
-  request_trade_deal: "requestTradeDeal",
-  respond_trade_request: "respondTradeRequest",
-  cancel_trade_request: "cancelTradeRequest",
-  cancel_trade_deal: "cancelTradeDeal",
-  donate: "donate",
-  declare_war: "declareWar",
-  betray_alliance: "betrayAlliance",
-  send_warship: "sendWarship",
-  request_ceasefire: "requestCeasefire",
-  request_alliance: "requestAlliance",
-  respond_ceasefire_request: "respondCeasefireRequest",
-  respond_alliance_request: "respondAllianceRequest",
-  cancel_ship: "cancelShip",
-  start_port_trade: "startPortTrade",
-  start_missile_silo_build: "startMissileSiloBuild",
-  start_airbase_transport_build: "startAirbaseTransportBuild",
-  start_burst_expand: "startBurstExpand",
-  start_burst_attack: "startBurstAttack",
-  pick_spawn: "pickSpawn",
-  start_research: "startResearch",
-  regenerate_match: "regenerate",
-  launch_missile_warhead: "launchMissileWarhead",
-  launch_airbase_transport: "launchAirbaseTransport",
-  place_structure: "placeStructure",
-  queue_division_training: "queueDivisionTraining",
-  issue_division_order: "issueDivisionOrder",
-  clear_division_order: "clearDivisionOrder"
-});
-
-const COMMAND_NATION_ARGS = Object.freeze({
-  set_attack_ratio: [0],
-  set_mobilization: [0],
-  start_neutral: [1],
-  start_war_focus: [0, 1],
-  cancel_all_operations: [0],
-  create_trade_deal: [0, 1],
-  request_trade_deal: [0, 1],
-  respond_trade_request: [1],
-  cancel_trade_request: [1],
-  cancel_trade_deal: [1],
-  donate: [0, 1],
-  declare_war: [0, 1],
-  betray_alliance: [0, 1],
-  send_warship: [0],
-  request_ceasefire: [0, 1],
-  request_alliance: [0, 1],
-  respond_ceasefire_request: [0, 1],
-  respond_alliance_request: [0, 1],
-  cancel_ship: [1],
-  start_port_trade: [1, 2],
-  start_missile_silo_build: [1],
-  start_airbase_transport_build: [1],
-  start_burst_expand: [0],
-  start_burst_attack: [0, 1],
-  pick_spawn: [0],
-  start_research: [0],
-  regenerate_match: [],
-  launch_missile_warhead: [1],
-  launch_airbase_transport: [1],
-  place_structure: [1],
-  queue_division_training: [1],
-  issue_division_order: [1],
-  clear_division_order: [1]
-});
-
-const COMMAND_ACTOR_ARG = Object.freeze({
-  set_attack_ratio: 0,
-  set_mobilization: 0,
-  start_neutral: 1,
-  start_war_focus: 0,
-  cancel_all_operations: 0,
-  create_trade_deal: 0,
-  request_trade_deal: 0,
-  respond_trade_request: 1,
-  cancel_trade_request: 1,
-  cancel_trade_deal: 1,
-  donate: 0,
-  declare_war: 0,
-  betray_alliance: 0,
-  send_warship: 0,
-  request_ceasefire: 0,
-  request_alliance: 0,
-  respond_ceasefire_request: 1,
-  respond_alliance_request: 1,
-  cancel_ship: 1,
-  start_port_trade: 1,
-  start_missile_silo_build: 1,
-  start_airbase_transport_build: 1,
-  start_burst_expand: 0,
-  start_burst_attack: 0,
-  pick_spawn: 0,
-  start_research: 0,
-  launch_missile_warhead: 1,
-  launch_airbase_transport: 1,
-  place_structure: 1,
-  queue_division_training: 1,
-  issue_division_order: 1,
-  clear_division_order: 1
-});
+const COMMAND_METHOD = buildCommandMethodMap();
+const COMMAND_NATION_ARGS = buildCommandNationArgsMap();
+const COMMAND_ACTOR_ARG = buildCommandActorArgMap();
 
 function simDtMs() {
   return Math.max(1, Number(activeSimDtS) * 1000);
@@ -755,19 +660,11 @@ function sanitizeMatchConfig(raw) {
     src.continents ?? src.selectedContinents ?? DEFAULT_MATCH_CONFIG.continents,
     DEFAULT_MATCH_CONFIG.continents
   );
-  const mapSourceRaw = String(src.mapSource ?? src.mapMode ?? DEFAULT_MATCH_CONFIG.mapSource).trim().toLowerCase();
-  const mapSource = mapSourceRaw === MAP_SOURCE_CUSTOM
-    ? MAP_SOURCE_CUSTOM
-    : (mapSourceRaw === MAP_SOURCE_POLITICAL_EARTH ? MAP_SOURCE_POLITICAL_EARTH : MAP_SOURCE_EARTH);
-  const mapModeRaw = String(src.mapMode || mapSourceRaw || DEFAULT_MATCH_CONFIG.mapMode).trim().toLowerCase();
-  const mapMode = (
-    mapModeRaw === MAP_MODE_WORLD ||
-    mapModeRaw === "world_map" ||
-    mapModeRaw === "world-map" ||
-    mapSource === MAP_SOURCE_POLITICAL_EARTH ||
-    mapSource === MAP_SOURCE_EARTH ||
-    mapSource === MAP_SOURCE_CUSTOM
-  ) ? MAP_MODE_WORLD : MAP_MODE_GENERATOR;
+  const sharedMapConfig = normalizeSharedMatchMapConfig(src, DEFAULT_MATCH_CONFIG);
+  const mapMode = String(sharedMapConfig.mapMode || MAP_MODE_WORLD).trim().toLowerCase() === MAP_MODE_WORLD
+    ? MAP_MODE_WORLD
+    : MAP_MODE_GENERATOR;
+  const mapSource = String(sharedMapConfig.mapSource || MAP_SOURCE_POLITICAL_EARTH).trim().toLowerCase();
   const parseBoost = (value, fallback) => {
     const n = Number(value);
     if (MATCH_PLAYER_BOOSTS.includes(n)) return n;
@@ -782,7 +679,7 @@ function sanitizeMatchConfig(raw) {
     continents,
     mapMode,
     mapSource,
-    customMapId: String(src.customMapId || "").trim(),
+    customMapId: String(sharedMapConfig.customMapId || "").trim(),
     infiniteResources,
     infiniteGold: infiniteResources || !!src.infiniteGold,
     infiniteTroops: infiniteResources || !!src.infiniteTroops,
@@ -1531,19 +1428,48 @@ function shapeSnapshotForCongestedSocket(payloadRaw, runtime, ws) {
   if (ws._socketCongestionLevel <= 0) return src;
 
   const out = downshiftSnapshotPayloadForWire(src);
+  const keepCritical = Object.freeze({
+    type: true,
+    packetSeq: true,
+    serverTime: true,
+    code: true,
+    tick: true,
+    worldMeta: true,
+    changedTiles: true,
+    changedTilesPacked: true,
+    changedTilesPackedFormat: true,
+    changedTilesCount: true,
+    ownerPacked: true,
+    ownerPackedFormat: true,
+    ownerPackedOmitted: true,
+    ownerResetToNeutral: true,
+    humanNationStats: true,
+    changedEntities: true,
+    stateHash: true
+  });
 
-  if (ws._socketCongestionLevel >= 2 && out?.changedEntities && typeof out.changedEntities === "object") {
-    const ce = { ...out.changedEntities };
-    if (Object.prototype.hasOwnProperty.call(ce, "structures")) delete ce.structures;
-    if (Object.prototype.hasOwnProperty.call(ce, "operations")) delete ce.operations;
-    if (ws._socketCongestionLevel >= 3) {
-      if (Object.prototype.hasOwnProperty.call(ce, "divisions")) delete ce.divisions;
-      if (Object.prototype.hasOwnProperty.call(ce, "ships")) delete ce.ships;
-      if (Object.prototype.hasOwnProperty.call(ce, "nukeFlights")) delete ce.nukeFlights;
-      if (Object.prototype.hasOwnProperty.call(ce, "airborneMissions")) delete ce.airborneMissions;
+  // Preserve gameplay systems; only trim replaceable side-channel data as pressure rises.
+  if (ws._socketCongestionLevel >= 1) {
+    delete out.leaderboard;
+  }
+  if (ws._socketCongestionLevel >= 2) {
+    delete out.events;
+    delete out.globalEvents;
+    delete out._includeEvents;
+  }
+  if (ws._socketCongestionLevel >= 3) {
+    delete out.nationStats;
+    delete out.relations;
+  }
+  if (ws._socketCongestionLevel >= 4) {
+    const keys = Object.keys(out);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (keepCritical[key]) continue;
+      if (key.startsWith("_")) {
+        delete out[key];
+      }
     }
-    if (Object.keys(ce).length > 0) out.changedEntities = ce;
-    else delete out.changedEntities;
   }
 
   return out;
@@ -1675,11 +1601,9 @@ function remapOwnerPackedBase64U8(base64Raw, assignedNationId) {
   return buf.toString("base64");
 }
 function resolveMatchMapMode(worldSpec, matchConfig) {
-  const specMode = String(worldSpec?.mapMode || "").trim().toLowerCase();
-  if (specMode === MAP_MODE_WORLD || specMode === "world_map" || specMode === "world-map") return MAP_MODE_WORLD;
-  const cfgMode = String(matchConfig?.mapMode || "").trim().toLowerCase();
-  if (cfgMode === MAP_MODE_WORLD || cfgMode === "world_map" || cfgMode === "world-map") return MAP_MODE_WORLD;
-  return MAP_MODE_GENERATOR;
+  return resolveSharedMatchMapMode(worldSpec, matchConfig) === MAP_MODE_WORLD
+    ? MAP_MODE_WORLD
+    : MAP_MODE_GENERATOR;
 }
 
 function resolveWorldSpecForLobby(lobby) {
@@ -1790,7 +1714,7 @@ async function startLobbyMatch(lobby, body) {
     for (const [sessionId, ws] of lobby.sockets.entries()) {
       if (!ws || ws.readyState !== WebSocket.OPEN) continue;
       const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, "match_start");
-      ws.initialSyncPending = !fullSync?.sent;
+      setSocketInitialSyncPending(ws, !fullSync?.sent);
     }
   }
 }
@@ -3755,8 +3679,21 @@ function buildTerritoryPulsePacket(lobby, runtime) {
 function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual") {
   if (!ws || ws.readyState !== WebSocket.OPEN) return { sent: false, backpressured: false, disconnected: false, throttled: true };
   const now = nowMs();
+  const initialSyncPending = !!ws.initialSyncPending;
+  const minIntervalMs = initialSyncPending
+    ? Math.min(120, MATCH_FULL_SYNC_MIN_INTERVAL_MS)
+    : MATCH_FULL_SYNC_MIN_INTERVAL_MS;
   const nextAttemptAt = Math.max(0, Number(ws._nextFullSyncAttemptAtMs) || 0);
-  if (now < nextAttemptAt) return { sent: false, backpressured: false, disconnected: false, throttled: true };
+  if (now < nextAttemptAt) {
+    if (initialSyncPending) {
+      const lastLogAt = Math.max(0, Number(ws._lastInitialSyncLogAtMs) || 0);
+      if ((now - lastLogAt) >= 2000) {
+        ws._lastInitialSyncLogAtMs = now;
+        console.warn(`[initial-sync] lobby=${String(lobby?.code || "")} session=${String(sessionId || "")} reason=${String(reason || "manual")} throttled_ms=${Math.max(0, nextAttemptAt - now)}`);
+      }
+    }
+    return { sent: false, backpressured: false, disconnected: false, throttled: true };
+  }
 
   const assignment = runtime.assignmentsBySession.get(String(sessionId || ""));
   if (!assignment) return { sent: false, backpressured: false, disconnected: false, throttled: true };
@@ -3779,10 +3716,30 @@ function sendFullSyncToSession(lobby, runtime, sessionId, ws, reason = "manual")
   const sent = sendSnapshotPayload(lobby, runtime, sessionId, ws, wirePayload, { critical: !lightweight });
   if (sent.sent) {
     ws._lastFullSyncAtMs = now;
-    ws._nextFullSyncAttemptAtMs = now + MATCH_FULL_SYNC_MIN_INTERVAL_MS;
+    ws._nextFullSyncAttemptAtMs = now + minIntervalMs;
     ws._desyncedSinceBackpressure = false;
+    ws._initialSyncPendingSinceMs = 0;
+    ws._initialSyncAttempts = 0;
+    if (initialSyncPending && runtime?.playerLoadedBySession && typeof runtime.playerLoadedBySession.set === "function") {
+      runtime.playerLoadedBySession.set(String(sessionId || ""), now);
+    }
+    if (initialSyncPending) {
+      console.log(`[initial-sync] lobby=${String(lobby?.code || "")} session=${String(sessionId || "")} reason=${reasonStr} sent=true bytesBuffered=${socketBufferedAmount(ws)}`);
+    }
   } else {
-    ws._nextFullSyncAttemptAtMs = now + MATCH_FULL_SYNC_RETRY_INTERVAL_MS;
+    ws._nextFullSyncAttemptAtMs = now + (initialSyncPending ? Math.min(180, MATCH_FULL_SYNC_RETRY_INTERVAL_MS) : MATCH_FULL_SYNC_RETRY_INTERVAL_MS);
+    if (initialSyncPending) {
+      const pendingSinceMs = Math.max(0, Number(ws._initialSyncPendingSinceMs) || now);
+      ws._initialSyncPendingSinceMs = pendingSinceMs;
+      ws._initialSyncAttempts = Math.max(0, Number(ws._initialSyncAttempts) | 0) + 1;
+      const lastLogAt = Math.max(0, Number(ws._lastInitialSyncLogAtMs) || 0);
+      if (((now - pendingSinceMs) >= 1500 || (ws._initialSyncAttempts | 0) >= 4) && (now - lastLogAt) >= 2000) {
+        ws._lastInitialSyncLogAtMs = now;
+        console.warn(
+          `[initial-sync] lobby=${String(lobby?.code || "")} session=${String(sessionId || "")} reason=${reasonStr} sent=false backpressured=${sent.backpressured ? "1" : "0"} buffered=${socketBufferedAmount(ws)} attempts=${ws._initialSyncAttempts | 0}`
+        );
+      }
+    }
     if (sent.backpressured) {
       runtime.backpressuredSockets = Math.max(1, Number(runtime.backpressuredSockets) | 0);
       ws._desyncedSinceBackpressure = true;
@@ -4276,11 +4233,24 @@ function closeLobbySocket(lobby, sessionId) {
   lobby.sockets.delete(sessionId);
 }
 
+function setSocketInitialSyncPending(ws, pending, now = nowMs()) {
+  if (!ws) return;
+  ws.initialSyncPending = !!pending;
+  if (pending) {
+    ws._initialSyncPendingSinceMs = now;
+    ws._initialSyncAttempts = 0;
+    return;
+  }
+  ws._initialSyncPendingSinceMs = 0;
+  ws._initialSyncAttempts = 0;
+}
+
 function markLobbySocketsPendingInitialSync(lobby) {
   if (!lobby || !lobby.sockets) return;
+  const now = nowMs();
   for (const ws of lobby.sockets.values()) {
     try {
-      ws.initialSyncPending = true;
+      setSocketInitialSyncPending(ws, true, now);
     } catch {
       // Ignore property set failures.
     }
@@ -4360,34 +4330,7 @@ function isHostOnlyMatchCommand(cmdRaw) {
 }
 
 function shouldPushPostCommandFullSync(cmdRaw) {
-  const cmd = String(cmdRaw || "").trim().toLowerCase();
-  return (
-    cmd === "pick_spawn" ||
-    cmd === "start_neutral" ||
-    cmd === "start_war_focus" ||
-    cmd === "start_burst_expand" ||
-    cmd === "start_burst_attack" ||
-    cmd === "start_research" ||
-    cmd === "place_structure" ||
-    cmd === "send_warship" ||
-    cmd === "start_port_trade" ||
-    cmd === "launch_missile_warhead" ||
-    cmd === "launch_airbase_transport" ||
-    cmd === "declare_war" ||
-    cmd === "betray_alliance" ||
-    cmd === "create_trade_deal" ||
-    cmd === "request_trade_deal" ||
-    cmd === "respond_trade_request" ||
-    cmd === "cancel_trade_request" ||
-    cmd === "cancel_trade_deal" ||
-    cmd === "request_ceasefire" ||
-    cmd === "request_alliance" ||
-    cmd === "respond_ceasefire_request" ||
-    cmd === "respond_alliance_request" ||
-    cmd === "queue_division_training" ||
-    cmd === "issue_division_order" ||
-    cmd === "clear_division_order"
-  );
+  return shouldPushPostCommandFullSyncFromSchema(cmdRaw);
 }
 
 function shouldForceImmediatePostCommandSnapshot(cmdRaw) {
@@ -4468,89 +4411,7 @@ function consumeDeferredCommandSnapshot(runtime, now = nowMs()) {
 }
 
 function resolveCommandSnapshotPolicy(cmdRaw) {
-  const cmd = String(cmdRaw || "").trim().toLowerCase();
-  const policy = createCommandSnapshotPolicy();
-  if (!cmd || cmd === "set_attack_ratio" || cmd === "set_mobilization" || cmd === "pick_spawn" || cmd === "regenerate_match") {
-    return policy;
-  }
-
-  policy.forceEvents = true;
-
-  if (
-    cmd === "start_neutral" ||
-    cmd === "start_war_focus" ||
-    cmd === "start_burst_expand" ||
-    cmd === "start_burst_attack" ||
-    cmd === "cancel_all_operations" ||
-    cmd === "cancel_operation" ||
-    cmd === "place_structure" ||
-    cmd === "start_missile_silo_build" ||
-    cmd === "start_airbase_transport_build" ||
-    cmd === "launch_missile_warhead" ||
-    cmd === "launch_airbase_transport" ||
-    cmd === "send_warship" ||
-    cmd === "start_port_trade" ||
-    cmd === "start_research" ||
-    cmd === "donate" ||
-    cmd === "cancel_ship" ||
-    cmd === "queue_division_training"
-  ) {
-    policy.forceStats = true;
-  }
-
-  if (
-    cmd === "declare_war" ||
-    cmd === "betray_alliance" ||
-    cmd === "request_ceasefire" ||
-    cmd === "request_alliance" ||
-    cmd === "respond_ceasefire_request" ||
-    cmd === "respond_alliance_request"
-  ) {
-    policy.forceRelations = true;
-  }
-
-  if (
-    cmd === "start_neutral" ||
-    cmd === "start_war_focus" ||
-    cmd === "start_burst_expand" ||
-    cmd === "start_burst_attack" ||
-    cmd === "cancel_all_operations" ||
-    cmd === "cancel_operation" ||
-    cmd === "create_trade_deal" ||
-    cmd === "request_trade_deal" ||
-    cmd === "respond_trade_request" ||
-    cmd === "cancel_trade_request" ||
-    cmd === "cancel_trade_deal" ||
-    cmd === "start_port_trade" ||
-    cmd === "issue_division_order" ||
-    cmd === "clear_division_order"
-  ) {
-    policy.forceOperations = true;
-  }
-
-  if (
-    cmd === "place_structure" ||
-    cmd === "start_missile_silo_build" ||
-    cmd === "start_airbase_transport_build" ||
-    cmd === "queue_division_training"
-  ) {
-    policy.forceStructures = true;
-  }
-
-  if (
-    cmd === "queue_division_training" ||
-    cmd === "issue_division_order" ||
-    cmd === "clear_division_order" ||
-    cmd === "send_warship" ||
-    cmd === "cancel_ship" ||
-    cmd === "start_port_trade" ||
-    cmd === "launch_missile_warhead" ||
-    cmd === "launch_airbase_transport"
-  ) {
-    policy.forceMobile = true;
-  }
-
-  return policy;
+  return resolveCommandSnapshotPolicyFromSchema(cmdRaw);
 }
 
 function applyAuthoritativeCommand(world, cmdRaw, argsRaw) {
@@ -4813,6 +4674,12 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
       1,
       Number(lobby?.sockets?.size) || Number(runtime?.assignmentsBySession?.size) || Number(lobby?.players?.length) || 1
     );
+    const relationCritical = !!snapshotPolicy?.forceRelations;
+    const shouldBroadcastRelationFullSync = !!(
+      relationCritical &&
+      !heavyWorld &&
+      connectedPlayers <= 4
+    );
     const recentSnapshotMs = now - Math.max(0, Number(runtime.lastSnapshotAtMs) || 0);
     const congested = (
       (Number(runtime.backpressuredSockets) | 0) > 0 ||
@@ -4840,7 +4707,13 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
       return;
     }
 
-    if (cmd !== "pick_spawn" && allowActorFastSync && !heavyWorld && connectedPlayers <= 4 && !shouldCoalescePostCommandSnapshot) {
+    if (shouldBroadcastRelationFullSync) {
+      runtime.lastSnapshotAtMs = now;
+      broadcastFullSync(lobby, runtime, `post_cmd_${cmd}`);
+      return;
+    }
+
+    if (cmd !== "pick_spawn" && allowActorFastSync && !heavyWorld && connectedPlayers <= 4 && !(shouldCoalescePostCommandSnapshot && !relationCritical)) {
       sendFullSyncToSession(lobby, runtime, sessionId, ws, `post_cmd_${cmd}`);
     }
     if (cmd === "pick_spawn") {
@@ -4848,7 +4721,7 @@ async function handleMatchInputMessage(lobby, sessionId, ws, msg) {
       return;
     }
     if (mustEchoCommandState || (!heavyWorld && backlogMs <= (stepMs * 1.5))) {
-      if (shouldCoalescePostCommandSnapshot) {
+      if (shouldCoalescePostCommandSnapshot && !relationCritical) {
         scheduleDeferredCommandSnapshot(runtime, snapshotPolicy, now, { urgent: mustEchoCommandState });
       } else {
         runtime.lastSnapshotAtMs = now;
@@ -4867,7 +4740,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
   ws.sessionId = sessionId;
   ws.code = lobby.code;
   ws.isAlive = true;
-  ws.initialSyncPending = !!lobby.started;
+  setSocketInitialSyncPending(ws, !!lobby.started);
   ws._backpressureSinceMs = 0;
   ws._lastBackpressurePingAtMs = 0;
   ws._maxBufferedAmountSeen = 0;
@@ -4924,7 +4797,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
 
       if (lobby.started && runtime) {
         const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, "lobby_state_request");
-        ws.initialSyncPending = !fullSync?.sent;
+        setSocketInitialSyncPending(ws, !fullSync?.sent);
       }
       return;
     }
@@ -4981,7 +4854,7 @@ function attachSocketToLobby(lobby, sessionId, ws) {
         return;
       }
       const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, String(msg?.reason || "full_sync_request"));
-      ws.initialSyncPending = !fullSync?.sent;
+      setSocketInitialSyncPending(ws, !fullSync?.sent);
       return;
     }
 
@@ -5052,7 +4925,7 @@ function stepLobbyRuntime(lobby, now) {
     if (!ws || ws.readyState !== WebSocket.OPEN) continue;
     if (!ws.initialSyncPending) continue;
     const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, "runtime_ready");
-    ws.initialSyncPending = !fullSync?.sent;
+    setSocketInitialSyncPending(ws, !fullSync?.sent);
   }
 
   // Repair clients that missed deltas due to websocket backpressure.
@@ -5430,7 +5303,7 @@ wss.on("connection", (ws, _req, ctx) => {
 
     if (lobby.started && runtime) {
       const fullSync = sendFullSyncToSession(lobby, runtime, sessionId, ws, "join");
-      ws.initialSyncPending = !fullSync?.sent;
+      setSocketInitialSyncPending(ws, !fullSync?.sent);
     }
   })();
 });

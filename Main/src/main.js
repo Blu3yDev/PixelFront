@@ -24,6 +24,12 @@ import { renderMainMenuGuide } from "./mainMenuGuide.js";
 import { renderMainMenuUpdateLog } from "./mainMenuUpdates.js";
 import { RESEARCH_BRANCH_ORDER, getResearchBranch, getResearchIconCandidates, getResearchIconNode, getResearchNode, getResearchNodesForBranch } from "./game/researchCatalog.js";
 import {
+  buildMultiplayerClientMethodSync,
+  buildSoloWorkerCommandStrategy,
+  normalizeSharedMatchMapConfig,
+  resolvePredictionCategoriesForMethod
+} from "./game/multiplayerSchema.js";
+import {
   FLAG_LAYOUT_OPTIONS,
   FLAG_MAX_STROKES,
   FLAG_MAX_STROKE_POINTS,
@@ -253,43 +259,7 @@ const PERFORMANCE_PROFILE_TIERS = Object.freeze([
   Object.freeze({ qualityTier: 2, workerEnabled: false, maxPixelUploadBinsPerFrame: 160, showLabels: true, showShips: true, showAtmosphere: false, renderScale: 0.90, lowPowerOverlays: true, overlayCadenceMul: 1.16, simCadenceMul: 1.24, uiCadenceMul: 1.22 }),
   Object.freeze({ qualityTier: 3, workerEnabled: false, maxPixelUploadBinsPerFrame: 112, showLabels: true, showShips: true, showAtmosphere: false, renderScale: 0.78, lowPowerOverlays: true, overlayCadenceMul: 1.26, simCadenceMul: 1.42, uiCadenceMul: 1.34 })
 ]);
-const SOLO_WORKER_COMMAND_STRATEGY = Object.freeze({
-  setAttackRatio: "always",
-  setMobilization: "always",
-  setExperimentalAttackCollision: "always",
-  setPerformanceProfile: "always",
-  spawnDebugIncomingWarheadAtPlayer: "always",
-  startNeutral: "ok",
-  startWarFocus: "ok",
-  startBurstExpand: "ok",
-  startBurstAttack: "ok",
-  declareWar: "ok",
-  betrayAlliance: "ok",
-  donate: "ok",
-  sendWarship: "ok",
-  requestCeasefire: "ok",
-  requestAlliance: "ok",
-  respondCeasefireRequest: "ok",
-  respondAllianceRequest: "ok",
-  respondTradeRequest: "ok",
-  startMissileSiloBuild: "ok",
-  startAirbaseTransportBuild: "ok",
-  queueDivisionTraining: "ok",
-  issueDivisionOrder: "ok",
-  clearDivisionOrder: "ok",
-  requestTradeDeal: "ok",
-  pickSpawn: "ok",
-  launchMissileWarhead: "ok",
-  launchAirbaseTransport: "ok",
-  placeStructure: "ok",
-  cancelAllOperations: "positive",
-  cancelOperation: "truthy",
-  cancelShip: "truthy",
-  startPortTrade: "ok",
-  cancelTradeDeal: "truthy",
-  cancelTradeRequest: "truthy",
-  regenerate: "restart"
-});
+const SOLO_WORKER_COMMAND_STRATEGY = buildSoloWorkerCommandStrategy();
 
 function createPerformanceProfileForWorld(tierRaw, worldRef = null) {
   const tier = Math.max(0, Math.min(3, Number(tierRaw) | 0));
@@ -1537,7 +1507,7 @@ let multiplayerLastFullSyncReason = "";
 let multiplayerLastFullSyncAppliedReason = "";
 let multiplayerLastCommandRejectReason = "";
 
-const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 0;
+const MULTIPLAYER_SNAPSHOT_RENDER_DELAY_TICKS = 2;
 const MULTIPLAYER_STALE_SNAPSHOT_RESYNC_MS = 6500;
 const MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS = 3000;
 const MULTIPLAYER_FULL_SYNC_REQUEST_MAX_COOLDOWN_MS = 15000;
@@ -1645,44 +1615,16 @@ function sendSocketJsonWithDebug(ws, payload, stats = null) {
   }
 }
 
-const MULTIPLAYER_WORLD_METHOD_SYNC = Object.freeze({
-  // Keep multiplayer authoritative wherever possible so the client behaves like
-  // a synced solo world instead of running a divergent local prediction layer.
-  setAttackRatio: Object.freeze({ cmd: "set_attack_ratio" }),
-  setMobilization: Object.freeze({ cmd: "set_mobilization" }),
-  startNeutral: Object.freeze({ cmd: "start_neutral" }),
-  startWarFocus: Object.freeze({ cmd: "start_war_focus" }),
-  regenerate: Object.freeze({ cmd: "regenerate_match", serializeArgs: serializeMultiplayerRegenerateArgs }),
-  cancelAllOperations: Object.freeze({ cmd: "cancel_all_operations" }),
-  cancelOperation: Object.freeze({ cmd: "cancel_operation" }),
-  createTradeDeal: Object.freeze({ cmd: "request_trade_deal" }),
-  requestTradeDeal: Object.freeze({ cmd: "request_trade_deal" }),
-  respondTradeRequest: Object.freeze({ cmd: "respond_trade_request" }),
-  cancelTradeRequest: Object.freeze({ cmd: "cancel_trade_request" }),
-  cancelTradeDeal: Object.freeze({ cmd: "cancel_trade_deal" }),
-  donate: Object.freeze({ cmd: "donate" }),
-  declareWar: Object.freeze({ cmd: "declare_war" }),
-  betrayAlliance: Object.freeze({ cmd: "betray_alliance" }),
-  sendWarship: Object.freeze({ cmd: "send_warship" }),
-  requestCeasefire: Object.freeze({ cmd: "request_ceasefire" }),
-  requestAlliance: Object.freeze({ cmd: "request_alliance" }),
-  respondCeasefireRequest: Object.freeze({ cmd: "respond_ceasefire_request" }),
-  respondAllianceRequest: Object.freeze({ cmd: "respond_alliance_request" }),
-  queueDivisionTraining: Object.freeze({ cmd: "queue_division_training" }),
-  issueDivisionOrder: Object.freeze({ cmd: "issue_division_order" }),
-  clearDivisionOrder: Object.freeze({ cmd: "clear_division_order" }),
-  cancelShip: Object.freeze({ cmd: "cancel_ship" }),
-  startPortTrade: Object.freeze({ cmd: "start_port_trade" }),
-  startMissileSiloBuild: Object.freeze({ cmd: "start_missile_silo_build" }),
-  startAirbaseTransportBuild: Object.freeze({ cmd: "start_airbase_transport_build" }),
-  startBurstExpand: Object.freeze({ cmd: "start_burst_expand" }),
-  startBurstAttack: Object.freeze({ cmd: "start_burst_attack" }),
-  pickSpawn: Object.freeze({ cmd: "pick_spawn" }),
-  startResearch: Object.freeze({ cmd: "start_research" }),
-  launchMissileWarhead: Object.freeze({ cmd: "launch_missile_warhead" }),
-  launchAirbaseTransport: Object.freeze({ cmd: "launch_airbase_transport" }),
-  placeStructure: Object.freeze({ cmd: "place_structure" })
-});
+const MULTIPLAYER_WORLD_METHOD_SYNC = buildMultiplayerClientMethodSync();
+
+function serializeMultiplayerCommandArgs(serializeKeyRaw, args) {
+  const serializeKey = String(serializeKeyRaw || "").trim().toLowerCase();
+  if (!serializeKey) return args;
+  if (serializeKey === "regenerate_match") {
+    return serializeMultiplayerRegenerateArgs(args);
+  }
+  return args;
+}
 
 function normalizeMultiplayerSession(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -1762,24 +1704,12 @@ function getMultiplayerPredictionFenceState() {
 }
 
 function resolveMultiplayerPredictionCategories(methodName) {
-  switch (String(methodName || "").trim()) {
-    case "declareWar":
-    case "betrayAlliance":
-      return { relations: true };
-    case "startNeutral":
-    case "startWarFocus":
-    case "startBurstExpand":
-    case "startBurstAttack":
-      return { stats: true, operations: true };
-    case "startPortTrade":
-      return { stats: true, operations: true, mobile: true };
-    case "startMissileSiloBuild":
-    case "startAirbaseTransportBuild":
-    case "placeStructure":
-      return { stats: true, structures: true };
-    default:
-      return null;
+  const categories = resolvePredictionCategoriesForMethod(methodName);
+  if (!categories) return null;
+  if (!categories.stats && !categories.relations && !categories.structures && !categories.operations && !categories.mobile) {
+    return null;
   }
+  return categories;
 }
 
 function markMultiplayerPredictionFence(categoriesRaw, baseTickRaw = 0) {
@@ -2280,7 +2210,7 @@ function installMultiplayerWorldSync(worldRef) {
         return multiplayerQueuedReturnForMethod(methodName, args);
       }
 
-      const payloadArgs = (typeof rule.serializeArgs === "function") ? rule.serializeArgs(args) : args;
+      const payloadArgs = serializeMultiplayerCommandArgs(rule.serializeKey, args);
       const sent = sendMultiplayerMatchInput(rule.cmd, payloadArgs);
       if (!sent.ok) {
         if (methodName === "pickSpawn") {
@@ -2326,12 +2256,16 @@ function installMultiplayerWorldSync(worldRef) {
       if (rule.predictLocal) {
         try {
           const predicted = original(...args);
-          if (predicted && typeof predicted === "object") {
-            if (predicted.ok !== false) {
-              markMultiplayerPredictionFence(resolveMultiplayerPredictionCategories(methodName));
-            }
-            return { ...predicted, predicted: true };
+          const predictionAccepted = shouldForwardSoloSimulationCommand(methodName, predicted);
+          if (predictionAccepted) {
+            markMultiplayerPredictionFence(resolveMultiplayerPredictionCategories(methodName));
           }
+          if (predicted && typeof predicted === "object") {
+            return predictionAccepted
+              ? { ...predicted, predicted: true }
+              : predicted;
+          }
+          return predicted;
         } catch {
           // Keep local command prediction resilient; authoritative snapshots will correct local state.
         }
@@ -3648,6 +3582,7 @@ function requestMultiplayerFullSync(reasonRaw = "") {
   const ws = multiplayerMatchSocket;
   if (!isMultiplayerMatchEnabled() || !ws || ws.readyState !== WebSocket.OPEN) return false;
   const now = Date.now();
+  const baseCooldownMs = multiplayerHasAuthoritativeSync ? MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS : 650;
   const awaitingMultiplier = multiplayerAwaitingFullSync ? 1.85 : 1;
   const recentFullSyncMultiplier = (multiplayerLastFullSyncReceivedAtMs > 0 && (now - multiplayerLastFullSyncReceivedAtMs) < 1800)
     ? 1.35
@@ -3655,7 +3590,7 @@ function requestMultiplayerFullSync(reasonRaw = "") {
   const streakMultiplier = Math.min(4.5, 1 + (Math.max(0, multiplayerFullSyncRequestBackoffLevel | 0) * 0.75));
   const cooldownMs = Math.min(
     MULTIPLAYER_FULL_SYNC_REQUEST_MAX_COOLDOWN_MS,
-    Math.round(MULTIPLAYER_FULL_SYNC_REQUEST_COOLDOWN_MS * awaitingMultiplier * recentFullSyncMultiplier * streakMultiplier)
+    Math.round(baseCooldownMs * awaitingMultiplier * recentFullSyncMultiplier * streakMultiplier)
   );
   if ((now - multiplayerLastFullSyncRequestAtMs) < cooldownMs) return false;
   multiplayerLastFullSyncRequestAtMs = now;
@@ -4494,6 +4429,9 @@ function connectMultiplayerMatchSocket() {
       const helloTick = Math.max(0, Number(msg?.match?.tick) || 0);
       if (activeMultiplayerSession && helloTick > 0) {
         activeMultiplayerSession.serverTick = Math.max(Number(activeMultiplayerSession.serverTick) || 0, helloTick);
+      }
+      if (startedAt > 0 && !multiplayerHasAuthoritativeSync) {
+        requestMultiplayerFullSync("hello_started");
       }
       scheduleDeferredMultiplayerCommandFlush(80);
       return;
@@ -5483,20 +5421,12 @@ function sanitizeMatchConfig(next) {
     DEFAULT_MATCH_CONFIG.continents
   );
 
-  const mapSourceRaw = String(src.mapSource ?? src.mapMode ?? DEFAULT_MATCH_CONFIG.mapSource).toLowerCase();
-  const mapSource = mapSourceRaw === MAP_SOURCE.CUSTOM
-    ? MAP_SOURCE.CUSTOM
-    : (mapSourceRaw === MAP_SOURCE.POLITICAL_EARTH ? MAP_SOURCE.POLITICAL_EARTH : MAP_SOURCE.EARTH);
-  const mapModeRaw = String(src.mapMode || mapSourceRaw || DEFAULT_MATCH_CONFIG.mapMode).toLowerCase();
-  const mapMode = (
-    mapModeRaw === MAP_MODE.WORLD_MAP ||
-    mapModeRaw === "world_map" ||
-    mapModeRaw === "world-map" ||
-    mapSource === MAP_SOURCE.POLITICAL_EARTH ||
-    mapSource === MAP_SOURCE.EARTH ||
-    mapSource === MAP_SOURCE.CUSTOM
-  ) ? MAP_MODE.WORLD_MAP : MAP_MODE.GENERATOR;
-  const customMapId = String(src.customMapId || "").trim();
+  const sharedMapConfig = normalizeSharedMatchMapConfig(src, DEFAULT_MATCH_CONFIG);
+  const mapMode = String(sharedMapConfig.mapMode || MAP_MODE.WORLD_MAP).toLowerCase() === MAP_MODE.WORLD_MAP
+    ? MAP_MODE.WORLD_MAP
+    : MAP_MODE.GENERATOR;
+  const mapSource = String(sharedMapConfig.mapSource || MAP_SOURCE.POLITICAL_EARTH).toLowerCase();
+  const customMapId = String(sharedMapConfig.customMapId || "").trim();
   const aiCount = aiCountRaw == null
     ? null
     : clampAiCountForCountryMode(aiCountRaw, { mapSource, gameMode, continents }, earthBaseData || earthData);
